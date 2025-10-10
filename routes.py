@@ -49,7 +49,6 @@ async def index(request: Request, db: Session = Depends(get_db), error: str = No
         "base_url": base_url
     })
 
-
 @router.post("/", response_class=RedirectResponse)
 async def handle_form(
     request: Request,
@@ -61,6 +60,7 @@ async def handle_form(
     username: str = Form(None),
     user_pass: str = Form(None),
     languages: str = Form(None),
+    includes: str = Form(None),
     excludes: str = Form(None),
     item_id: int = Form(None),
     new_name: str = Form(None),
@@ -68,22 +68,29 @@ async def handle_form(
     new_username: str = Form(None),
     new_user_pass: str = Form(None),
     new_languages: str = Form(None),
+    new_includes: str = Form(None),
     new_excludes: str = Form(None),
     db: Session = Depends(get_db)
 ):
-    logger.info(f"Received form data: add={add}, edit={edit}, delete={delete}, name='{name}', server_url='{server_url}', username='{username}', user_pass='{user_pass}', languages='{languages}', excludes='{excludes}', item_id={item_id}, new_name='{new_name}', new_server_url='{new_server_url}', new_username='{new_username}', new_user_pass='{new_user_pass}', new_languages='{new_languages}', new_excludes='{new_excludes}'")
-# Convert newline-separated values to comma-separated for storage
+    logger.info(f"Received form data: add={add}, edit={edit}, delete={delete}, name='{name}', server_url='{server_url}', username='{username}', user_pass='{user_pass}', languages='{languages}', includes='{includes}', excludes='{excludes}', item_id={item_id}, new_name='{new_name}', new_server_url='{new_server_url}', new_username='{new_username}', new_user_pass='{new_user_pass}', new_languages='{new_languages}', new_includes='{new_includes}', new_excludes='{new_excludes}'")
+    
+    # Convert newline-separated values to comma-separated for storage
     if languages and '\n' in languages:
         languages = ','.join([lang.strip() for lang in languages.split('\n') if lang.strip()])
+    if includes and '\n' in includes:
+        includes = ','.join([inc.strip() for inc in includes.split('\n') if inc.strip()])
     if excludes and '\n' in excludes:
         excludes = ','.join([ex.strip() for ex in excludes.split('\n') if ex.strip()])
     if new_languages and '\n' in new_languages:
         new_languages = ','.join([lang.strip() for lang in new_languages.split('\n') if lang.strip()])
+    if new_includes and '\n' in new_includes:
+        new_includes = ','.join([inc.strip() for inc in new_includes.split('\n') if inc.strip()])
     if new_excludes and '\n' in new_excludes:
         new_excludes = ','.join([ex.strip() for ex in new_excludes.split('\n') if ex.strip()])
+    
     if add:
         logger.info(f"Processing add request with name: '{name}'")
-        result = create_item(db, name, server_url, username, user_pass, languages, excludes)
+        result = create_item(db, name, server_url, username, user_pass, languages, includes, excludes)
         if not result:
             logger.warning("Item creation failed")
             return RedirectResponse(url="/?error=Failed to create item", status_code=303)
@@ -92,7 +99,8 @@ async def handle_form(
         if not item_id or not all([new_name, new_server_url, new_username, new_user_pass]):
             logger.warning(f"Missing item_id or fields for edit: item_id={item_id}")
             return RedirectResponse(url="/?error=Missing item ID or fields", status_code=303)
-        if not update_item(db, item_id, new_name, new_server_url, new_username, new_user_pass, new_languages, new_excludes):
+        # FIXED: Added new_includes parameter
+        if not update_item(db, item_id, new_name, new_server_url, new_username, new_user_pass, new_languages, new_includes, new_excludes):
             logger.warning(f"Item update failed for id {item_id}")
             return RedirectResponse(url="/?error=Item not found", status_code=303)
     elif delete:
@@ -254,10 +262,11 @@ async def generate_filtered_m3u(item_id: int = Form(...), db: Session = Depends(
         with open(m3u_path, "r", encoding="utf-8") as f:
             m3u_content = f.read()
         
-        # Parse languages and excludes
+        # Parse languages, includes, and excludes
         languages = [lang.strip().lower() for lang in (item.languages or "").split(",") if lang.strip()]
+        includes = [inc.strip().lower() for inc in (item.includes or "").split(",") if inc.strip()]
         excludes = [ex.strip().lower() for ex in (item.excludes or "").split(",") if ex.strip()]
-        logger.info(f"Filtering item {item_id} with languages={languages}, excludes={excludes}")
+        logger.info(f"Filtering item {item_id} with languages={languages}, includes={includes}, excludes={excludes}")
         
         # Filter M3U
         filtered_content = "#EXTM3U\n"
@@ -305,7 +314,8 @@ async def generate_filtered_m3u(item_id: int = Form(...), db: Session = Depends(
                         # Fallback: just take first 2 characters
                         channel_language = tvg_name[:2].lower()
                     
-                    logger.debug(f"Channel: {tvg_name}, Extracted language: {channel_language}")
+                    # Build search text for includes/excludes
+                    search_text = f"{tvg_name} {channel_name.lower()}".lower()
                     
                     # Apply language filter if languages are specified
                     if languages:
@@ -317,21 +327,39 @@ async def generate_filtered_m3u(item_id: int = Form(...), db: Session = Depends(
                                 logger.debug(f"Language match: '{lang}' == '{channel_language}' in: {tvg_name}")
                                 break
                     
-                    # Apply excludes filter
-                    if include and excludes:
-                        # Build search text for exclusions
-                        search_text = f"{tvg_name} {channel_name.lower()}"
-                        for ex in excludes:
-                            if ex in search_text:
-                                include = False
-                                logger.debug(f"Exclusion match: '{ex}' found in: {tvg_name}")
-                                break
+                    # Apply excludes and includes logic (includes override excludes)
+                    if include:
+                        # First check if it should be excluded
+                        excluded = False
+                        if excludes:
+                            for ex in excludes:
+                                if ex in search_text:
+                                    excluded = True
+                                    logger.debug(f"Exclusion match: '{ex}' found in: {tvg_name}")
+                                    break
+                        
+                        # Then check if it should be included (overrides exclusion)
+                        included_override = False
+                        if includes:
+                            for inc in includes:
+                                if inc in search_text:
+                                    included_override = True
+                                    logger.debug(f"Inclusion override: '{inc}' found in: {tvg_name}")
+                                    break
+                        
+                        # Final decision: if excluded but also included, include it
+                        if excluded and not included_override:
+                            include = False
+                        elif excluded and included_override:
+                            include = True
+                            logger.debug(f"Inclusion overrides exclusion for: {tvg_name}")
                     
                     if include:
                         filtered_content += f"{extinf}\n{url}\n"
                         num_records += 1
                     else:
                         unmatched_count += 1
+                        logger.debug(f"Excluded channel: {tvg_name}")
                 i += 2
             else:
                 # Copy other non-EXTINF lines but skip duplicate #EXTM3U
@@ -342,7 +370,7 @@ async def generate_filtered_m3u(item_id: int = Form(...), db: Session = Depends(
         logger.info(f"Filtering results: {num_records} included, {unmatched_count} excluded")
         
         if num_records == 0:
-            logger.warning(f"No records matched filter for item {item_id}: languages={item.languages}, excludes={item.excludes}")
+            logger.warning(f"No records matched filter for item {item_id}: languages={item.languages}, includes={item.includes}, excludes={item.excludes}")
             return RedirectResponse(url=f"/?error=No records matched the filter criteria. Language codes not found in channel data.", status_code=303)
         
         # Save filtered M3U

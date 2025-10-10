@@ -7,6 +7,7 @@ class ItemBase(BaseModel):
     username: str
     user_pass: str
     languages: str | None = None
+    includes: str | None = None  # Make sure this line exists
     excludes: str | None = None
 
 class ItemCreate(ItemBase):

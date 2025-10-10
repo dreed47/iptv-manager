@@ -26,8 +26,9 @@ class Item(Base):
     server_url = Column(String(200), nullable=False)
     username = Column(String(200), nullable=False)
     user_pass = Column(String(200), nullable=False)
-    languages = Column(String(200), nullable=True)  # comma-separated languages to include
-    excludes = Column(String(200), nullable=True)  # comma-separated keywords to exclude
+    languages = Column(String(200), nullable=True)
+    includes = Column(String(200), nullable=True)  # New field
+    excludes = Column(String(200), nullable=True)
 
 def init_db():
     try:

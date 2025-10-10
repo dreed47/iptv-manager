@@ -7,9 +7,9 @@ from models import Item
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-def create_item(db: Session, name: str, server_url: str, username: str, user_pass: str, languages: str, excludes: str):
+def create_item(db: Session, name: str, server_url: str, username: str, user_pass: str, languages: str, includes: str, excludes: str):
     try:
-        db_item = Item(name=name, server_url=server_url, username=username, user_pass=user_pass, languages=languages, excludes=excludes)
+        db_item = Item(name=name, server_url=server_url, username=username, user_pass=user_pass, languages=languages, includes=includes, excludes=excludes)
         db.add(db_item)
         db.commit()
         db.refresh(db_item)
@@ -20,7 +20,7 @@ def create_item(db: Session, name: str, server_url: str, username: str, user_pas
         db.rollback()
         return None
 
-def update_item(db: Session, item_id: int, name: str, server_url: str, username: str, user_pass: str, languages: str, excludes: str):
+def update_item(db: Session, item_id: int, name: str, server_url: str, username: str, user_pass: str, languages: str, includes: str, excludes: str):
     try:
         db_item = db.query(Item).filter(Item.id == item_id).first()
         if db_item:
@@ -29,6 +29,7 @@ def update_item(db: Session, item_id: int, name: str, server_url: str, username:
             db_item.username = username
             db_item.user_pass = user_pass
             db_item.languages = languages
+            db_item.includes = includes  # Make sure this line exists
             db_item.excludes = excludes
             db.commit()
             db.refresh(db_item)
@@ -40,7 +41,7 @@ def update_item(db: Session, item_id: int, name: str, server_url: str, username:
         logger.error(f"Failed to update item: {str(e)}")
         db.rollback()
         return None
-
+    
 def delete_item(db: Session, item_id: int):
     try:
         db_item = db.query(Item).filter(Item.id == item_id).first()

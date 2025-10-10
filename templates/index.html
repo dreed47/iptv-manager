@@ -94,6 +94,7 @@
         <th>Username</th>
         <th>Password</th>
         <th>Languages</th>
+        <th>Includes</th>
         <th>Excludes</th>
         <th>Actions</th>
         <th>Downloads & Streaming</th>
@@ -105,6 +106,7 @@
         <td>{{ item.username }}</td>
         <td>{{ item.user_pass }}</td>
         <td>{{ item.languages }}</td>
+        <td>{{ item.includes }}</td>
         <td>{{ item.excludes }}</td>
         <td>
           <form method="POST" action="/">
@@ -177,7 +179,25 @@
 {{ item.languages }}</textarea
               >
               <div class="form-help">
-                One language code per line (fr, en, es, etc.)
+                Extracted from tvg-name prefix like "FR - Show Name"
+              </div>
+            </div>
+
+            <div class="form-group">
+              <label class="form-label" for="includes_{{ item.id }}"
+                >Includes:</label
+              >
+              <textarea
+                id="includes_{{ item.id }}"
+                name="new_includes"
+                placeholder="One keyword per line&#10;Example:&#10;hbo&#10;premium&#10;sports"
+                maxlength="200"
+              >
+{{ item.includes }}</textarea
+              >
+              <div class="form-help">
+                Overrides excludes - channels containing these words will be
+                included
               </div>
             </div>
 
@@ -193,7 +213,10 @@
               >
 {{ item.excludes }}</textarea
               >
-              <div class="form-help">One keyword per line</div>
+              <div class="form-help">
+                Excludes channels containing these words (unless also in
+                includes)
+              </div>
             </div>
 
             <button type="submit" name="edit" value="edit">Edit</button>
@@ -219,7 +242,9 @@
           <div style="margin-top: 8px">
             <strong>Streaming URL:</strong>
             <div class="stream-url">
-              {{ item.stream_url }}
+              <span id="stream-url-text-{{ item.id }}"
+                >{{ item.stream_url }}</span
+              >
               <button class="copy-btn" onclick="copyStreamUrl('{{ item.id }}')">
                 Copy
               </button>
@@ -292,8 +317,20 @@
           maxlength="200"
         ></textarea>
         <div class="form-help">
-          One language code per line (fr, en, es, etc.) - Extracted from
-          tvg-name prefix like "FR - Show Name"
+          Extracted from tvg-name prefix like "FR - Show Name"
+        </div>
+      </div>
+
+      <div class="form-group">
+        <label class="form-label" for="includes">Includes:</label>
+        <textarea
+          id="includes"
+          name="includes"
+          placeholder="One keyword per line&#10;Example:&#10;hbo&#10;premium&#10;sports"
+          maxlength="200"
+        ></textarea>
+        <div class="form-help">
+          Overrides excludes - channels containing these words will be included
         </div>
       </div>
 
@@ -306,7 +343,7 @@
           maxlength="200"
         ></textarea>
         <div class="form-help">
-          One keyword per line - Excludes channels containing these words
+          Excludes channels containing these words (unless also in includes)
         </div>
       </div>
 
@@ -315,8 +352,22 @@
 
     <script>
       function copyStreamUrl(itemId) {
-        const baseUrl = "{{ base_url }}";
-        const streamUrl = `${baseUrl}/stream_filtered_m3u/${itemId}`;
+        const streamUrlElement = document.getElementById(
+          `stream-url-text-${itemId}`
+        );
+        if (!streamUrlElement) {
+          console.error("Stream URL element not found for item:", itemId);
+          return;
+        }
+
+        const streamUrl = streamUrlElement.textContent.trim();
+
+        if (!streamUrl) {
+          console.error("Stream URL is empty for item:", itemId);
+          return;
+        }
+
+        console.log("Copying URL:", streamUrl); // Debug log
 
         navigator.clipboard
           .writeText(streamUrl)
@@ -352,34 +403,6 @@
             }, 2000);
           });
       }
-
-      // Convert comma-separated values to newline-separated when loading existing data
-      document.addEventListener("DOMContentLoaded", function () {
-        // Convert edit form textareas
-        const languageTextareas = document.querySelectorAll(
-          'textarea[name^="new_languages"]'
-        );
-        languageTextareas.forEach((textarea) => {
-          if (textarea.value.includes(",")) {
-            textarea.value = textarea.value
-              .split(",")
-              .map((item) => item.trim())
-              .join("\n");
-          }
-        });
-
-        const excludeTextareas = document.querySelectorAll(
-          'textarea[name^="new_excludes"]'
-        );
-        excludeTextareas.forEach((textarea) => {
-          if (textarea.value.includes(",")) {
-            textarea.value = textarea.value
-              .split(",")
-              .map((item) => item.trim())
-              .join("\n");
-          }
-        });
-      });
     </script>
   </body>
 </html>
