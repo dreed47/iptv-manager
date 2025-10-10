@@ -1,11 +1,10 @@
-from fastapi import APIRouter, Depends, HTTPException, Form
-from fastapi.responses import HTMLResponse, RedirectResponse, FileResponse
+from fastapi import APIRouter, Depends, HTTPException, Form, Request
+from fastapi.responses import HTMLResponse, RedirectResponse, FileResponse, Response
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
 from models import get_db, Item
 from schemas import ItemCreate, ItemUpdate, ItemResponse
 from services import create_item, update_item, delete_item, get_all_items
-from starlette.requests import Request
 import logging
 import os
 import urllib.parse
@@ -20,18 +19,36 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 templates = Jinja2Templates(directory="templates")
 
+def get_base_url(request: Request) -> str:
+    """Get the base URL including protocol and host"""
+    base_url = str(request.base_url)
+    # Remove trailing slash if present
+    return base_url.rstrip('/')
+
 @router.get("/", response_class=HTMLResponse)
 async def index(request: Request, db: Session = Depends(get_db), error: str = None, success: str = None):
     items = get_all_items(db)
     items_with_files = []
+    base_url = get_base_url(request)
+    
     for item in items:
         m3u_path = os.path.join("/app/m3u_files", f"xtream_playlist_{item.id}.m3u")
         filtered_path = os.path.join("/app/m3u_files", f"filtered_playlist_{item.id}.m3u")
         item_dict = item.__dict__
         item_dict['has_m3u'] = os.path.exists(m3u_path)
         item_dict['has_filtered'] = os.path.exists(filtered_path)
+        # Add streaming URL to the item
+        item_dict['stream_url'] = f"{base_url}/stream_filtered_m3u/{item.id}"
         items_with_files.append(item_dict)
-    return templates.TemplateResponse("index.html", {"request": request, "items": items_with_files, "error": error, "success": success})
+    
+    return templates.TemplateResponse("index.html", {
+        "request": request, 
+        "items": items_with_files, 
+        "error": error, 
+        "success": success,
+        "base_url": base_url
+    })
+
 
 @router.post("/", response_class=RedirectResponse)
 async def handle_form(
@@ -55,6 +72,15 @@ async def handle_form(
     db: Session = Depends(get_db)
 ):
     logger.info(f"Received form data: add={add}, edit={edit}, delete={delete}, name='{name}', server_url='{server_url}', username='{username}', user_pass='{user_pass}', languages='{languages}', excludes='{excludes}', item_id={item_id}, new_name='{new_name}', new_server_url='{new_server_url}', new_username='{new_username}', new_user_pass='{new_user_pass}', new_languages='{new_languages}', new_excludes='{new_excludes}'")
+# Convert newline-separated values to comma-separated for storage
+    if languages and '\n' in languages:
+        languages = ','.join([lang.strip() for lang in languages.split('\n') if lang.strip()])
+    if excludes and '\n' in excludes:
+        excludes = ','.join([ex.strip() for ex in excludes.split('\n') if ex.strip()])
+    if new_languages and '\n' in new_languages:
+        new_languages = ','.join([lang.strip() for lang in new_languages.split('\n') if lang.strip()])
+    if new_excludes and '\n' in new_excludes:
+        new_excludes = ','.join([ex.strip() for ex in new_excludes.split('\n') if ex.strip()])
     if add:
         logger.info(f"Processing add request with name: '{name}'")
         result = create_item(db, name, server_url, username, user_pass, languages, excludes)
@@ -239,38 +265,85 @@ async def generate_filtered_m3u(item_id: int = Form(...), db: Session = Depends(
         num_records = 0
         unmatched_count = 0
         i = 0
+        
+        # Skip the original #EXTM3U line if it exists
+        if lines and lines[0].strip() == "#EXTM3U":
+            i = 1
+        
         while i < len(lines):
             if lines[i].startswith("#EXTINF"):
                 if i + 1 < len(lines) and not lines[i + 1].startswith("#"):
                     extinf = lines[i]
                     url = lines[i + 1]
-                    # Extract channel name (after comma in #EXTINF)
-                    channel_name = extinf.split(",", 1)[1] if "," in extinf else ""
-                    entry_text = extinf.lower() + channel_name.lower()
-                    include = False
-                    # Require language match if languages are specified
-                    if languages:
-                        if any(lang in entry_text for lang in languages):
-                            include = True
+                    
+                    include = True
+                    
+                    # Parse EXTINF attributes
+                    attributes = {}
+                    channel_name = ""
+                    
+                    # Extract attributes and channel name
+                    if " " in extinf and "," in extinf:
+                        # Format: #EXTINF:-1 attr1="value1" attr2="value2",Channel Name
+                        attr_part, channel_name = extinf.split(",", 1)
+                        # Parse attributes
+                        attr_matches = re.findall(r'(\S+?)="([^"]*)"', attr_part)
+                        for key, value in attr_matches:
+                            attributes[key.lower()] = value.lower()
                     else:
-                        include = True  # No languages specified, include all
-                    # Apply excludes
+                        # Simple format: #EXTINF:-1,Channel Name
+                        channel_name = extinf.split(",", 1)[1] if "," in extinf else ""
+                    
+                    # Extract language from tvg-name (first 2 characters before " - ")
+                    tvg_name = attributes.get('tvg-name', '')
+                    channel_language = ""
+                    
+                    if " - " in tvg_name:
+                        # Format: "FR - NCIS: Origins (2024) (US)"
+                        channel_language = tvg_name.split(" - ")[0].strip().lower()
+                    elif len(tvg_name) >= 2:
+                        # Fallback: just take first 2 characters
+                        channel_language = tvg_name[:2].lower()
+                    
+                    logger.debug(f"Channel: {tvg_name}, Extracted language: {channel_language}")
+                    
+                    # Apply language filter if languages are specified
+                    if languages:
+                        include = False
+                        for lang in languages:
+                            # Check if the extracted language matches
+                            if lang.lower() == channel_language:
+                                include = True
+                                logger.debug(f"Language match: '{lang}' == '{channel_language}' in: {tvg_name}")
+                                break
+                    
+                    # Apply excludes filter
                     if include and excludes:
-                        include = not any(ex in entry_text for ex in excludes)
+                        # Build search text for exclusions
+                        search_text = f"{tvg_name} {channel_name.lower()}"
+                        for ex in excludes:
+                            if ex in search_text:
+                                include = False
+                                logger.debug(f"Exclusion match: '{ex}' found in: {tvg_name}")
+                                break
                     
                     if include:
                         filtered_content += f"{extinf}\n{url}\n"
                         num_records += 1
                     else:
                         unmatched_count += 1
-                        logger.debug(f"Unmatched entry: {extinf[:100]}")
                 i += 2
             else:
+                # Copy other non-EXTINF lines but skip duplicate #EXTM3U
+                if lines[i].startswith("#") and not lines[i].startswith("#EXTINF") and lines[i].strip() != "#EXTM3U":
+                    filtered_content += f"{lines[i]}\n"
                 i += 1
         
+        logger.info(f"Filtering results: {num_records} included, {unmatched_count} excluded")
+        
         if num_records == 0:
-            logger.warning(f"No records matched filter for item {item_id}: languages={item.languages}, excludes={item.excludes}, unmatched={unmatched_count}")
-            return RedirectResponse(url=f"/?error=No records matched the filter criteria (unmatched: {unmatched_count})", status_code=303)
+            logger.warning(f"No records matched filter for item {item_id}: languages={item.languages}, excludes={item.excludes}")
+            return RedirectResponse(url=f"/?error=No records matched the filter criteria. Language codes not found in channel data.", status_code=303)
         
         # Save filtered M3U
         output_dir = "/app/m3u_files"
@@ -280,9 +353,9 @@ async def generate_filtered_m3u(item_id: int = Form(...), db: Session = Depends(
             f.write(filtered_content)
         
         total_lines = len(filtered_content.splitlines())
-        logger.info(f"Generated and saved filtered playlist for item {item_id} ({num_records} records, {total_lines} lines, {unmatched_count} unmatched) at {filtered_file_path}")
+        logger.info(f"Generated and saved filtered playlist for item {item_id} ({num_records} records, {total_lines} lines) at {filtered_file_path}")
         
-        return RedirectResponse(url=f"/?success=Saved {num_records} filtered records ({total_lines} lines) to filtered M3U file, {unmatched_count} records unmatched", status_code=303)
+        return RedirectResponse(url=f"/?success=Saved {num_records} filtered records ({total_lines} lines) to filtered M3U file", status_code=303)
     
     except Exception as e:
         logger.error(f"Failed to generate filtered M3U for item {item_id}: {str(e)}")
@@ -311,3 +384,26 @@ async def download_filtered_m3u(item_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Filtered M3U file not found")
     
     return FileResponse(file_path, filename=f"filtered_playlist_{item.name}.m3u")
+
+@router.get("/stream_filtered_m3u/{item_id}")
+async def stream_filtered_m3u(item_id: int, db: Session = Depends(get_db)):
+    item = db.query(Item).filter(Item.id == item_id).first()
+    if not item:
+        raise HTTPException(status_code=404, detail="Item not found")
+    
+    file_path = os.path.join("/app/m3u_files", f"filtered_playlist_{item_id}.m3u")
+    if not os.path.exists(file_path):
+        raise HTTPException(status_code=404, detail="Filtered M3U file not found")
+    
+    # Return the M3U content directly with proper M3U headers
+    with open(file_path, "r", encoding="utf-8") as f:
+        m3u_content = f.read()
+    
+    return Response(
+        content=m3u_content,
+        media_type="application/x-mpegurl",
+        headers={
+            "Content-Disposition": f'attachment; filename="filtered_playlist_{item.name}.m3u"',
+            "Access-Control-Allow-Origin": "*"
+        }
+    )

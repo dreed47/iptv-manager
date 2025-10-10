@@ -1,4 +1,3 @@
-# templates/index.html
 <!DOCTYPE html>
 <html lang="en">
   <head>
@@ -20,6 +19,15 @@
         margin: 2px 0;
         max-width: 200px;
       }
+      textarea {
+        width: 100%;
+        margin: 2px 0;
+        max-width: 200px;
+        height: 60px;
+        resize: vertical;
+        font-family: Arial, sans-serif;
+        font-size: 12px;
+      }
       button {
         margin: 2px;
       }
@@ -28,6 +36,44 @@
       }
       .success {
         color: green;
+      }
+      .stream-url {
+        background-color: #f0f8ff;
+        padding: 8px;
+        margin: 5px 0;
+        border-radius: 4px;
+        word-break: break-all;
+        font-family: monospace;
+        font-size: 12px;
+      }
+      .copy-btn {
+        background-color: #4caf50;
+        color: white;
+        border: none;
+        padding: 4px 8px;
+        border-radius: 3px;
+        cursor: pointer;
+        margin-left: 8px;
+      }
+      .copy-btn:hover {
+        background-color: #45a049;
+      }
+      .form-group {
+        margin-bottom: 8px;
+      }
+      .form-label {
+        display: block;
+        font-weight: bold;
+        margin-bottom: 2px;
+        font-size: 12px;
+      }
+      .form-help {
+        font-size: 11px;
+        color: #666;
+        margin-top: 2px;
+      }
+      .channel-row {
+        vertical-align: top;
       }
     </style>
   </head>
@@ -50,10 +96,10 @@
         <th>Languages</th>
         <th>Excludes</th>
         <th>Actions</th>
-        <th>Downloads</th>
+        <th>Downloads & Streaming</th>
       </tr>
       {% for item in items %}
-      <tr>
+      <tr class="channel-row">
         <td>{{ item.name }}</td>
         <td>{{ item.server_url }}</td>
         <td>{{ item.username }}</td>
@@ -63,48 +109,93 @@
         <td>
           <form method="POST" action="/">
             <input type="hidden" name="item_id" value="{{ item.id }}" />
-            <input
-              type="text"
-              name="new_name"
-              value="{{ item.name }}"
-              maxlength="50"
-              required
-            />
-            <input
-              type="text"
-              name="new_server_url"
-              value="{{ item.server_url }}"
-              maxlength="50"
-              required
-            />
-            <input
-              type="text"
-              name="new_username"
-              value="{{ item.username }}"
-              maxlength="50"
-              required
-            />
-            <input
-              type="text"
-              name="new_user_pass"
-              value="{{ item.user_pass }}"
-              maxlength="50"
-              required
-            />
-            <input
-              type="text"
-              name="new_languages"
-              value="{{ item.languages }}"
-              placeholder="Languages (comma-separated)"
-              maxlength="50"
-            />
-            <input
-              type="text"
-              name="new_excludes"
-              value="{{ item.excludes }}"
-              placeholder="Excludes (comma-separated)"
-              maxlength="50"
-            />
+
+            <div class="form-group">
+              <label class="form-label" for="name_{{ item.id }}">Name:</label>
+              <input
+                type="text"
+                id="name_{{ item.id }}"
+                name="new_name"
+                value="{{ item.name }}"
+                maxlength="50"
+                required
+              />
+            </div>
+
+            <div class="form-group">
+              <label class="form-label" for="server_url_{{ item.id }}"
+                >Server URL:</label
+              >
+              <input
+                type="text"
+                id="server_url_{{ item.id }}"
+                name="new_server_url"
+                value="{{ item.server_url }}"
+                maxlength="50"
+                required
+              />
+            </div>
+
+            <div class="form-group">
+              <label class="form-label" for="username_{{ item.id }}"
+                >Username:</label
+              >
+              <input
+                type="text"
+                id="username_{{ item.id }}"
+                name="new_username"
+                value="{{ item.username }}"
+                maxlength="50"
+                required
+              />
+            </div>
+
+            <div class="form-group">
+              <label class="form-label" for="user_pass_{{ item.id }}"
+                >Password:</label
+              >
+              <input
+                type="text"
+                id="user_pass_{{ item.id }}"
+                name="new_user_pass"
+                value="{{ item.user_pass }}"
+                maxlength="50"
+                required
+              />
+            </div>
+
+            <div class="form-group">
+              <label class="form-label" for="languages_{{ item.id }}"
+                >Languages:</label
+              >
+              <textarea
+                id="languages_{{ item.id }}"
+                name="new_languages"
+                placeholder="One language code per line&#10;Example:&#10;fr&#10;en&#10;es"
+                maxlength="200"
+              >
+{{ item.languages }}</textarea
+              >
+              <div class="form-help">
+                One language code per line (fr, en, es, etc.)
+              </div>
+            </div>
+
+            <div class="form-group">
+              <label class="form-label" for="excludes_{{ item.id }}"
+                >Excludes:</label
+              >
+              <textarea
+                id="excludes_{{ item.id }}"
+                name="new_excludes"
+                placeholder="One keyword per line&#10;Example:&#10;telemundo&#10;sling&#10;adult"
+                maxlength="200"
+              >
+{{ item.excludes }}</textarea
+              >
+              <div class="form-help">One keyword per line</div>
+            </div>
+
             <button type="submit" name="edit" value="edit">Edit</button>
             <button type="submit" name="delete" value="delete">Delete</button>
           </form>
@@ -123,7 +214,18 @@
           {% endif %} {% if item.has_filtered %}
           <a href="/download_filtered_m3u/{{ item.id }}" download
             >Download Filtered M3U</a
-          >
+          ><br />
+          <!-- Streaming URL Section -->
+          <div style="margin-top: 8px">
+            <strong>Streaming URL:</strong>
+            <div class="stream-url">
+              {{ item.stream_url }}
+              <button class="copy-btn" onclick="copyStreamUrl('{{ item.id }}')">
+                Copy
+              </button>
+            </div>
+            <small>Use this URL in your IPTV player</small>
+          </div>
           {% endif %}
         </td>
       </tr>
@@ -133,47 +235,151 @@
     <!-- Add new item -->
     <h2>Add New IPTV Configuration</h2>
     <form method="POST" action="/">
-      <input
-        type="text"
-        name="name"
-        placeholder="Name"
-        maxlength="50"
-        required
-      />
-      <input
-        type="text"
-        name="server_url"
-        placeholder="Server URL (e.g., http://cf.vtsp.cyou:8080)"
-        maxlength="50"
-        required
-      />
-      <input
-        type="text"
-        name="username"
-        placeholder="Username"
-        maxlength="50"
-        required
-      />
-      <input
-        type="text"
-        name="user_pass"
-        placeholder="Password"
-        maxlength="50"
-        required
-      />
-      <input
-        type="text"
-        name="languages"
-        placeholder="Languages (comma-separated)"
-        maxlength="50"
-      />
-      <input
-        type="text"
-        name="excludes"
-        placeholder="Excludes (comma-separated)"
-        maxlength="50"
-      />
+      <div class="form-group">
+        <label class="form-label" for="name">Name:</label>
+        <input
+          type="text"
+          id="name"
+          name="name"
+          placeholder="Configuration Name"
+          maxlength="50"
+          required
+        />
+      </div>
+
+      <div class="form-group">
+        <label class="form-label" for="server_url">Server URL:</label>
+        <input
+          type="text"
+          id="server_url"
+          name="server_url"
+          placeholder="http://cf.vtsp.cyou:8080"
+          maxlength="50"
+          required
+        />
+      </div>
+
+      <div class="form-group">
+        <label class="form-label" for="username">Username:</label>
+        <input
+          type="text"
+          id="username"
+          name="username"
+          placeholder="Username"
+          maxlength="50"
+          required
+        />
+      </div>
+
+      <div class="form-group">
+        <label class="form-label" for="user_pass">Password:</label>
+        <input
+          type="text"
+          id="user_pass"
+          name="user_pass"
+          placeholder="Password"
+          maxlength="50"
+          required
+        />
+      </div>
+
+      <div class="form-group">
+        <label class="form-label" for="languages">Languages:</label>
+        <textarea
+          id="languages"
+          name="languages"
+          placeholder="One language code per line&#10;Example:&#10;fr&#10;en&#10;es"
+          maxlength="200"
+        ></textarea>
+        <div class="form-help">
+          One language code per line (fr, en, es, etc.) - Extracted from
+          tvg-name prefix like "FR - Show Name"
+        </div>
+      </div>
+
+      <div class="form-group">
+        <label class="form-label" for="excludes">Excludes:</label>
+        <textarea
+          id="excludes"
+          name="excludes"
+          placeholder="One keyword per line&#10;Example:&#10;telemundo&#10;sling&#10;adult"
+          maxlength="200"
+        ></textarea>
+        <div class="form-help">
+          One keyword per line - Excludes channels containing these words
+        </div>
+      </div>
+
       <button type="submit" name="add" value="add">Add</button>
     </form>
+
+    <script>
+      function copyStreamUrl(itemId) {
+        const baseUrl = "{{ base_url }}";
+        const streamUrl = `${baseUrl}/stream_filtered_m3u/${itemId}`;
+
+        navigator.clipboard
+          .writeText(streamUrl)
+          .then(function () {
+            const btn = event.target;
+            const originalText = btn.textContent;
+            btn.textContent = "Copied!";
+            btn.style.backgroundColor = "#45a049";
+
+            setTimeout(() => {
+              btn.textContent = originalText;
+              btn.style.backgroundColor = "#4CAF50";
+            }, 2000);
+          })
+          .catch(function (err) {
+            console.error("Could not copy text: ", err);
+            // Fallback for older browsers
+            const textArea = document.createElement("textarea");
+            textArea.value = streamUrl;
+            document.body.appendChild(textArea);
+            textArea.select();
+            document.execCommand("copy");
+            document.body.removeChild(textArea);
+
+            const btn = event.target;
+            const originalText = btn.textContent;
+            btn.textContent = "Copied!";
+            btn.style.backgroundColor = "#45a049";
+
+            setTimeout(() => {
+              btn.textContent = originalText;
+              btn.style.backgroundColor = "#4CAF50";
+            }, 2000);
+          });
+      }
+
+      // Convert comma-separated values to newline-separated when loading existing data
+      document.addEventListener("DOMContentLoaded", function () {
+        // Convert edit form textareas
+        const languageTextareas = document.querySelectorAll(
+          'textarea[name^="new_languages"]'
+        );
+        languageTextareas.forEach((textarea) => {
+          if (textarea.value.includes(",")) {
+            textarea.value = textarea.value
+              .split(",")
+              .map((item) => item.trim())
+              .join("\n");
+          }
+        });
+
+        const excludeTextareas = document.querySelectorAll(
+          'textarea[name^="new_excludes"]'
+        );
+        excludeTextareas.forEach((textarea) => {
+          if (textarea.value.includes(",")) {
+            textarea.value = textarea.value
+              .split(",")
+              .map((item) => item.trim())
+              .join("\n");
+          }
+        });
+      });
+    </script>
   </body>
 </html>
