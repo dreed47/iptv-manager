@@ -1,0 +1,141 @@
+<!-- templates/index.html -->
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>IPTV Manager</title>
+    <style>
+      table,
+      th,
+      td {
+        border: 1px solid black;
+        border-collapse: collapse;
+        padding: 5px;
+      }
+      th {
+        background-color: #f2f2f2;
+      }
+      input[type="text"] {
+        width: 100%;
+        margin: 2px 0;
+        max-width: 200px;
+      }
+      button {
+        margin: 2px;
+      }
+      .error {
+        color: red;
+      }
+      .success {
+        color: green;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>IPTV Configurations</h1>
+
+    {% if success %}
+    <p class="success">{{ success }}</p>
+    {% endif %} {% if error %}
+    <p class="error">{{ error }}</p>
+    {% endif %}
+
+    <!-- List of items -->
+    <table>
+      <tr>
+        <th>Name</th>
+        <th>Server URL</th>
+        <th>Username</th>
+        <th>Password</th>
+        <th>Actions</th>
+        <th>M3U Download</th>
+      </tr>
+      {% for item in items %}
+      <tr>
+        <td>{{ item.name }}</td>
+        <td>{{ item.server_url }}</td>
+        <td>{{ item.username }}</td>
+        <td>{{ item.user_pass }}</td>
+        <td>
+          <form method="POST" action="/">
+            <input type="hidden" name="item_id" value="{{ item.id }}" />
+            <input
+              type="text"
+              name="new_name"
+              value="{{ item.name }}"
+              maxlength="50"
+              required
+            />
+            <input
+              type="text"
+              name="new_server_url"
+              value="{{ item.server_url }}"
+              maxlength="50"
+              required
+            />
+            <input
+              type="text"
+              name="new_username"
+              value="{{ item.username }}"
+              maxlength="50"
+              required
+            />
+            <input
+              type="text"
+              name="new_user_pass"
+              value="{{ item.user_pass }}"
+              maxlength="50"
+              required
+            />
+            <button type="submit" name="edit" value="edit">Edit</button>
+            <button type="submit" name="delete" value="delete">Delete</button>
+          </form>
+          <form method="POST" action="/generate_m3u">
+            <input type="hidden" name="item_id" value="{{ item.id }}" />
+            <button type="submit">Fetch M3U</button>
+          </form>
+        </td>
+        <td>
+          {% if item.has_m3u %}
+          <a href="/download_m3u/{{ item.id }}" download>Download M3U</a>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </table>
+
+    <!-- Add new item -->
+    <h2>Add New IPTV Configuration</h2>
+    <form method="POST" action="/">
+      <input
+        type="text"
+        name="name"
+        placeholder="Name"
+        maxlength="50"
+        required
+      />
+      <input
+        type="text"
+        name="server_url"
+        placeholder="Server URL (e.g., http://cf.vtsp.cyou:8080)"
+        maxlength="50"
+        required
+      />
+      <input
+        type="text"
+        name="username"
+        placeholder="Username"
+        maxlength="50"
+        required
+      />
+      <input
+        type="text"
+        name="user_pass"
+        placeholder="Password"
+        maxlength="50"
+        required
+      />
+      <button type="submit" name="add" value="add">Add</button>
+    </form>
+  </body>
+</html>
