@@ -6,6 +6,8 @@ class ItemBase(BaseModel):
     server_url: str
     username: str
     user_pass: str
+    languages: str | None = None
+    excludes: str | None = None
 
 class ItemCreate(ItemBase):
     pass

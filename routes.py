@@ -1,4 +1,3 @@
-# routes.py
 from fastapi import APIRouter, Depends, HTTPException, Form
 from fastapi.responses import HTMLResponse, RedirectResponse, FileResponse
 from fastapi.templating import Jinja2Templates
@@ -26,9 +25,11 @@ async def index(request: Request, db: Session = Depends(get_db), error: str = No
     items = get_all_items(db)
     items_with_files = []
     for item in items:
-        file_path = os.path.join("/app/m3u_files", f"xtream_playlist_{item.id}.m3u")
+        m3u_path = os.path.join("/app/m3u_files", f"xtream_playlist_{item.id}.m3u")
+        filtered_path = os.path.join("/app/m3u_files", f"filtered_playlist_{item.id}.m3u")
         item_dict = item.__dict__
-        item_dict['has_m3u'] = os.path.exists(file_path)
+        item_dict['has_m3u'] = os.path.exists(m3u_path)
+        item_dict['has_filtered'] = os.path.exists(filtered_path)
         items_with_files.append(item_dict)
     return templates.TemplateResponse("index.html", {"request": request, "items": items_with_files, "error": error, "success": success})
 
@@ -42,17 +43,21 @@ async def handle_form(
     server_url: str = Form(None),
     username: str = Form(None),
     user_pass: str = Form(None),
+    languages: str = Form(None),
+    excludes: str = Form(None),
     item_id: int = Form(None),
     new_name: str = Form(None),
     new_server_url: str = Form(None),
     new_username: str = Form(None),
     new_user_pass: str = Form(None),
+    new_languages: str = Form(None),
+    new_excludes: str = Form(None),
     db: Session = Depends(get_db)
 ):
-    logger.info(f"Received form data: add={add}, edit={edit}, delete={delete}, name='{name}', server_url='{server_url}', username='{username}', user_pass='{user_pass}', item_id={item_id}, new_name='{new_name}', new_server_url='{new_server_url}', new_username='{new_username}', new_user_pass='{new_user_pass}'")
+    logger.info(f"Received form data: add={add}, edit={edit}, delete={delete}, name='{name}', server_url='{server_url}', username='{username}', user_pass='{user_pass}', languages='{languages}', excludes='{excludes}', item_id={item_id}, new_name='{new_name}', new_server_url='{new_server_url}', new_username='{new_username}', new_user_pass='{new_user_pass}', new_languages='{new_languages}', new_excludes='{new_excludes}'")
     if add:
         logger.info(f"Processing add request with name: '{name}'")
-        result = create_item(db, name, server_url, username, user_pass)
+        result = create_item(db, name, server_url, username, user_pass, languages, excludes)
         if not result:
             logger.warning("Item creation failed")
             return RedirectResponse(url="/?error=Failed to create item", status_code=303)
@@ -61,7 +66,7 @@ async def handle_form(
         if not item_id or not all([new_name, new_server_url, new_username, new_user_pass]):
             logger.warning(f"Missing item_id or fields for edit: item_id={item_id}")
             return RedirectResponse(url="/?error=Missing item ID or fields", status_code=303)
-        if not update_item(db, item_id, new_name, new_server_url, new_username, new_user_pass):
+        if not update_item(db, item_id, new_name, new_server_url, new_username, new_user_pass, new_languages, new_excludes):
             logger.warning(f"Item update failed for id {item_id}")
             return RedirectResponse(url="/?error=Item not found", status_code=303)
     elif delete:
@@ -83,7 +88,6 @@ async def generate_m3u(item_id: int = Form(...), db: Session = Depends(get_db)):
             logger.warning(f"Item with id {item_id} not found for M3U generation")
             return RedirectResponse(url="/?error=Item not found", status_code=303)
         
-        # Headers for all requests
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36",
             "Accept": "application/json, text/plain, */*",
@@ -92,7 +96,6 @@ async def generate_m3u(item_id: int = Form(...), db: Session = Depends(get_db)):
             "Connection": "keep-alive"
         }
         
-        # Try Xtream Codes API first
         base_url = f"{item.server_url.rstrip('/')}/player_api.php"
         auth_url = f"{base_url}?username={urllib.parse.quote(item.username)}&password={urllib.parse.quote(item.user_pass)}"
         logger.info(f"Attempting Xtream API auth: {auth_url}")
@@ -101,7 +104,6 @@ async def generate_m3u(item_id: int = Form(...), db: Session = Depends(get_db)):
         num_records = 0
         source = "Xtream API"
         try:
-            # Authenticate
             response = requests.get(auth_url, headers=headers, timeout=30)
             response.raise_for_status()
             user_data = response.json()
@@ -113,19 +115,16 @@ async def generate_m3u(item_id: int = Form(...), db: Session = Depends(get_db)):
             
             logger.info(f"Authenticated with Xtream Codes for user {item.username}")
             
-            # Fetch live streams
             live_streams_url = f"{auth_url}&action=get_live_streams"
             live_streams_response = requests.get(live_streams_url, headers=headers, timeout=30)
             live_streams_response.raise_for_status()
             live_streams = live_streams_response.json()
             
-            # Fetch VOD streams
             vod_streams_url = f"{auth_url}&action=get_vod_streams"
             vod_streams_response = requests.get(vod_streams_url, headers=headers, timeout=30)
             vod_streams_response.raise_for_status()
             vod_streams = vod_streams_response.json()
             
-            # Fetch series
             series_url = f"{auth_url}&action=get_series"
             series_response = requests.get(series_url, headers=headers, timeout=30)
             series_response.raise_for_status()
@@ -134,7 +133,6 @@ async def generate_m3u(item_id: int = Form(...), db: Session = Depends(get_db)):
             num_records = len(live_streams) + len(vod_streams) + len(series)
             logger.info(f"Fetched {len(live_streams)} live streams, {len(vod_streams)} VOD streams, {len(series)} series (total: {num_records})")
             
-            # Generate M3U content
             m3u_content = "#EXTM3U\n"
             for stream in live_streams:
                 stream_id = stream.get('stream_id')
@@ -158,7 +156,6 @@ async def generate_m3u(item_id: int = Form(...), db: Session = Depends(get_db)):
             logger.warning(f"Xtream API failed for item {item_id}: {str(e)}, falling back to M3U URL")
             source = "M3U URL"
             
-            # Fallback to original M3U URL
             m3u_url = f"{item.server_url.rstrip('/')}/get.php?username={urllib.parse.quote(item.username)}&password={urllib.parse.quote(item.user_pass)}&type=m3u_plus&output=ts"
             logger.info(f"Attempting M3U fetch from: {m3u_url}")
             
@@ -180,10 +177,8 @@ async def generate_m3u(item_id: int = Form(...), db: Session = Depends(get_db)):
                 logger.warning(f"Invalid M3U content received for item {item_id}: {m3u_content[:100]}")
                 return RedirectResponse(url="/?error=Invalid M3U content from provider", status_code=303)
             
-            # Count actual stream entries (lines following #EXTINF)
-            num_records = len([line for line in m3u_content.splitlines() if line.startswith("#EXTINF")])
+            num_records = len(re.findall(r'^#EXTINF', m3u_content, re.MULTILINE))
         
-        # Save M3U file
         output_dir = "/app/m3u_files"
         os.makedirs(output_dir, exist_ok=True)
         m3u_file_path = os.path.join(output_dir, f"xtream_playlist_{item_id}.m3u")
@@ -193,7 +188,6 @@ async def generate_m3u(item_id: int = Form(...), db: Session = Depends(get_db)):
         total_lines = len(m3u_content.splitlines())
         logger.info(f"Generated and saved {source} playlist for item {item_id} ({num_records} records, {total_lines} lines) at {m3u_file_path}")
         
-        # Fetch EPG
         epg_error = None
         epg_url = f"{item.server_url.rstrip('/')}/xmltv.php?username={urllib.parse.quote(item.username)}&password={urllib.parse.quote(item.user_pass)}"
         try:
@@ -207,7 +201,6 @@ async def generate_m3u(item_id: int = Form(...), db: Session = Depends(get_db)):
             epg_error = f"Failed to fetch EPG: {str(e)}"
             logger.warning(epg_error)
         
-        # Construct redirect URL with success message
         redirect_url = f"/?success=Saved {num_records} records ({total_lines} lines) to M3U file from {source}"
         if epg_error:
             redirect_url += f"&error={urllib.parse.quote(epg_error)}"
@@ -217,6 +210,83 @@ async def generate_m3u(item_id: int = Form(...), db: Session = Depends(get_db)):
     except Exception as e:
         logger.error(f"Failed to generate M3U for item {item_id}: {str(e)}")
         return RedirectResponse(url=f"/?error=Failed to save M3U file: {str(e)}", status_code=303)
+
+@router.post("/generate_filtered_m3u", response_class=RedirectResponse)
+async def generate_filtered_m3u(item_id: int = Form(...), db: Session = Depends(get_db)):
+    try:
+        item = db.query(Item).filter(Item.id == item_id).first()
+        if not item:
+            logger.warning(f"Item with id {item_id} not found for filtered M3U generation")
+            return RedirectResponse(url="/?error=Item not found", status_code=303)
+        
+        m3u_path = os.path.join("/app/m3u_files", f"xtream_playlist_{item_id}.m3u")
+        if not os.path.exists(m3u_path):
+            logger.warning(f"M3U file not found for item {item_id} at {m3u_path}")
+            return RedirectResponse(url="/?error=M3U file not found, fetch M3U first", status_code=303)
+        
+        # Read original M3U
+        with open(m3u_path, "r", encoding="utf-8") as f:
+            m3u_content = f.read()
+        
+        # Parse languages and excludes
+        languages = [lang.strip().lower() for lang in (item.languages or "").split(",") if lang.strip()]
+        excludes = [ex.strip().lower() for ex in (item.excludes or "").split(",") if ex.strip()]
+        logger.info(f"Filtering item {item_id} with languages={languages}, excludes={excludes}")
+        
+        # Filter M3U
+        filtered_content = "#EXTM3U\n"
+        lines = m3u_content.splitlines()
+        num_records = 0
+        unmatched_count = 0
+        i = 0
+        while i < len(lines):
+            if lines[i].startswith("#EXTINF"):
+                if i + 1 < len(lines) and not lines[i + 1].startswith("#"):
+                    extinf = lines[i]
+                    url = lines[i + 1]
+                    # Extract channel name (after comma in #EXTINF)
+                    channel_name = extinf.split(",", 1)[1] if "," in extinf else ""
+                    entry_text = extinf.lower() + channel_name.lower()
+                    include = False
+                    # Require language match if languages are specified
+                    if languages:
+                        if any(lang in entry_text for lang in languages):
+                            include = True
+                    else:
+                        include = True  # No languages specified, include all
+                    # Apply excludes
+                    if include and excludes:
+                        include = not any(ex in entry_text for ex in excludes)
+                    
+                    if include:
+                        filtered_content += f"{extinf}\n{url}\n"
+                        num_records += 1
+                    else:
+                        unmatched_count += 1
+                        logger.debug(f"Unmatched entry: {extinf[:100]}")
+                i += 2
+            else:
+                i += 1
+        
+        if num_records == 0:
+            logger.warning(f"No records matched filter for item {item_id}: languages={item.languages}, excludes={item.excludes}, unmatched={unmatched_count}")
+            return RedirectResponse(url=f"/?error=No records matched the filter criteria (unmatched: {unmatched_count})", status_code=303)
+        
+        # Save filtered M3U
+        output_dir = "/app/m3u_files"
+        os.makedirs(output_dir, exist_ok=True)
+        filtered_file_path = os.path.join(output_dir, f"filtered_playlist_{item_id}.m3u")
+        with open(filtered_file_path, "w", encoding="utf-8") as f:
+            f.write(filtered_content)
+        
+        total_lines = len(filtered_content.splitlines())
+        logger.info(f"Generated and saved filtered playlist for item {item_id} ({num_records} records, {total_lines} lines, {unmatched_count} unmatched) at {filtered_file_path}")
+        
+        return RedirectResponse(url=f"/?success=Saved {num_records} filtered records ({total_lines} lines) to filtered M3U file, {unmatched_count} records unmatched", status_code=303)
+    
+    except Exception as e:
+        logger.error(f"Failed to generate filtered M3U for item {item_id}: {str(e)}")
+        return RedirectResponse(url=f"/?error=Failed to save filtered M3U file: {str(e)}", status_code=303)
 
 @router.get("/download_m3u/{item_id}", response_class=FileResponse)
 async def download_m3u(item_id: int, db: Session = Depends(get_db)):
@@ -229,3 +299,15 @@ async def download_m3u(item_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="M3U file not found")
     
     return FileResponse(file_path, filename=f"xtream_playlist_{item.name}.m3u")
+
+@router.get("/download_filtered_m3u/{item_id}", response_class=FileResponse)
+async def download_filtered_m3u(item_id: int, db: Session = Depends(get_db)):
+    item = db.query(Item).filter(Item.id == item_id).first()
+    if not item:
+        raise HTTPException(status_code=404, detail="Item not found")
+    
+    file_path = os.path.join("/app/m3u_files", f"filtered_playlist_{item_id}.m3u")
+    if not os.path.exists(file_path):
+        raise HTTPException(status_code=404, detail="Filtered M3U file not found")
+    
+    return FileResponse(file_path, filename=f"filtered_playlist_{item.name}.m3u")

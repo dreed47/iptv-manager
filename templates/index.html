@@ -1,4 +1,4 @@
-<!-- templates/index.html -->
+# templates/index.html
 <!DOCTYPE html>
 <html lang="en">
   <head>
@@ -47,8 +47,10 @@
         <th>Server URL</th>
         <th>Username</th>
         <th>Password</th>
+        <th>Languages</th>
+        <th>Excludes</th>
         <th>Actions</th>
-        <th>M3U Download</th>
+        <th>Downloads</th>
       </tr>
       {% for item in items %}
       <tr>
@@ -56,6 +58,8 @@
         <td>{{ item.server_url }}</td>
         <td>{{ item.username }}</td>
         <td>{{ item.user_pass }}</td>
+        <td>{{ item.languages }}</td>
+        <td>{{ item.excludes }}</td>
         <td>
           <form method="POST" action="/">
             <input type="hidden" name="item_id" value="{{ item.id }}" />
@@ -87,6 +91,20 @@
               maxlength="50"
               required
             />
+            <input
+              type="text"
+              name="new_languages"
+              value="{{ item.languages }}"
+              placeholder="Languages (comma-separated)"
+              maxlength="50"
+            />
+            <input
+              type="text"
+              name="new_excludes"
+              value="{{ item.excludes }}"
+              placeholder="Excludes (comma-separated)"
+              maxlength="50"
+            />
             <button type="submit" name="edit" value="edit">Edit</button>
             <button type="submit" name="delete" value="delete">Delete</button>
           </form>
@@ -94,10 +112,18 @@
             <input type="hidden" name="item_id" value="{{ item.id }}" />
             <button type="submit">Fetch M3U</button>
           </form>
+          <form method="POST" action="/generate_filtered_m3u">
+            <input type="hidden" name="item_id" value="{{ item.id }}" />
+            <button type="submit">Fetch Filtered M3U</button>
+          </form>
         </td>
         <td>
           {% if item.has_m3u %}
-          <a href="/download_m3u/{{ item.id }}" download>Download M3U</a>
+          <a href="/download_m3u/{{ item.id }}" download>Download M3U</a><br />
+          {% endif %} {% if item.has_filtered %}
+          <a href="/download_filtered_m3u/{{ item.id }}" download
+            >Download Filtered M3U</a
+          >
           {% endif %}
         </td>
       </tr>
@@ -134,6 +160,18 @@
         placeholder="Password"
         maxlength="50"
         required
+      />
+      <input
+        type="text"
+        name="languages"
+        placeholder="Languages (comma-separated)"
+        maxlength="50"
+      />
+      <input
+        type="text"
+        name="excludes"
+        placeholder="Excludes (comma-separated)"
+        maxlength="50"
       />
       <button type="submit" name="add" value="add">Add</button>
     </form>
