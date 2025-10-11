@@ -218,6 +218,23 @@
                 includes)
               </div>
             </div>
+            <div class="form-group">
+              <label class="form-label" for="epg_channels_{{ item.id }}"
+                >EPG Channels:</label
+              >
+              <textarea
+                id="epg_channels_{{ item.id }}"
+                name="new_epg_channels"
+                placeholder="One channel name per line&#10;Example:&#10;US: CW PITTSBURGH&#10;US: FOX NEWS&#10;NFL REDZONE"
+                maxlength="1000"
+                rows="4"
+              >
+{{ item.epg_channels }}</textarea
+              >
+              <div class="form-help">
+                One channel name per line for EPG filtering (exact match)
+              </div>
+            </div>
 
             <button type="submit" name="edit" value="edit">Edit</button>
             <button type="submit" name="delete" value="delete">Delete</button>
@@ -250,6 +267,16 @@
               </button>
             </div>
             <small>Use this URL in your IPTV player</small>
+          </div>
+          <!-- Add EPG streaming link -->
+          <div style="margin-top: 8px">
+            <strong>EPG URL:</strong>
+            <div class="stream-url">
+              {{ item.epg_url }}
+              <button class="copy-btn" onclick="copyEpgUrl('{{ item.id }}')">
+                Copy
+              </button>
+            </div>
           </div>
           {% endif %}
         </td>

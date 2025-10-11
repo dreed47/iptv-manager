@@ -27,8 +27,9 @@ class Item(Base):
     username = Column(String(200), nullable=False)
     user_pass = Column(String(200), nullable=False)
     languages = Column(String(200), nullable=True)
-    includes = Column(String(200), nullable=True)  # New field
+    includes = Column(String(200), nullable=True)
     excludes = Column(String(200), nullable=True)
+    epg_channels = Column(String(1000), nullable=True)  
 
 def init_db():
     try:

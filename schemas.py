@@ -1,14 +1,16 @@
 # schemas.py
 from pydantic import BaseModel
 
+# schemas.py
 class ItemBase(BaseModel):
     name: str
     server_url: str
     username: str
     user_pass: str
     languages: str | None = None
-    includes: str | None = None  # Make sure this line exists
+    includes: str | None = None
     excludes: str | None = None
+    epg_channels: str | None = None 
 
 class ItemCreate(ItemBase):
     pass
