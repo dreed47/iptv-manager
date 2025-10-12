@@ -1,9 +1,11 @@
-# docker-compose.yml
 version: '3'
 services:
   app:
     build: .
     ports:
       - "5005:5005"
+      - "1900:1900/udp"
     volumes:
       - .:/app
+    restart: unless-stopped
+    privileged: true

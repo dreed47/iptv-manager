@@ -1,16 +1,19 @@
-# main.py
 from fastapi import FastAPI
 from models import init_db
 from routes import router
+from hdhomerun_routes import router as hdhomerun_router
+import threading
+import logging
+
+logger = logging.getLogger(__name__)
 
 def create_app():
-    app = FastAPI(title="FastAPI IPTV Manager")
+    app = FastAPI(title="IPTV Manager with HDHomeRun Emulation")
     
-    # Initialize database
     init_db()
     
-    # Include routes
     app.include_router(router)
+    app.include_router(hdhomerun_router)
     
     return app
 
