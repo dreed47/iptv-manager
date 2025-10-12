@@ -275,7 +275,11 @@ async def generate_filtered_m3u(item_id: int = Form(...), db: Session = Depends(
         languages = [lang.strip().lower() for lang in (item.languages or "").split(",") if lang.strip()]
         includes = [inc.strip().lower() for inc in (item.includes or "").split(",") if inc.strip()]
         excludes = [ex.strip().lower() for ex in (item.excludes or "").split(",") if ex.strip()]
-        logger.info(f"Filtering item {item_id} with languages={languages}, includes={includes}, excludes={excludes}")
+        
+        # Check if we have wildcard exclude
+        has_wildcard_exclude = "*" in excludes
+        
+        logger.info(f"Filtering item {item_id} with languages={languages}, includes={includes}, excludes={excludes}, wildcard_exclude={has_wildcard_exclude}")
         
         # Filter M3U
         filtered_content = "#EXTM3U\n"
@@ -339,8 +343,21 @@ async def generate_filtered_m3u(item_id: int = Form(...), db: Session = Depends(
                                 logger.debug(f"Language match: '{lang}' == '{channel_language}' in: {tvg_name}")
                                 break
                     
-                    # Apply excludes and includes logic (includes override excludes)
-                    if include:
+                    # NEW LOGIC: Handle wildcard exclude
+                    if include and has_wildcard_exclude:
+                        # If we have wildcard exclude, exclude ALL channels by default
+                        include = False
+                        
+                        # Only include channels that match the includes
+                        if includes:
+                            for inc in includes:
+                                if inc in search_text:
+                                    include = True
+                                    logger.debug(f"Wildcard exclude override: '{inc}' found in: {tvg_name}")
+                                    break
+                    
+                    # Apply normal excludes and includes logic (if no wildcard)
+                    elif include and not has_wildcard_exclude:
                         # First check if it should be excluded
                         excluded = False
                         if excludes:

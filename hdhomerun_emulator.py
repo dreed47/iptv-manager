@@ -4,7 +4,6 @@ import time
 import logging
 import select
 import struct
-import requests
 
 logger = logging.getLogger(__name__)
 
@@ -17,56 +16,21 @@ class HDHomeRunEmulator:
         self.tuner_count = 2
         self.running = False
         self.thread = None
-        self._host_ip = None
     
     def get_host_ip(self):
-        """Get the actual host IP that Plex can reach"""
-        if self._host_ip:
-            return self._host_ip
-            
+        """Get the host IP that Plex can reach"""
         try:
-            # For macOS Docker, we need to find the host's network IP
-            # Try to get the IP that other devices on the network can use
-            
-            # Method 1: Get the Docker host gateway
-            with open('/proc/net/route') as f:
-                for line in f:
-                    fields = line.strip().split()
-                    if len(fields) >= 2 and fields[1] == '00000000':  # Default route
-                        gateway_hex = fields[2]
-                        # Convert hex to IP
-                        gateway_ip = socket.inet_ntoa(struct.pack('<L', int(gateway_hex, 16)))
-                        logger.info(f"Found gateway IP: {gateway_ip}")
-                        self._host_ip = gateway_ip
-                        return gateway_ip
-            
-            # Method 2: Use a service to get our public-facing IP
-            try:
-                response = requests.get('http://ifconfig.me', timeout=2)
-                if response.status_code == 200:
-                    ip = response.text.strip()
-                    logger.info(f"Found public IP: {ip}")
-                    self._host_ip = ip
-                    return ip
-            except:
-                pass
-                
-            # Method 3: Fallback - use the IP that connects to Google DNS
             s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             s.connect(("8.8.8.8", 80))
             ip = s.getsockname()[0]
             s.close()
-            logger.info(f"Using local IP: {ip}")
-            self._host_ip = ip
+            logger.info(f"Detected host IP: {ip}")
             return ip
-            
         except Exception as e:
             logger.error(f"Error getting host IP: {e}")
-            # Ultimate fallback - try host.docker.internal (might work in some cases)
-            return "host.docker.internal"
+            return "127.0.0.1"
     
     def create_ssdp_response(self):
-        """Create proper HDHomeRun SSDP response"""
         host_ip = self.get_host_ip()
         base_url = f"http://{host_ip}:{self.http_port}"
         
@@ -88,7 +52,6 @@ HDHomerun-Features: base
         return response
     
     def handle_ssdp_discovery(self, data, addr, sock):
-        """Handle SSDP M-SEARCH requests"""
         if "M-SEARCH" in data:
             logger.info(f"SSDP discovery from {addr}")
             
@@ -101,7 +64,7 @@ HDHomerun-Features: base
                     logger.error(f"Error sending SSDP response: {e}")
     
     def run_ssdp_server(self):
-        """Run SSDP discovery server"""
+        """Run SSDP discovery server in background thread"""
         self.running = True
         try:
             sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -114,11 +77,7 @@ HDHomerun-Features: base
             
             sock.setblocking(0)
             
-            host_ip = self.get_host_ip()
-            logger.info(f"HDHomeRun SSDP server started")
-            logger.info(f"Device ID: {self.device_id}")
-            logger.info(f"Host IP: {host_ip}")
-            logger.info(f"Manual Plex URL: http://{host_ip}:{self.http_port}")
+            logger.info("HDHomeRun SSDP server started on port 1900")
             
             while self.running:
                 try:
@@ -136,11 +95,14 @@ HDHomerun-Features: base
         finally:
             if 'sock' in locals():
                 sock.close()
+            logger.info("SSDP Server stopped")
     
     def start(self):
+        """Start the SSDP server in a background thread"""
         if self.thread is None or not self.thread.is_alive():
             self.thread = threading.Thread(target=self.run_ssdp_server, daemon=True)
             self.thread.start()
-            logger.info("HDHomeRun emulator started")
+            logger.info("HDHomeRun emulator background thread started")
 
+# Create instance but DON'T start it here
 hdhomerun_emulator = HDHomeRunEmulator()
