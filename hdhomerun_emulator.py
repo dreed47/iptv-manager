@@ -18,16 +18,14 @@ class HDHomeRunEmulator:
         self.thread = None
     
     def get_host_ip(self):
-        """Get the host IP that Plex can reach"""
+        """Simple IP detection"""
         try:
             s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             s.connect(("8.8.8.8", 80))
             ip = s.getsockname()[0]
             s.close()
-            logger.info(f"Detected host IP: {ip}")
             return ip
-        except Exception as e:
-            logger.error(f"Error getting host IP: {e}")
+        except:
             return "127.0.0.1"
     
     def create_ssdp_response(self):
@@ -53,18 +51,14 @@ HDHomerun-Features: base
     
     def handle_ssdp_discovery(self, data, addr, sock):
         if "M-SEARCH" in data:
-            logger.info(f"SSDP discovery from {addr}")
-            
             if any(st in data for st in ["upnp:rootdevice", "ssdp:all", "urn:schemas-upnp-org:device:MediaRenderer:1"]):
                 response = self.create_ssdp_response()
                 try:
                     sock.sendto(response.encode('utf-8'), addr)
-                    logger.info(f"Sent SSDP response to {addr}")
                 except Exception as e:
-                    logger.error(f"Error sending SSDP response: {e}")
+                    pass
     
     def run_ssdp_server(self):
-        """Run SSDP discovery server in background thread"""
         self.running = True
         try:
             sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -77,17 +71,13 @@ HDHomerun-Features: base
             
             sock.setblocking(0)
             
-            logger.info("HDHomeRun SSDP server started on port 1900")
-            
             while self.running:
                 try:
                     ready = select.select([sock], [], [], 1.0)
                     if ready[0]:
                         data, addr = sock.recvfrom(1024)
                         self.handle_ssdp_discovery(data.decode('utf-8'), addr, sock)
-                except Exception as e:
-                    if self.running:
-                        logger.error(f"SSDP error: {e}")
+                except:
                     time.sleep(1)
                     
         except Exception as e:
@@ -95,14 +85,10 @@ HDHomerun-Features: base
         finally:
             if 'sock' in locals():
                 sock.close()
-            logger.info("SSDP Server stopped")
     
     def start(self):
-        """Start the SSDP server in a background thread"""
         if self.thread is None or not self.thread.is_alive():
             self.thread = threading.Thread(target=self.run_ssdp_server, daemon=True)
             self.thread.start()
-            logger.info("HDHomeRun emulator background thread started")
 
-# Create instance but DON'T start it here
 hdhomerun_emulator = HDHomeRunEmulator()
