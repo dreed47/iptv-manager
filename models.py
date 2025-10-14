@@ -11,7 +11,15 @@ BASE_DIR = os.path.abspath(os.path.dirname(__file__))
 DB_PATH = os.path.join(BASE_DIR, 'data.db')
 SQLALCHEMY_DATABASE_URL = f"sqlite:///{DB_PATH}"
 
-engine = create_engine(SQLALCHEMY_DATABASE_URL, connect_args={"check_same_thread": False})
+engine = create_engine(
+    SQLALCHEMY_DATABASE_URL,
+    connect_args={
+        "check_same_thread": False,
+        "timeout": 5  # 5 second timeout on connections
+    },
+    pool_pre_ping=True,  # Verify connection is still valid before using
+    pool_recycle=3600,  # Recycle connections after 1 hour
+)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
@@ -31,8 +39,20 @@ def init_db():
     Base.metadata.create_all(bind=engine)
 
 def get_db():
-    db = SessionLocal()
+    db = None
     try:
+        db = SessionLocal()
+        # Test connection immediately using SQLAlchemy text()
+        from sqlalchemy import text
+        db.execute(text("SELECT 1"))
+        yield db
+    except Exception as e:
+        logger.error(f"Database connection error: {e}")
+        if db:
+            db.close()
+        # Return a new session if the first one failed
+        db = SessionLocal()
         yield db
     finally:
-        db.close()
+        if db:
+            db.close()

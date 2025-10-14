@@ -11,6 +11,21 @@
         border-collapse: collapse;
         padding: 5px;
       }
+      /* limit column widths for long multiline cells */
+      .col-limited {
+        max-width: 220px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      /* allow wrapping inside edit textareas but keep visual width limited */
+      .textarea-limited {
+        max-width: 220px;
+        width: 220px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: pre-wrap; /* preserve newlines but allow wrap */
+      }
       th {
         background-color: #f2f2f2;
       }
@@ -33,6 +48,14 @@
       }
       .error {
         color: red;
+      }
+      .discovery-controls {
+        margin: 20px 0;
+        padding: 10px;
+        background-color: #f8f8f8;
+        border: 1px solid #ddd;
+        border-radius: 4px;
+      }
       }
       .success {
         color: green;
@@ -80,6 +103,23 @@
   <body>
     <h1>IPTV Configurations</h1>
 
+    <div style="margin-bottom: 10px">
+      <form method="POST" action="/hdhr/enable" style="display: inline">
+        {% if not hdhr_running %}
+        <button type="submit">Enable Discovery (for Plex)</button>
+        {% endif %}
+      </form>
+      <form method="POST" action="/hdhr/disable" style="display: inline">
+        {% if hdhr_running %}
+        <button type="submit">Disable Discovery</button>
+        {% endif %}
+      </form>
+      <span style="margin-left: 12px; font-size: 12px; color: #666"
+        >SSDP discovery is {% if hdhr_running %}enabled{% else %}disabled{%
+        endif %}</span
+      >
+    </div>
+
     {% if success %}
     <p class="success">{{ success }}</p>
     {% endif %} {% if error %}
@@ -94,8 +134,9 @@
         <th>Username</th>
         <th>Password</th>
         <th>Languages</th>
-        <th>Includes</th>
-        <th>Excludes</th>
+        <th class="col-limited">Includes</th>
+        <th class="col-limited">Excludes</th>
+        <th class="col-limited">EPG Channels</th>
         <th>Actions</th>
         <th>Downloads & Streaming</th>
       </tr>
@@ -106,8 +147,15 @@
         <td>{{ item.username }}</td>
         <td>{{ item.user_pass }}</td>
         <td>{{ item.languages }}</td>
-        <td>{{ item.includes }}</td>
-        <td>{{ item.excludes }}</td>
+        <td class="col-limited" title="{{ item.includes }}">
+          {{ item.includes }}
+        </td>
+        <td class="col-limited" title="{{ item.excludes }}">
+          {{ item.excludes }}
+        </td>
+        <td class="col-limited" title="{{ item.epg_channels }}">
+          {{ item.epg_channels }}
+        </td>
         <td>
           <form method="POST" action="/">
             <input type="hidden" name="item_id" value="{{ item.id }}" />
@@ -190,6 +238,7 @@
               <textarea
                 id="includes_{{ item.id }}"
                 name="new_includes"
+                class="textarea-limited"
                 placeholder="One keyword per line&#10;Example:&#10;hbo&#10;premium&#10;sports"
                 maxlength="200"
               >
@@ -208,6 +257,7 @@
               <textarea
                 id="excludes_{{ item.id }}"
                 name="new_excludes"
+                class="textarea-limited"
                 placeholder="One keyword per line&#10;Example:&#10;telemundo&#10;sling&#10;adult"
                 maxlength="200"
               >
@@ -371,6 +421,21 @@
         ></textarea>
         <div class="form-help">
           Excludes channels containing these words (unless also in includes)
+        </div>
+      </div>
+
+      <div class="form-group">
+        <label class="form-label" for="epg_channels">EPG Channels:</label>
+        <textarea
+          id="epg_channels"
+          name="epg_channels"
+          class="textarea-limited"
+          placeholder="One channel name per line&#10;Example:&#10;US: CW PITTSBURGH&#10;US: FOX NEWS&#10;NFL REDZONE"
+          maxlength="1000"
+          rows="4"
+        ></textarea>
+        <div class="form-help">
+          One channel name per line for EPG filtering (exact match)
         </div>
       </div>
 

@@ -1,21 +1,21 @@
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse, RedirectResponse
 from sqlalchemy.orm import Session
 from models import get_db, Item
+from hdhomerun_emulator import HDHomeRunEmulator
 import logging
 import re
 import os
 import requests
 import subprocess
+import json
 from typing import Iterator
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-from hdhomerun_emulator import hdhomerun_emulator
-
-
-# ---- helpers ---------------------------------------------------------------
+# Create emulator instance but don't start it yet
+hdhomerun_emulator = HDHomeRunEmulator()
 
 def get_advertised_base_url() -> str:
     """
@@ -25,309 +25,212 @@ def get_advertised_base_url() -> str:
     host = (
         os.getenv("HDHR_ADVERTISE_HOST")
         or os.getenv("PUBLIC_HOST")
-        or hdhomerun_emulator.get_host_ip()
+        or "127.0.0.1"  # Safe default, will be updated when emulator starts
     )
     scheme = os.getenv("HDHR_SCHEME", "http")
     port = os.getenv("HDHR_ADVERTISE_PORT", "5005")
     return f"{scheme}://{host}:{port}"
 
-
-# ---- lifecycle -------------------------------------------------------------
+def load_channel_lineup(db: Session = Depends(get_db)) -> list:
+    """Load channels from filtered M3U file for first item"""
+    channels = []
+    try:
+        item = db.query(Item).first()
+        if not item:
+            return channels
+        
+        filtered_path = os.path.join("/app/m3u_files", f"filtered_playlist_{item.id}.m3u")
+        if not os.path.exists(filtered_path):
+            return channels
+            
+        with open(filtered_path, 'r') as f:
+            lines = f.readlines()
+            
+        i = 0
+        channel_number = 1
+        
+        while i < len(lines):
+            line = lines[i].strip()
+            if line.startswith('#EXTINF'):
+                if i + 1 < len(lines):
+                    # Parse the EXTINF line
+                    if ',' in line:
+                        attrs, name = line.split(',', 1)
+                        name = name.strip()
+                        
+                        # Extract metadata
+                        tvg_id = ""
+                        tvg_name = ""
+                        group = ""
+                        
+                        id_match = re.search(r'tvg-id="([^"]+)"', attrs)
+                        if id_match:
+                            tvg_id = id_match.group(1)
+                            
+                        name_match = re.search(r'tvg-name="([^"]+)"', attrs)
+                        if name_match:
+                            tvg_name = name_match.group(1)
+                            
+                        group_match = re.search(r'group-title="([^"]+)"', attrs)
+                        if group_match:
+                            group = group_match.group(1)
+                            
+                        # Prefer tvg-name over channel name if available
+                        display_name = tvg_name or name
+                        # Clean up common name issues
+                        display_name = display_name.replace('_', ' ').strip()
+                            
+                        # Get the URL
+                        url = lines[i + 1].strip()
+                        
+                        # Add required fields for Plex
+                        channel_data = {
+                            "GuideNumber": str(channel_number),
+                            "GuideName": display_name,
+                            "GuideSourceID": tvg_id,  # Important for EPG matching
+                            "HD": 1,
+                            "URL": url,
+                            "Favorite": 0,
+                            "DRM": 0,
+                            "VideoCodec": "H264",
+                            "AudioCodec": "AAC"
+                        }
+                        
+                        # Optional group/network info
+                        if group:
+                            channel_data["NetworkName"] = group
+                            channel_data["NetworkAffiliate"] = group
+                            
+                        channels.append(channel_data)
+                        channel_number += 1
+                        
+                        logger.debug(f"Added channel: {display_name} ({channel_number-1}) - ID: {tvg_id}")
+                i += 2
+            else:
+                i += 1
+                
+        logger.info(f"Loaded {len(channels)} channels for HDHomeRun lineup")
+        
+        # Log the first few channels for debugging
+        if channels:
+            logger.info("First channel example:")
+            logger.info(json.dumps(channels[0], indent=2))
+            
+    except Exception as e:
+        logger.error(f"Error loading channel lineup: {e}")
+        logger.exception(e)  # Log full traceback
+    
+    return channels
 
 @router.on_event("startup")
 async def startup_event():
-    logger.info("Starting HDHomeRun emulator on startup...")
-    hdhomerun_emulator.start()
+    logger.info("HDHomeRun emulator lazy-start enabled (will start on first HDHR request)")
 
+def ensure_emulator_started() -> bool:
+    """Start the emulator thread if it's not already running."""
+    try:
+        if not hdhomerun_emulator.is_running():
+            logger.info("Starting HDHomeRun emulator thread on demand...")
+            hdhomerun_emulator.start()
+            logger.info("HDHomeRun emulator thread started")
+        return True
+    except Exception as e:
+        logger.error(f"Failed to start emulator: {e}")
+        return False
 
-# ---- discovery -------------------------------------------------------------
+@router.post("/hdhr/enable")
+async def enable_discovery():
+    """Enable HDHomeRun discovery"""
+    if ensure_emulator_started():
+        return RedirectResponse(url="/", status_code=303)
+    return RedirectResponse(url="/?error=Failed+to+start+HDHomeRun+emulator", status_code=303)
+
+@router.post("/hdhr/disable")
+async def disable_discovery():
+    """Disable HDHomeRun discovery"""
+    try:
+        hdhomerun_emulator.stop()
+        return RedirectResponse(url="/", status_code=303)
+    except Exception as e:
+        logger.error(f"Failed to stop emulator: {e}")
+        return RedirectResponse(url="/?error=Failed+to+stop+HDHomeRun+emulator", status_code=303)
 
 @router.get("/discover.json")
-async def discover_json():
+async def hdhr_discover(db: Session = Depends(get_db)):
+    """Return device discovery info"""
+    if not ensure_emulator_started():
+        raise HTTPException(status_code=503, detail="HDHomeRun emulator not running")
+        
     base_url = get_advertised_base_url()
     return {
         "FriendlyName": hdhomerun_emulator.friendly_name,
         "ModelNumber": hdhomerun_emulator.model,
-        "FirmwareName": "hdhomerun3_atsc",
-        "FirmwareVersion": "20220830",
+        "FirmwareName": "hdhomerun_iptv",
+        "FirmwareVersion": "1.0",
         "DeviceID": hdhomerun_emulator.device_id,
         "DeviceAuth": "iptv_emulator",
         "BaseURL": base_url,
         "LineupURL": f"{base_url}/lineup.json",
-        "TunerCount": hdhomerun_emulator.tuner_count,
+        "TunerCount": hdhomerun_emulator.tuner_count
     }
 
+@router.get("/lineup_status.json")
+async def hdhr_lineup_status(db: Session = Depends(get_db)):
+    """Return scanning status"""
+    if not ensure_emulator_started():
+        raise HTTPException(status_code=503, detail="HDHomeRun emulator not running")
+        
+    channels = load_channel_lineup(db)
+    return {
+        "ScanInProgress": 0,
+        "ScanPossible": 1,
+        "Source": "Cable",
+        "SourceList": ["Cable"],
+        "Found": len(channels)
+    }
 
 @router.get("/lineup.json")
-async def lineup_json(db: Session = Depends(get_db)):
-    """HDHomeRun channel lineup"""
-    try:
-        base_url = get_advertised_base_url()
+async def hdhr_lineup(db: Session = Depends(get_db)):
+    """Return channel lineup"""
+    if not ensure_emulator_started():
+        raise HTTPException(status_code=503, detail="HDHomeRun emulator not running")
+        
+    return load_channel_lineup(db)
 
-        items = db.query(Item).all()
-        lineup = []
-        channel_num = 1
+@router.post("/lineup.post")
+async def hdhr_lineup_post(request: Request, db: Session = Depends(get_db)):
+    """Handle lineup commands"""
+    if not ensure_emulator_started():
+        raise HTTPException(status_code=503, detail="HDHomeRun emulator not running")
+    
+    form = await request.form()
+    scan = form.get("scan")
+    
+    if scan == "start":
+        # Reload channels
+        channels = load_channel_lineup(db)
+        logger.info(f"Scan started - loaded {len(channels)} channels")
+        logger.info("Channel details:")
+        for ch in channels[:3]:  # Log first 3 channels
+            logger.info(json.dumps(ch, indent=2))
+        return {"Status": "Success", "Progress": 100}
+    elif scan == "abort":
+        return {"Status": "Success"}
+    else:
+        raise HTTPException(status_code=400, detail="Invalid scan command")
 
-        for item in items:
-            filtered_m3u_path = f"/app/m3u_files/filtered_playlist_{item.id}.m3u"
-            if not os.path.exists(filtered_m3u_path):
-                continue
-
-            try:
-                with open(filtered_m3u_path, "r", encoding="utf-8") as f:
-                    content = f.read()
-
-                lines = content.split("\n")
-                i = 0
-                while i < len(lines):
-                    line = lines[i]
-                    if line.startswith("#EXTINF"):
-                        # find next non-comment line = URL
-                        j = i + 1
-                        while j < len(lines) and lines[j].startswith("#"):
-                            j += 1
-                        if j < len(lines):
-                            channel_name = "Unknown"
-                            if "," in line:
-                                channel_name = line.split(",", 1)[1].strip()
-
-                            tvg_name = channel_name
-                            attr_match = re.search(r'tvg-name="([^"]*)"', line)
-                            if attr_match:
-                                tvg_name = attr_match.group(1)
-
-                            lineup.append(
-                                {
-                                    "GuideNumber": str(channel_num),
-                                    "GuideName": tvg_name[:50],
-                                    # ABSOLUTE URL so Plex doesn’t call itself
-                                    "URL": f"{base_url}/auto_ff/{channel_num}",
-                                }
-                            )
-                            channel_num += 1
-                            i = j
-                            continue
-                    i += 1
-
-            except Exception as e:
-                logger.error(f"Error processing filtered M3U for item {item.id}: {e}")
-                continue
-
-        logger.info(f"HDHomeRun lineup: {len(lineup)} filtered channels")
-        return JSONResponse(content=lineup)
-    except Exception as e:
-        logger.error(f"Error in lineup.json: {e}")
-        return JSONResponse(content=[], status_code=500)
-
-
-# ---- direct proxy endpoint (/auto/v{channel}) ------------------------------
-
-@router.get("/auto/v{channel}")
-async def stream_channel(channel: int, request: Request, db: Session = Depends(get_db)):
-    """Stream a channel - with proper video player headers"""
-    logger.info(f"🎬 Channel {channel} requested by {request.client.host}")
-
-    items = db.query(Item).all()
-    current_channel = 1
-    stream_url = None
-    channel_name = "Unknown"
-
-    for item in items:
-        filtered_m3u_path = f"/app/m3u_files/filtered_playlist_{item.id}.m3u"
-        if not os.path.exists(filtered_m3u_path):
-            continue
-
-        try:
-            with open(filtered_m3u_path, "r", encoding="utf-8") as f:
-                content = f.read()
-
-            lines = content.split("\n")
-            i = 0
-            while i < len(lines):
-                line = lines[i]
-                if line.startswith("#EXTINF"):
-                    j = i + 1
-                    while j < len(lines) and lines[j].startswith("#"):
-                        j += 1
-                    if j < len(lines):
-                        if current_channel == channel:
-                            if "," in line:
-                                channel_name = line.split(",", 1)[1].strip()
-                            stream_url = lines[j].strip()
-                            break
-                        current_channel += 1
-                        i = j
-                        continue
-                i += 1
-
-            if stream_url:
-                break
-        except Exception as e:
-            logger.error(f"Error finding channel {channel}: {e}")
-            continue
-
-    if not stream_url:
-        logger.error(f"Channel {channel} not found")
-        raise HTTPException(status_code=404, detail=f"Channel {channel} not found")
-
-    logger.info(f"Proxying: {channel_name} -> {stream_url}")
-
-    try:
-        headers = {
-            "User-Agent": "VLC/3.0.18 LibVLC/3.0.18",
-            "Accept": "*/*",
-            "Range": "bytes=0-",
-            "Connection": "keep-alive",
-            "Referer": "http://localhost/",
+@router.get("/hdhr/debug_lineup")
+async def debug_lineup(db: Session = Depends(get_db)):
+    """Debug endpoint to view channel lineup"""
+    channels = load_channel_lineup(db)
+    return {
+        "channel_count": len(channels),
+        "first_three_channels": channels[:3] if channels else [],
+        "lineup_status": {
+            "ScanInProgress": 0,
+            "ScanPossible": 1,
+            "Source": "Cable",
+            "SourceList": ["Cable"],
+            "Found": len(channels)
         }
-        if "user-agent" in request.headers:
-            headers["User-Agent"] = request.headers["user-agent"]
-
-        logger.info(f"Requesting stream with headers: {headers}")
-        response = requests.get(stream_url, stream=True, timeout=30.0, headers=headers)
-
-        if response.status_code not in (200, 206):
-            logger.error(f"Stream returned HTTP {response.status_code}")
-            raise HTTPException(status_code=502, detail=f"Stream error: HTTP {response.status_code}")
-
-        content_type = response.headers.get("content-type", "video/mp2t")
-        logger.info(f"Stream successful: {content_type}")
-
-        def generate():
-            try:
-                for chunk in response.iter_content(chunk_size=8192):
-                    if chunk:
-                        yield chunk
-            except Exception as e:
-                logger.error(f"Stream error: {e}")
-            finally:
-                try:
-                    response.close()
-                except Exception:
-                    pass
-
-        return StreamingResponse(
-            generate(),
-            media_type=content_type,
-            headers={
-                "Cache-Control": "no-cache",
-                "Access-Control-Allow-Origin": "*",
-                "Content-Type": content_type,
-            },
-        )
-
-    except requests.exceptions.Timeout:
-        logger.error(f"Timeout streaming from {stream_url}")
-        raise HTTPException(status_code=504, detail="Stream timeout")
-    except requests.exceptions.RequestException as e:
-        logger.error(f"Stream error: {e}")
-        raise HTTPException(status_code=502, detail=f"Stream error: {str(e)}")
-
-
-# ---- diagnostics -----------------------------------------------------------
-
-@router.get("/test-stream/{channel}")
-async def test_stream(channel: int, db: Session = Depends(get_db)):
-    mock_request = Request(scope={"type": "http", "client": ("127.0.0.1", 12345), "headers": []})
-    return await stream_channel(channel, mock_request, db)
-
-
-@router.get("/lineup_status.json")
-async def lineup_status():
-    return {"ScanInProgress": 0, "ScanPossible": 0, "Source": "Cable", "SourceList": ["Cable"]}
-
-
-@router.get("/debug")
-async def debug_info():
-    base_url = get_advertised_base_url()
-    return {"status": "running", "base_url": base_url, "test_url": f"{base_url}/test-stream/1"}
-
-
-# ---- ffmpeg wrapper + endpoint --------------------------------------------
-
-def _ffmpeg_stream(src_url: str) -> Iterator[bytes]:
-    """
-    Run ffmpeg to normalize SPS/PPS and emit a clean MPEG-TS for Plex.
-    Video: H.264 (baseline/3.1); Audio: AAC stereo.
-    """
-    cmd = [
-        "ffmpeg",
-        "-hide_banner",
-        "-loglevel",
-        "warning",
-        "-fflags",
-        "+genpts+discardcorrupt",
-        "-reconnect",
-        "1",
-        "-reconnect_streamed",
-        "1",
-        "-reconnect_delay_max",
-        "10",
-        "-i",
-        src_url,  # <-- uses function arg (fixes NameError)
-        "-map",
-        "0:v:0",
-        "-map",
-        "0:a:0?",
-        "-c:v",
-        "libx264",
-        "-preset",
-        "veryfast",
-        "-tune",
-        "zerolatency",
-        "-pix_fmt",
-        "yuv420p",
-        "-profile:v",
-        "baseline",
-        "-level",
-        "3.1",
-        "-g",
-        "60",
-        "-keyint_min",
-        "60",
-        "-sc_threshold",
-        "0",
-        "-c:a",
-        "aac",
-        "-ac",
-        "2",
-        "-ar",
-        "48000",
-        "-b:a",
-        "128k",
-        "-f",
-        "mpegts",
-        "-mpegts_flags",
-        "resend_headers+initial_discontinuity+pat_pmt_at_frames",
-        "-muxpreload",
-        "0",
-        "-muxdelay",
-        "0",
-        "pipe:1",
-    ]
-
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, bufsize=0)
-    try:
-        while True:
-            if proc.stdout is None:
-                break
-            chunk = proc.stdout.read(64 * 1024)
-            if not chunk:
-                break
-            yield chunk
-    finally:
-        try:
-            proc.terminate()
-        except Exception:
-            pass
-
-
-@router.get("/auto_ff/{chan}")
-def auto_ff(chan: int, request: Request):
-    """
-    Normalizes /auto/v{chan} through ffmpeg for Plex.
-    """
-    # Use the app-internal endpoint as ffmpeg input (same container)
-    upstream = f"http://127.0.0.1:5005/auto/v{chan}"
-    logger.info(f"auto_ff: normalizing via ffmpeg for channel {chan} -> {upstream}")
-    return StreamingResponse(_ffmpeg_stream(upstream), media_type="video/mp2t")
+    }

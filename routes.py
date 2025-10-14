@@ -1,12 +1,13 @@
 from fastapi import APIRouter, Depends, HTTPException, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, FileResponse, Response
 from fastapi.templating import Jinja2Templates
+import time
 from sqlalchemy.orm import Session
 from models import get_db, Item
-from schemas import ItemCreate, ItemUpdate, ItemResponse
 from services import create_item, update_item, delete_item, get_all_items
 import logging
 import os
+from hdhomerun_routes import hdhomerun_emulator
 import urllib.parse
 import requests
 import json
@@ -22,36 +23,53 @@ templates = Jinja2Templates(directory="templates")
 
 def get_base_url(request: Request) -> str:
     """Get the base URL including protocol and host"""
-    base_url = str(request.base_url)
-    # Remove trailing slash if present
-    return base_url.rstrip('/')
+    # Use environment variables or fallback to the configured IP
+    host = os.getenv("HDHR_ADVERTISE_HOST", "192.168.86.254")
+    port = os.getenv("HDHR_ADVERTISE_PORT", "5005")
+    scheme = os.getenv("HDHR_SCHEME", "http")
+    return f"{scheme}://{host}:{port}"
 
 @router.get("/", response_class=HTMLResponse)
 async def index(request: Request, db: Session = Depends(get_db), error: str = None, success: str = None):
     items = get_all_items(db)
     items_with_files = []
     base_url = get_base_url(request)
-    
+
+    # Do a single directory listing instead of checking files individually
+    try:
+        existing_files = set(os.listdir("/app/m3u_files"))
+    except Exception as e:
+        logger.error(f"Error listing m3u_files directory: {e}")
+        existing_files = set()
+
     for item in items:
-        m3u_path = os.path.join("/app/m3u_files", f"xtream_playlist_{item.id}.m3u")
-        filtered_path = os.path.join("/app/m3u_files", f"filtered_playlist_{item.id}.m3u")
-        epg_path = os.path.join("/app/m3u_files", f"filtered_epg_{item.id}.xml")
         item_dict = item.__dict__
-        item_dict['has_m3u'] = os.path.exists(m3u_path)
-        item_dict['has_filtered'] = os.path.exists(filtered_path)
-        item_dict['has_epg'] = os.path.exists(epg_path)
+        # Check against our cached file listing instead of doing os.path.exists
+        item_dict['has_m3u'] = f"xtream_playlist_{item.id}.m3u" in existing_files
+        item_dict['has_filtered'] = f"filtered_playlist_{item.id}.m3u" in existing_files
+        item_dict['has_epg'] = f"filtered_epg_{item.id}.xml" in existing_files
         # Add streaming URLs to the item
         item_dict['stream_url'] = f"{base_url}/stream_filtered_m3u/{item.id}"
         item_dict['epg_url'] = f"{base_url}/stream_epg/{item.id}"
         items_with_files.append(item_dict)
-    
-    return templates.TemplateResponse("index.html", {
-        "request": request, 
-        "items": items_with_files, 
-        "error": error, 
+
+    context = {
+        "request": request,
+        "items": items_with_files,
+        "error": error,
         "success": success,
-        "base_url": base_url
-    })
+        "base_url": base_url,
+        "hdhr_running": hdhomerun_emulator.is_running(),
+    }
+
+    # Render template to measure rendering time (helps diagnose hangs)
+    start = time.time()
+    template = templates.get_template("index.html")
+    rendered = template.render(context)
+    render_duration = time.time() - start
+    logger.info(f"Template render duration: {render_duration:.3f}s")
+
+    return HTMLResponse(content=rendered)
 
 @router.post("/", response_class=RedirectResponse)
 async def handle_form(
@@ -230,6 +248,85 @@ async def generate_m3u(item_id: int = Form(...), db: Session = Depends(get_db)):
         
         total_lines = len(m3u_content.splitlines())
         logger.info(f"Generated and saved {source} playlist for item {item_id} ({num_records} records, {total_lines} lines) at {m3u_file_path}")
+
+        # Filter the M3U file based on languages/includes/excludes
+        languages = [lang.strip() for lang in (item.languages or "").split(",") if lang.strip()]
+        includes = [inc.strip() for inc in (item.includes or "").split(",") if inc.strip()]
+        excludes = [exc.strip() for exc in (item.excludes or "").split(",") if exc.strip()]
+
+        logger.info(f"Starting M3U filtering process...")
+        logger.info(f"Filter settings - Languages: {languages}, Includes: {includes}, Excludes: {excludes}")
+        
+        if includes or excludes or languages:
+            has_wildcard_exclude = "*" in excludes
+            logger.info(f"Filtering M3U with languages={languages}, includes={includes}, excludes={excludes}, wildcard_exclude={has_wildcard_exclude}")
+            
+            filtered_content = "#EXTM3U\n"
+            lines = m3u_content.splitlines()
+            num_filtered = 0
+            i = 1 if lines and lines[0].strip() == "#EXTM3U" else 0
+            
+            while i < len(lines):
+                if lines[i].startswith("#EXTINF"):
+                    if i + 1 < len(lines) and not lines[i + 1].startswith("#"):
+                        extinf = lines[i]
+                        url = lines[i + 1]
+                        
+                        # Parse EXTINF attributes and channel name
+                        if "," in extinf:
+                            _, channel_name = extinf.split(",", 1)
+                            channel_name = channel_name.strip()
+                            
+                            # Start with channel included
+                            include = True
+                            
+                            # Handle wildcard exclude with includes
+                            if has_wildcard_exclude:
+                                # If we have wildcard exclude, start with excluded
+                                include = False
+                                # Only include if it exactly matches an include
+                                if includes:
+                                    include = any(inc.lower() == channel_name.lower() for inc in includes)
+                                    if include:
+                                        logger.debug(f"Wildcard override - exact match: '{channel_name}'")
+                            # Handle normal filtering
+                            elif includes:
+                                # If we have includes, only keep exact matches
+                                include = any(inc.lower() == channel_name.lower() for inc in includes)
+                                if include:
+                                    logger.debug(f"Include match: '{channel_name}'")
+                            elif excludes:
+                                # Only apply excludes if no includes specified
+                                include = not any(exc.lower() in channel_name.lower() for exc in excludes)
+                            
+                            if include:
+                                filtered_content += f"{extinf}\n{url}\n"
+                                num_filtered += 1
+                                logger.info(f"Kept channel: {channel_name}")
+                            else:
+                                logger.debug(f"Filtered out: {channel_name}")
+                    i += 2
+                else:
+                    i += 1
+            
+            # Save filtered M3U
+            filtered_path = os.path.join(output_dir, f"filtered_playlist_{item_id}.m3u")
+            logger.info(f"Attempting to save filtered M3U to: {filtered_path}")
+            try:
+                with open(filtered_path, "w", encoding="utf-8") as f:
+                    f.write(filtered_content)
+                logger.info(f"Successfully saved filtered playlist with {num_filtered} channels (reduced from {num_records})")
+                
+                # Verify the file exists and has content
+                if os.path.exists(filtered_path):
+                    file_size = os.path.getsize(filtered_path)
+                    logger.info(f"Verified filtered file exists: {filtered_path} (size: {file_size} bytes)")
+                else:
+                    logger.error(f"Failed to verify filtered file at: {filtered_path}")
+                    
+                num_records = num_filtered
+            except Exception as e:
+                logger.error(f"Failed to save filtered M3U: {str(e)}")
         
         epg_error = None
         epg_url = f"{item.server_url.rstrip('/')}/xmltv.php?username={urllib.parse.quote(item.username)}&password={urllib.parse.quote(item.user_pass)}"
@@ -348,12 +445,12 @@ async def generate_filtered_m3u(item_id: int = Form(...), db: Session = Depends(
                         # If we have wildcard exclude, exclude ALL channels by default
                         include = False
                         
-                        # Only include channels that match the includes
+                        # Only include channels that exactly match any include line
                         if includes:
                             for inc in includes:
-                                if inc in search_text:
+                                if channel_name.lower() == inc.lower():
                                     include = True
-                                    logger.debug(f"Wildcard exclude override: '{inc}' found in: {tvg_name}")
+                                    logger.debug(f"Wildcard exclude override - Exact match found: '{channel_name}' matches include '{inc}'")
                                     break
                     
                     # Apply normal excludes and includes logic (if no wildcard)
@@ -362,26 +459,30 @@ async def generate_filtered_m3u(item_id: int = Form(...), db: Session = Depends(
                         excluded = False
                         if excludes:
                             for ex in excludes:
-                                if ex in search_text:
+                                if ex.lower() in search_text:
                                     excluded = True
-                                    logger.debug(f"Exclusion match: '{ex}' found in: {tvg_name}")
+                                    logger.debug(f"Exclusion match: '{ex}' found in: {channel_name}")
                                     break
                         
                         # Then check if it should be included (overrides exclusion)
                         included_override = False
                         if includes:
+                            # We only want exact matches here too
                             for inc in includes:
-                                if inc in search_text:
+                                if channel_name.lower() == inc.lower():
                                     included_override = True
-                                    logger.debug(f"Inclusion override: '{inc}' found in: {tvg_name}")
+                                    logger.debug(f"Include override - Exact match found: '{channel_name}' matches include '{inc}'")
                                     break
                         
-                        # Final decision: if excluded but also included, include it
-                        if excluded and not included_override:
-                            include = False
-                        elif excluded and included_override:
-                            include = True
-                            logger.debug(f"Inclusion overrides exclusion for: {tvg_name}")
+                        # Apply the final include/exclude decision:
+                        # If we have includes, ONLY keep exact matches
+                        if includes:
+                            include = included_override
+                        # Otherwise if we have excludes, filter out matching channels
+                        elif excludes:
+                            include = not excluded
+
+                        logger.debug(f"Final decision for {channel_name}: exclude={excluded}, included={included_override}, final={include}")
                     
                     if include:
                         filtered_content += f"{extinf}\n{url}\n"
@@ -407,7 +508,7 @@ async def generate_filtered_m3u(item_id: int = Form(...), db: Session = Depends(
         
         if num_records == 0:
             logger.warning(f"No records matched filter for item {item_id}: languages={item.languages}, includes={item.includes}, excludes={item.excludes}")
-            return RedirectResponse(url=f"/?error=No records matched the filter criteria. Language codes not found in channel data.", status_code=303)
+            return RedirectResponse(url="/?error=No records matched the filter criteria. Language codes not found in channel data.", status_code=303)
         
         # Save filtered M3U
         output_dir = "/app/m3u_files"
