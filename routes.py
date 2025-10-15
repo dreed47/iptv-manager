@@ -387,6 +387,8 @@ async def generate_filtered_m3u(item_id: int = Form(...), db: Session = Depends(
 
         filtered_content = "#EXTM3U\n"
         lines = m3u_content.splitlines()
+        # Count input records (#EXTINF entries) for reporting
+        input_record_count = sum(1 for ln in lines if ln.startswith("#EXTINF"))
         num_records = 0
         i = 0
         if lines and lines[0].strip() == "#EXTM3U":
@@ -483,13 +485,23 @@ async def generate_filtered_m3u(item_id: int = Form(...), db: Session = Depends(
             f.write(filtered_content)
 
         total_lines = len(filtered_content.splitlines())
-        logger.info(f"Generated and saved filtered playlist for item {item_id} ({num_records} records, {total_lines} lines) at {filtered_file_path}")
+        # Log both input and output record counts
+        logger.info(
+            f"Filtered M3U for item {item_id}: input records={input_record_count}, "
+            f"written records={num_records}, file lines={total_lines}, path={filtered_file_path}"
+        )
 
-        epg_success = await generate_filtered_epg(item_id, db)
-        if epg_success:
-            return RedirectResponse(url=f"/?success=Saved {num_records} filtered records ({total_lines} lines) to filtered M3U file and generated filtered EPG", status_code=303)
-        else:
-            return RedirectResponse(url=f"/?success=Saved {num_records} filtered records ({total_lines} lines) to filtered M3U file&error=Failed to generate filtered EPG", status_code=303)
+        # Redirect back to index with success message including counts
+        success_msg = urllib.parse.quote(
+            f"Filtered {num_records} of {input_record_count} records ({total_lines} lines)"
+        )
+        return RedirectResponse(url=f"/?success={success_msg}", status_code=303)
+
+        #epg_success = await generate_filtered_epg(item_id, db)
+        #if epg_success:
+        #    return RedirectResponse(url=f"/?success=Saved {num_records} filtered records ({total_lines} lines) to filtered M3U file and generated filtered EPG", status_code=303)
+        #else:
+        #    return RedirectResponse(url=f"/?success=Saved {num_records} filtered records ({total_lines} lines) to filtered M3U file&error=Failed to generate filtered EPG", status_code=303)
 
     except Exception as e:
         logger.error(f"Failed to generate filtered M3U for item {item_id}: {str(e)}")

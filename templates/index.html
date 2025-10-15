@@ -147,8 +147,12 @@
         <td>{{ item.username }}</td>
         <td>{{ item.user_pass }}</td>
         <td>{{ item.languages }}</td>
-        <td class="col-limited" title="{{ item.includes }}">
-          {{ item.includes }}
+        <td
+          class="col-limited"
+          title="{{ item.includes }}"
+          style="white-space: pre-line"
+        >
+          {{ item.includes | replace(',', ' ') }}
         </td>
         <td class="col-limited" title="{{ item.excludes }}">
           {{ item.excludes }}
@@ -224,7 +228,8 @@
                 placeholder="One language code per line&#10;Example:&#10;fr&#10;en&#10;es"
                 maxlength="200"
               >
-{{ item.languages }}</textarea
+{{ item.languages | replace(',', '
+') }}</textarea
               >
               <div class="form-help">
                 Extracted from tvg-name prefix like "FR - Show Name"
@@ -241,9 +246,11 @@
                 class="textarea-limited"
                 placeholder="One keyword per line&#10;Example:&#10;100|hbo&#10;200|premium&#10;300|sports"
                 maxlength="10000"
-                rows="8"
+                rows="45"
+                style="height: 250px"
               >
-{{ item.includes }}</textarea
+{{ item.includes | replace(',', '
+') }}</textarea
               >
               <div class="form-help">
                 Overrides excludes - channels containing these words will be
@@ -262,7 +269,8 @@
                 placeholder="One keyword per line&#10;Example:&#10;telemundo&#10;sling&#10;adult"
                 maxlength="200"
               >
-{{ item.excludes }}</textarea
+{{ item.excludes | replace(',', '
+') }}</textarea
               >
               <div class="form-help">
                 Excludes channels containing these words (unless also in
@@ -384,61 +392,6 @@
           maxlength="50"
           required
         />
-      </div>
-
-      <div class="form-group">
-        <label class="form-label" for="languages">Languages:</label>
-        <textarea
-          id="languages"
-          name="languages"
-          placeholder="One language code per line&#10;Example:&#10;fr&#10;en&#10;es"
-          maxlength="200"
-        ></textarea>
-        <div class="form-help">
-          Extracted from tvg-name prefix like "FR - Show Name"
-        </div>
-      </div>
-
-      <div class="form-group">
-        <label class="form-label" for="includes">Includes:</label>
-        <textarea
-          id="includes"
-          name="includes"
-          placeholder="One keyword per line&#10;Example:&#10;100|hbo&#10;200|premium&#10;300|sports"
-          maxlength="10000"
-          rows="8"
-        ></textarea>
-        <div class="form-help">
-          Overrides excludes - channels containing these words will be included. Format: number|keyword (e.g., 100|ESPN)
-        </div>
-      </div>
-
-      <div class="form-group">
-        <label class="form-label" for="excludes">Excludes:</label>
-        <textarea
-          id="excludes"
-          name="excludes"
-          placeholder="One keyword per line&#10;Example:&#10;telemundo&#10;sling&#10;adult"
-          maxlength="200"
-        ></textarea>
-        <div class="form-help">
-          Excludes channels containing these words (unless also in includes)
-        </div>
-      </div>
-
-      <div class="form-group">
-        <label class="form-label" for="epg_channels">EPG Channels:</label>
-        <textarea
-          id="epg_channels"
-          name="epg_channels"
-          class="textarea-limited"
-          placeholder="One channel name per line&#10;Example:&#10;US: CW PITTSBURGH&#10;US: FOX NEWS&#10;NFL REDZONE"
-          maxlength="1000"
-          rows="4"
-        ></textarea>
-        <div class="form-help">
-          One channel name per line for EPG filtering (exact match)
-        </div>
       </div>
 
       <button type="submit" name="add" value="add">Add</button>
