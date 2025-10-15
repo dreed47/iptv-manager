@@ -353,181 +353,135 @@ async def generate_m3u(item_id: int = Form(...), db: Session = Depends(get_db)):
 
 @router.post("/generate_filtered_m3u", response_class=RedirectResponse)
 async def generate_filtered_m3u(item_id: int = Form(...), db: Session = Depends(get_db)):
+
     try:
         item = db.query(Item).filter(Item.id == item_id).first()
         if not item:
             logger.warning(f"Item with id {item_id} not found for filtered M3U generation")
             return RedirectResponse(url="/?error=Item not found", status_code=303)
-        
+
         m3u_path = os.path.join("/app/m3u_files", f"xtream_playlist_{item_id}.m3u")
         if not os.path.exists(m3u_path):
             logger.warning(f"M3U file not found for item {item_id} at {m3u_path}")
             return RedirectResponse(url="/?error=M3U file not found, fetch M3U first", status_code=303)
-        
-        # Read original M3U
+
         with open(m3u_path, "r", encoding="utf-8") as f:
             m3u_content = f.read()
-        
-        # Parse languages, includes, and excludes
+
         languages = [lang.strip().lower() for lang in (item.languages or "").split(",") if lang.strip()]
-        includes = [inc.strip().lower() for inc in (item.includes or "").split(",") if inc.strip()]
+        # Parse includes, keep mapping of substring to number if present
+        includes = []  # list of (number, substring) or (None, substring)
+        for inc in (item.includes or "").split(","):
+            inc = inc.strip()
+            if not inc:
+                continue
+            if '|' in inc:
+                num, substr = inc.split('|', 1)
+                includes.append((num.strip(), substr.strip().lower()))
+            else:
+                includes.append((None, inc.lower()))
         excludes = [ex.strip().lower() for ex in (item.excludes or "").split(",") if ex.strip()]
-        
-        # Check if we have wildcard exclude
         has_wildcard_exclude = "*" in excludes
-        
+
         logger.info(f"Filtering item {item_id} with languages={languages}, includes={includes}, excludes={excludes}, wildcard_exclude={has_wildcard_exclude}")
-        
-        # Filter M3U
+
         filtered_content = "#EXTM3U\n"
         lines = m3u_content.splitlines()
         num_records = 0
-        unmatched_count = 0
         i = 0
-        
-        # Collect tvg-ids from filtered channels for EPG
-        filtered_tvg_ids = set()
-        
-        # Skip the original #EXTM3U line if it exists
         if lines and lines[0].strip() == "#EXTM3U":
             i = 1
-        
-        while i < len(lines):
-            if lines[i].startswith("#EXTINF"):
-                if i + 1 < len(lines) and not lines[i + 1].startswith("#"):
-                    extinf = lines[i]
-                    url = lines[i + 1]
-                    
-                    include = True
-                    
-                    # Parse EXTINF attributes
-                    attributes = {}
-                    channel_name = ""
-                    
-                    # Extract attributes and channel name
-                    if " " in extinf and "," in extinf:
-                        # Format: #EXTINF:-1 attr1="value1" attr2="value2",Channel Name
-                        attr_part, channel_name = extinf.split(",", 1)
-                        # Parse attributes
-                        attr_matches = re.findall(r'(\S+?)="([^"]*)"', attr_part)
-                        for key, value in attr_matches:
-                            attributes[key.lower()] = value.lower()
-                    else:
-                        # Simple format: #EXTINF:-1,Channel Name
-                        channel_name = extinf.split(",", 1)[1] if "," in extinf else ""
-                    
-                    # Extract language from tvg-name (first 2 characters before " - ")
-                    tvg_name = attributes.get('tvg-name', '')
-                    channel_language = ""
-                    
-                    if " - " in tvg_name:
-                        # Format: "FR - NCIS: Origins (2024) (US)"
-                        channel_language = tvg_name.split(" - ")[0].strip().lower()
-                    elif len(tvg_name) >= 2:
-                        # Fallback: just take first 2 characters
-                        channel_language = tvg_name[:2].lower()
-                    
-                    # Build search text for includes/excludes
-                    search_text = f"{tvg_name} {channel_name.lower()}".lower()
-                    
-                    # Apply language filter if languages are specified
-                    if languages:
-                        include = False
-                        for lang in languages:
-                            # Check if the extracted language matches
-                            if lang.lower() == channel_language:
-                                include = True
-                                logger.debug(f"Language match: '{lang}' == '{channel_language}' in: {tvg_name}")
-                                break
-                    
-                    # NEW LOGIC: Handle wildcard exclude
-                    if include and has_wildcard_exclude:
-                        # If we have wildcard exclude, exclude ALL channels by default
-                        include = False
-                        
-                        # Only include channels that exactly match any include line
-                        if includes:
-                            for inc in includes:
-                                if channel_name.lower() == inc.lower():
-                                    include = True
-                                    logger.debug(f"Wildcard exclude override - Exact match found: '{channel_name}' matches include '{inc}'")
-                                    break
-                    
-                    # Apply normal excludes and includes logic (if no wildcard)
-                    elif include and not has_wildcard_exclude:
-                        # First check if it should be excluded
-                        excluded = False
-                        if excludes:
-                            for ex in excludes:
-                                if ex.lower() in search_text:
-                                    excluded = True
-                                    logger.debug(f"Exclusion match: '{ex}' found in: {channel_name}")
-                                    break
-                        
-                        # Then check if it should be included (overrides exclusion)
-                        included_override = False
-                        if includes:
-                            # We only want exact matches here too
-                            for inc in includes:
-                                if channel_name.lower() == inc.lower():
-                                    included_override = True
-                                    logger.debug(f"Include override - Exact match found: '{channel_name}' matches include '{inc}'")
-                                    break
-                        
-                        # Apply the final include/exclude decision:
-                        # If we have includes, ONLY keep exact matches
-                        if includes:
-                            include = included_override
-                        # Otherwise if we have excludes, filter out matching channels
-                        elif excludes:
-                            include = not excluded
 
-                        logger.debug(f"Final decision for {channel_name}: exclude={excluded}, included={included_override}, final={include}")
-                    
-                    if include:
-                        filtered_content += f"{extinf}\n{url}\n"
-                        num_records += 1
-                        
-                        # Extract tvg-id for EPG filtering
-                        tvg_id = attributes.get('tvg-id', '')
-                        if tvg_id:
-                            filtered_tvg_ids.add(tvg_id)
-                            logger.debug(f"Found tvg-id: {tvg_id} for channel: {tvg_name}")
+
+        while i < len(lines):
+            if lines[i].startswith("#EXTINF") and i + 1 < len(lines) and not lines[i + 1].startswith("#"):
+                extinf = lines[i]
+                url = lines[i + 1]
+
+                # Parse channel name and tvg-name
+                attributes = {}
+                channel_name = ""
+                if " " in extinf and "," in extinf:
+                    attr_part, channel_name = extinf.split(",", 1)
+                    attr_matches = re.findall(r'(\S+?)="([^"]*)"', attr_part)
+                    for key, value in attr_matches:
+                        attributes[key.lower()] = value.lower()
+                else:
+                    channel_name = extinf.split(",", 1)[1] if "," in extinf else ""
+                tvg_name = attributes.get('tvg-name', '')
+                channel_language = ""
+                if " - " in tvg_name:
+                    channel_language = tvg_name.split(" - ")[0].strip().lower()
+                elif len(tvg_name) >= 2:
+                    channel_language = tvg_name[:2].lower()
+
+                # 1. Language check
+                if languages and channel_language and channel_language not in languages:
+                    i += 2
+                    continue
+
+                # 2. Exclude logic
+                search_text = f"{tvg_name} {channel_name}".lower()
+                excluded = False
+                if has_wildcard_exclude:
+                    # Exclude all unless included
+                    excluded = True
+                else:
+                    for ex in excludes:
+                        if ex and ex in search_text:
+                            excluded = True
+                            break
+
+                # 3. Include logic (overrides exclude)
+                included = False
+                chno_to_apply = None
+                for num, inc in includes:
+                    if inc and inc in search_text:
+                        included = True
+                        if num:
+                            chno_to_apply = num
+                        break
+
+                # Final decision
+                if (not excluded) or (excluded and included):
+                    # If chno_to_apply is set, add or update tvg-chno attribute in extinf
+                    if chno_to_apply:
+                        # Remove existing tvg-chno if present
+                        extinf_new = re.sub(r'\s*tvg-chno="[^"]*"', '', extinf)
+                        # Insert tvg-chno before the comma (end of attribute list)
+                        idx = extinf_new.find(',')
+                        if idx != -1:
+                            extinf_new = extinf_new[:idx] + f' tvg-chno="{chno_to_apply}"' + extinf_new[idx:]
+                        else:
+                            extinf_new = extinf_new + f' tvg-chno="{chno_to_apply}"'
+                        filtered_content += f"{extinf_new}\n{url}\n"
                     else:
-                        unmatched_count += 1
-                        logger.debug(f"Excluded channel: {tvg_name}")
+                        filtered_content += f"{extinf}\n{url}\n"
+                    num_records += 1
+
                 i += 2
             else:
-                # Copy other non-EXTINF lines but skip duplicate #EXTM3U
-                if lines[i].startswith("#") and not lines[i].startswith("#EXTINF") and lines[i].strip() != "#EXTM3U":
-                    filtered_content += f"{lines[i]}\n"
                 i += 1
-        
-        logger.info(f"Filtering results: {num_records} included, {unmatched_count} excluded")
-        logger.info(f"Collected {len(filtered_tvg_ids)} tvg-ids from filtered M3U: {list(filtered_tvg_ids)[:10]}")
-        
+
         if num_records == 0:
             logger.warning(f"No records matched filter for item {item_id}: languages={item.languages}, includes={item.includes}, excludes={item.excludes}")
-            return RedirectResponse(url="/?error=No records matched the filter criteria. Language codes not found in channel data.", status_code=303)
-        
-        # Save filtered M3U
+            return RedirectResponse(url="/?error=No records matched the filter criteria.", status_code=303)
+
         output_dir = "/app/m3u_files"
         os.makedirs(output_dir, exist_ok=True)
         filtered_file_path = os.path.join(output_dir, f"filtered_playlist_{item_id}.m3u")
         with open(filtered_file_path, "w", encoding="utf-8") as f:
             f.write(filtered_content)
-        
+
         total_lines = len(filtered_content.splitlines())
         logger.info(f"Generated and saved filtered playlist for item {item_id} ({num_records} records, {total_lines} lines) at {filtered_file_path}")
-        
-        # Generate filtered EPG
+
         epg_success = await generate_filtered_epg(item_id, db)
-        
         if epg_success:
             return RedirectResponse(url=f"/?success=Saved {num_records} filtered records ({total_lines} lines) to filtered M3U file and generated filtered EPG", status_code=303)
         else:
             return RedirectResponse(url=f"/?success=Saved {num_records} filtered records ({total_lines} lines) to filtered M3U file&error=Failed to generate filtered EPG", status_code=303)
-    
+
     except Exception as e:
         logger.error(f"Failed to generate filtered M3U for item {item_id}: {str(e)}")
         return RedirectResponse(url=f"/?error=Failed to save filtered M3U file: {str(e)}", status_code=303)

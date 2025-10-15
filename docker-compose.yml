@@ -14,7 +14,7 @@ services:
     volumes:
       # Only mount the data directories that need persistence
       - ./m3u_files:/app/m3u_files
-      - ./data.db:/app/data.db
+      - ./data:/app/data
     restart: unless-stopped
     privileged: true
     # Add network settings

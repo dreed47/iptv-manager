@@ -61,6 +61,7 @@ def load_channel_lineup(db: Session = Depends(get_db)) -> list:
                         # Extract metadata
                         tvg_id = ""
                         tvg_name = ""
+                        tvg_chno = ""
                         group = ""
                         
                         id_match = re.search(r'tvg-id="([^"]+)"', attrs)
@@ -70,6 +71,10 @@ def load_channel_lineup(db: Session = Depends(get_db)) -> list:
                         name_match = re.search(r'tvg-name="([^"]+)"', attrs)
                         if name_match:
                             tvg_name = name_match.group(1)
+                            
+                        chno_match = re.search(r'tvg-chno="([^"]+)"', attrs)
+                        if chno_match:
+                            tvg_chno = chno_match.group(1)
                             
                         group_match = re.search(r'group-title="([^"]+)"', attrs)
                         if group_match:
@@ -83,9 +88,12 @@ def load_channel_lineup(db: Session = Depends(get_db)) -> list:
                         # Get the URL
                         url = lines[i + 1].strip()
                         
+                        # Use tvg-chno if available, otherwise use sequential channel_number
+                        guide_number = tvg_chno if tvg_chno else str(channel_number)
+                        
                         # Add required fields for Plex
                         channel_data = {
-                            "GuideNumber": str(channel_number),
+                            "GuideNumber": guide_number,
                             "GuideName": display_name,
                             "GuideSourceID": tvg_id,  # Important for EPG matching
                             "HD": 1,
