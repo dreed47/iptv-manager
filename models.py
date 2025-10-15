@@ -1,21 +1,28 @@
-# models.py
 import os
 import logging
-from sqlalchemy import create_engine, Column, Integer, String
+from sqlalchemy import create_engine, Column, Integer, String, Boolean
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 
-# Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Ensure database path is absolute and works in Docker
 BASE_DIR = os.path.abspath(os.path.dirname(__file__))
-DB_PATH = os.path.join(BASE_DIR, 'data.db')
+# Use data directory for database
+DATA_DIR = os.path.join(BASE_DIR, 'data')
+os.makedirs(DATA_DIR, exist_ok=True)
+DB_PATH = os.path.join(DATA_DIR, 'data.db')
 SQLALCHEMY_DATABASE_URL = f"sqlite:///{DB_PATH}"
-logger.info(f"Database path set to: {DB_PATH}")
 
-engine = create_engine(SQLALCHEMY_DATABASE_URL, connect_args={"check_same_thread": False})
+engine = create_engine(
+    SQLALCHEMY_DATABASE_URL,
+    connect_args={
+        "check_same_thread": False,
+        "timeout": 5  # 5 second timeout on connections
+    },
+    pool_pre_ping=True,  # Verify connection is still valid before using
+    pool_recycle=3600,  # Recycle connections after 1 hour
+)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
@@ -29,21 +36,26 @@ class Item(Base):
     languages = Column(String(200), nullable=True)
     includes = Column(String(200), nullable=True)
     excludes = Column(String(200), nullable=True)
-    epg_channels = Column(String(1000), nullable=True)  
+    epg_channels = Column(String(1000), nullable=True)
 
 def init_db():
-    try:
-        if not os.path.exists(DB_PATH):
-            logger.info(f"Database file {DB_PATH} does not exist, creating it")
-        Base.metadata.create_all(bind=engine)
-        logger.info("Database tables initialized successfully")
-    except Exception as e:
-        logger.error(f"Failed to initialize database: {str(e)}")
-        raise
+    Base.metadata.create_all(bind=engine)
 
 def get_db():
-    db = SessionLocal()
+    db = None
     try:
+        db = SessionLocal()
+        # Test connection immediately using SQLAlchemy text()
+        from sqlalchemy import text
+        db.execute(text("SELECT 1"))
+        yield db
+    except Exception as e:
+        logger.error(f"Database connection error: {e}")
+        if db:
+            db.close()
+        # Return a new session if the first one failed
+        db = SessionLocal()
         yield db
     finally:
-        db.close()
+        if db:
+            db.close()
