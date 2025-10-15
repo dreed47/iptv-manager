@@ -393,6 +393,15 @@ async def generate_filtered_m3u(item_id: int = Form(...), db: Session = Depends(
             i = 1
 
 
+        import unicodedata
+        def normalize(s):
+            # Lowercase, strip, remove diacritics, collapse whitespace
+            s = s.lower().strip()
+            s = unicodedata.normalize('NFKD', s)
+            s = ''.join(c for c in s if not unicodedata.combining(c))
+            s = ' '.join(s.split())
+            return s
+
         while i < len(lines):
             if lines[i].startswith("#EXTINF") and i + 1 < len(lines) and not lines[i + 1].startswith("#"):
                 extinf = lines[i]
@@ -421,14 +430,14 @@ async def generate_filtered_m3u(item_id: int = Form(...), db: Session = Depends(
                     continue
 
                 # 2. Exclude logic
-                search_text = f"{tvg_name} {channel_name}".lower()
+                search_text = normalize(f"{tvg_name} {channel_name}")
                 excluded = False
                 if has_wildcard_exclude:
                     # Exclude all unless included
                     excluded = True
                 else:
                     for ex in excludes:
-                        if ex and ex in search_text:
+                        if ex and normalize(ex) in search_text:
                             excluded = True
                             break
 
@@ -436,7 +445,7 @@ async def generate_filtered_m3u(item_id: int = Form(...), db: Session = Depends(
                 included = False
                 chno_to_apply = None
                 for num, inc in includes:
-                    if inc and inc in search_text:
+                    if inc and normalize(inc) in search_text:
                         included = True
                         if num:
                             chno_to_apply = num

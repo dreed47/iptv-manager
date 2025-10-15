@@ -38,7 +38,7 @@
         width: 100%;
         margin: 2px 0;
         max-width: 200px;
-        height: 60px;
+        height: 80px;
         resize: vertical;
         font-family: Arial, sans-serif;
         font-size: 12px;
@@ -239,14 +239,15 @@
                 id="includes_{{ item.id }}"
                 name="new_includes"
                 class="textarea-limited"
-                placeholder="One keyword per line&#10;Example:&#10;hbo&#10;premium&#10;sports"
-                maxlength="200"
+                placeholder="One keyword per line&#10;Example:&#10;100|hbo&#10;200|premium&#10;300|sports"
+                maxlength="10000"
+                rows="8"
               >
 {{ item.includes }}</textarea
               >
               <div class="form-help">
                 Overrides excludes - channels containing these words will be
-                included
+                included. Format: number|keyword (e.g., 100|ESPN)
               </div>
             </div>
 
@@ -403,11 +404,12 @@
         <textarea
           id="includes"
           name="includes"
-          placeholder="One keyword per line&#10;Example:&#10;hbo&#10;premium&#10;sports"
-          maxlength="200"
+          placeholder="One keyword per line&#10;Example:&#10;100|hbo&#10;200|premium&#10;300|sports"
+          maxlength="10000"
+          rows="8"
         ></textarea>
         <div class="form-help">
-          Overrides excludes - channels containing these words will be included
+          Overrides excludes - channels containing these words will be included. Format: number|keyword (e.g., 100|ESPN)
         </div>
       </div>
 
