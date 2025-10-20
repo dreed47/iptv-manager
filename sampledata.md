@@ -1,9 +1,9 @@
 # Sample Data
 
-Name: My IPTV
-Server URL: <THE ONE PROVIDED BY YOUR SERVICE PROVIDER>
-Username:
-Password:
+Name: My IPTV.
+Server URL: <THE ONE PROVIDED BY YOUR SERVICE PROVIDER>.
+Username:  
+Password:  
 Languages:
 
 ```
