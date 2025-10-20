@@ -295,7 +295,7 @@
               </div>
             </div>
 
-            <button type="submit" name="edit" value="edit">Edit</button>
+            <button type="submit" name="edit" value="edit">Save</button>
             <button type="submit" name="delete" value="delete">Delete</button>
           </form>
           <form method="POST" action="/generate_m3u">
@@ -336,6 +336,15 @@
                 Copy
               </button>
             </div>
+          </div>
+          <!-- HDHomeRun helper links -->
+          <div style="margin-top: 8px">
+            <strong>HDHR Links:</strong><br />
+            <a href="/discover.json" target="_blank">discover.json</a><br />
+            <a href="/lineup_status.json" target="_blank">lineup_status.json</a
+            ><br />
+            <a href="/lineup.json" target="_blank">lineup.json</a><br />
+            <a href="/hdhr/debug_lineup" target="_blank">debug_lineup</a>
           </div>
           {% endif %}
         </td>
