@@ -134,13 +134,21 @@ def load_channel_lineup(db: Session = Depends(get_db)) -> list:
 async def startup_event():
     logger.info("HDHomeRun emulator lazy-start enabled (will start on first HDHR request)")
 
-def ensure_emulator_started() -> bool:
-    """Start the emulator thread if it's not already running."""
+def ensure_emulator_started(force=False) -> bool:
+    """Start the emulator thread if it's not already running.
+    
+    Args:
+        force: If True, attempt to start even if disabled via environment variable
+    """
     try:
         if not hdhomerun_emulator.is_running():
             logger.info("Starting HDHomeRun emulator thread on demand...")
-            hdhomerun_emulator.start()
-            logger.info("HDHomeRun emulator thread started")
+            result = hdhomerun_emulator.start(force=force)
+            if result:
+                logger.info("HDHomeRun emulator thread started")
+            else:
+                logger.warning("HDHomeRun emulator thread failed to start (may be disabled)")
+            return result
         return True
     except Exception as e:
         logger.error(f"Failed to start emulator: {e}")
@@ -149,19 +157,24 @@ def ensure_emulator_started() -> bool:
 @router.post("/hdhr/enable")
 async def enable_discovery():
     """Enable HDHomeRun discovery"""
-    if ensure_emulator_started():
-        return RedirectResponse(url="/", status_code=303)
-    return RedirectResponse(url="/?error=Failed+to+start+HDHomeRun+emulator", status_code=303)
+    # Use force=True to override environment variable
+    if ensure_emulator_started(force=True):
+        success_msg = "HDHomeRun discovery enabled successfully"
+        if hdhomerun_emulator.is_env_disabled():
+            success_msg += " (Note: Port 1900/UDP may not be exposed - check docker-compose.yml)"
+        return RedirectResponse(url=f"/?success={success_msg}", status_code=303)
+    return RedirectResponse(url="/?error=Failed to start HDHomeRun emulator - port 1900/UDP may not be exposed", status_code=303)
 
 @router.post("/hdhr/disable")
 async def disable_discovery():
     """Disable HDHomeRun discovery"""
     try:
-        hdhomerun_emulator.stop()
-        return RedirectResponse(url="/", status_code=303)
+        if hdhomerun_emulator.stop():
+            return RedirectResponse(url="/?success=HDHomeRun discovery disabled", status_code=303)
+        return RedirectResponse(url="/?error=Failed to stop HDHomeRun emulator", status_code=303)
     except Exception as e:
         logger.error(f"Failed to stop emulator: {e}")
-        return RedirectResponse(url="/?error=Failed+to+stop+HDHomeRun+emulator", status_code=303)
+        return RedirectResponse(url="/?error=Failed to stop HDHomeRun emulator", status_code=303)
 
 @router.get("/discover.json")
 async def hdhr_discover(db: Session = Depends(get_db)):

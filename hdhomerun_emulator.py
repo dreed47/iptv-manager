@@ -4,6 +4,7 @@ import time
 import logging
 import select
 import struct
+import os
 
 logger = logging.getLogger(__name__)
 
@@ -17,6 +18,13 @@ class HDHomeRunEmulator:
         self.running = False
         self.thread = None
         self._stop_event = threading.Event()
+        # Check environment variable for default state, but allow runtime override
+        self._env_disabled = os.getenv("HDHR_DISABLE_SSDP", "0") == "1"
+        self.ssdp_disabled = self._env_disabled
+        
+    def is_env_disabled(self):
+        """Check if SSDP is disabled via environment variable"""
+        return self._env_disabled
     
     def get_host_ip(self):
         """Simple IP detection"""
@@ -78,13 +86,25 @@ HDHomerun-Features: base
             sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 2)
+            
+            # Set timeout on the socket BEFORE bind to prevent hanging on macOS
+            sock.settimeout(5.0)
+            
             try:
                 t0 = time.time()
+                logger.info("Attempting to bind to SSDP port 1900 (may take a few seconds on macOS)...")
                 sock.bind(('0.0.0.0', 1900))
                 t1 = time.time()
                 logger.info(f"SSDP socket.bind completed in {t1 - t0:.3f}s")
+            except socket.timeout:
+                logger.error(f"SSDP bind timed out after 5 seconds - HDHomeRun discovery will not work")
+                logger.error("This is a known issue on macOS Docker. The app will continue without SSDP.")
+                # Don't raise - just log and return
+                self.running = False
+                return
             except Exception as e:
                 logger.error(f"SSDP bind failed: {e}")
+                self.running = False
                 raise
 
             mreq = struct.pack("4sl", socket.inet_aton("239.255.255.250"), socket.INADDR_ANY)
@@ -117,21 +137,43 @@ HDHomerun-Features: base
                 except Exception:
                     pass
     
-    def start(self):
+    def start(self, force=False):
+        """Start SSDP server. 
+        
+        Args:
+            force: If True, override environment variable setting and try to start anyway
+        """
+        if self.ssdp_disabled and not force:
+            logger.warning("SSDP discovery is disabled (HDHR_DISABLE_SSDP=1). HDHomeRun features available via HTTP only.")
+            logger.info("To enable: Use the 'Enable Discovery' button or set HDHR_DISABLE_SSDP=0 and restart")
+            return False
+        
+        if self._env_disabled and force:
+            logger.warning("Attempting to enable SSDP despite HDHR_DISABLE_SSDP=1 environment variable")
+            logger.warning("Note: Port 1900/udp must be exposed in docker-compose.yml for this to work")
+        
         if self.thread is None or not self.thread.is_alive():
             logger.info("Starting SSDP thread for HDHomeRun emulator")
+            self.ssdp_disabled = False
             self.thread = threading.Thread(target=self.run_ssdp_server, daemon=True)
             self.thread.start()
+            return True
+        
+        logger.info("SSDP thread already running")
+        return True
 
     def stop(self, timeout: float = 2.0):
         """Stop the SSDP thread gracefully."""
         try:
             logger.info("Stopping SSDP thread for HDHomeRun emulator")
             self.running = False
+            self.ssdp_disabled = True
             if self.thread is not None and self.thread.is_alive():
                 self.thread.join(timeout)
+            return True
         except Exception as e:
             logger.error(f"Error stopping SSDP thread: {e}")
+            return False
 
     def is_running(self) -> bool:
         """Check if the emulator is running by verifying both the thread state and running flag."""
