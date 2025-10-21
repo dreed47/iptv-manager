@@ -53,6 +53,12 @@ async def index(request: Request, db: Session = Depends(get_db), error: str = No
         item_dict['epg_url'] = f"{base_url}/stream_epg/{item.id}"
         items_with_files.append(item_dict)
 
+    # Determine if SSDP discovery can be safely enabled
+    # SSDP is disabled by default on macOS (HDHR_DISABLE_SSDP=1) to prevent 4-5 minute hangs
+    # If the env var is set to 1, we're likely on macOS and should show the warning
+    ssdp_disabled_by_env = hdhomerun_emulator.is_env_disabled()
+    can_enable_ssdp = not ssdp_disabled_by_env  # Can only enable if not disabled by env
+    
     context = {
         "request": request,
         "items": items_with_files,
@@ -60,6 +66,8 @@ async def index(request: Request, db: Session = Depends(get_db), error: str = No
         "success": success,
         "base_url": base_url,
         "hdhr_running": hdhomerun_emulator.is_running(),
+        "can_enable_ssdp": can_enable_ssdp,
+        "ssdp_disabled_by_env": ssdp_disabled_by_env,
     }
 
     # Render template to measure rendering time (helps diagnose hangs)

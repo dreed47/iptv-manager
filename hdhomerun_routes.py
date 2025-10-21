@@ -177,11 +177,9 @@ async def disable_discovery():
         return RedirectResponse(url="/?error=Failed to stop HDHomeRun emulator", status_code=303)
 
 @router.get("/discover.json")
-async def hdhr_discover(db: Session = Depends(get_db)):
+async def hdhr_discover():
     """Return device discovery info"""
-    if not ensure_emulator_started():
-        raise HTTPException(status_code=503, detail="HDHomeRun emulator not running")
-        
+    # Note: SSDP doesn't need to be running for HTTP endpoints to work
     base_url = get_advertised_base_url()
     return {
         "FriendlyName": hdhomerun_emulator.friendly_name,
@@ -198,9 +196,7 @@ async def hdhr_discover(db: Session = Depends(get_db)):
 @router.get("/lineup_status.json")
 async def hdhr_lineup_status(db: Session = Depends(get_db)):
     """Return scanning status"""
-    if not ensure_emulator_started():
-        raise HTTPException(status_code=503, detail="HDHomeRun emulator not running")
-        
+    # Note: SSDP doesn't need to be running for HTTP endpoints to work
     channels = load_channel_lineup(db)
     return {
         "ScanInProgress": 0,
@@ -213,16 +209,13 @@ async def hdhr_lineup_status(db: Session = Depends(get_db)):
 @router.get("/lineup.json")
 async def hdhr_lineup(db: Session = Depends(get_db)):
     """Return channel lineup"""
-    if not ensure_emulator_started():
-        raise HTTPException(status_code=503, detail="HDHomeRun emulator not running")
-        
+    # Note: SSDP doesn't need to be running for HTTP endpoints to work
     return load_channel_lineup(db)
 
 @router.post("/lineup.post")
 async def hdhr_lineup_post(request: Request, db: Session = Depends(get_db)):
     """Handle lineup commands"""
-    if not ensure_emulator_started():
-        raise HTTPException(status_code=503, detail="HDHomeRun emulator not running")
+    # Note: SSDP doesn't need to be running for HTTP endpoints to work
     
     form = await request.form()
     scan = form.get("scan")
