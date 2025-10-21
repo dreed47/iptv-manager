@@ -1,0 +1,8 @@
+version: '3'
+services:
+  app:
+    ports:
+      - "5005:5005"
+      # Do NOT expose 1900/udp on macOS
+    environment:
+      - HDHR_DISABLE_SSDP=1
