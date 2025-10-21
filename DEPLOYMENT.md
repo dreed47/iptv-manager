@@ -1,14 +1,58 @@
 # Deployment Guide
 
-## Universal Configuration
+## Quick Start
 
-**Good news: The same `docker-compose.yml` works perfectly on both macOS and Debian/Linux!**
-
-No platform-specific changes needed. Just run:
+### Linux/Debian (Production)
 
 ```bash
+git clone <repo>
+cd iptv-manager
+
+# Copy sample environment file
+cp sample.env .env
+
+# Edit .env and update your server's IP address
+# HDHR_ADVERTISE_HOST=<your-server-ip>
+# HDHR_DISABLE_SSDP=0  (already set correctly for Linux)
+
+# Start the application
 docker-compose up -d
+
+# Access web UI
+open http://<your-server-ip>:5005
 ```
+
+### macOS (Development/Testing)
+
+```bash
+git clone <repo>
+cd iptv-manager
+
+# Copy sample environment file
+cp sample.env .env
+
+# Edit .env - NO CHANGES NEEDED for macOS!
+# HDHR_DISABLE_SSDP is already 0 by default
+# The docker-compose-macos.yml override will set it to 1 automatically
+
+# Start with macOS override (prevents 4-5 minute hang)
+docker-compose -f docker-compose.yml -f docker-compose-macos.yml up -d
+
+# Access web UI
+open http://localhost:5005
+```
+
+---
+
+## Platform Differences
+
+| Platform     | Command                                                                  | SSDP Auto-Discovery |
+| ------------ | ------------------------------------------------------------------------ | ------------------- |
+| Linux/Debian | `docker-compose up -d`                                                   | ✅ Available        |
+| macOS        | `docker-compose -f docker-compose.yml -f docker-compose-macos.yml up -d` | ⚠️ Not recommended  |
+
+**Why the difference?**
+macOS Docker has a bug where binding to UDP port 1900 hangs for 4-5 minutes. The macOS override file disables SSDP to prevent this.
 
 ---
 
@@ -75,14 +119,25 @@ open http://<your-server-ip>:5005
 
 ---
 
-## Environment Variables
+## Environment Variables (.env file)
 
-| Variable              | Default          | Description                            |
-| --------------------- | ---------------- | -------------------------------------- |
-| `HDHR_ADVERTISE_HOST` | `192.168.86.254` | Your server's IP address               |
-| `HDHR_ADVERTISE_PORT` | `5005`           | HTTP port                              |
-| `HDHR_SCHEME`         | `http`           | Protocol                               |
-| `HDHR_DISABLE_SSDP`   | `1`              | SSDP disabled (safe for all platforms) |
+Create a `.env` file from the sample:
+
+```bash
+cp sample.env .env
+```
+
+| Variable              | Default          | Description                                                      |
+| --------------------- | ---------------- | ---------------------------------------------------------------- |
+| `HDHR_ADVERTISE_HOST` | `192.168.86.254` | **Update this** to your server's IP address                      |
+| `HDHR_ADVERTISE_PORT` | `5005`           | HTTP port                                                        |
+| `HDHR_SCHEME`         | `http`           | Protocol                                                         |
+| `HDHR_DISABLE_SSDP`   | `0`              | `0` = SSDP enabled (Linux), `1` = disabled (macOS auto-override) |
+
+**Important:**
+
+- On Linux: `.env` has `HDHR_DISABLE_SSDP=0` - Enable/Disable buttons will appear in web UI
+- On macOS: `docker-compose-macos.yml` automatically overrides to `HDHR_DISABLE_SSDP=1` - Shows manual setup instructions in web UI
 
 ---
 
