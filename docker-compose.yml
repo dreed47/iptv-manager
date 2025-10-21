@@ -6,21 +6,21 @@ services:
       - HDHR_ADVERTISE_HOST=192.168.86.254
       - HDHR_ADVERTISE_PORT=5005
       - HDHR_SCHEME=http
-      # Add DNS configuration
-      - UVICORN_DNS_RESOLVER=1.1.1.1
+      # SSDP disabled by default - prevents macOS Docker hang
+      # Enable via web UI "Enable Discovery" button if needed
+      - HDHR_DISABLE_SSDP=1
     ports:
       - "5005:5005"
-      - "1900:1900/udp"
+      # Port 1900 not exposed - SSDP can be enabled via web UI if needed
+      # Uncomment only if you want auto-discovery AND you're on Linux
+      # - "1900:1900/udp"
     volumes:
-      # Only mount the data directories that need persistence
       - ./m3u_files:/app/m3u_files
       - ./data:/app/data
     restart: unless-stopped
-    privileged: true
-    # Add network settings
     dns:
-      - 1.1.1.1  # Cloudflare DNS
-      - 8.8.8.8  # Google DNS
-    dns_search: []  # Disable DNS search
+      - 1.1.1.1
+      - 8.8.8.8
+    dns_search: []
     extra_hosts:
-      - "host.docker.internal:host-gateway"  # Ensure host resolution works
+      - "host.docker.internal:host-gateway"

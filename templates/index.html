@@ -459,6 +459,44 @@
             }, 2000);
           });
       }
+
+      function copyEpgUrl(itemId) {
+        const epgUrl = "{{ base_url }}/stream_epg/" + itemId;
+
+        navigator.clipboard
+          .writeText(epgUrl)
+          .then(function () {
+            const btn = event.target;
+            const originalText = btn.textContent;
+            btn.textContent = "Copied!";
+            btn.style.backgroundColor = "#45a049";
+
+            setTimeout(() => {
+              btn.textContent = originalText;
+              btn.style.backgroundColor = "#4CAF50";
+            }, 2000);
+          })
+          .catch(function (err) {
+            console.error("Could not copy text: ", err);
+            // Fallback for older browsers
+            const textArea = document.createElement("textarea");
+            textArea.value = epgUrl;
+            document.body.appendChild(textArea);
+            textArea.select();
+            document.execCommand("copy");
+            document.body.removeChild(textArea);
+
+            const btn = event.target;
+            const originalText = btn.textContent;
+            btn.textContent = "Copied!";
+            btn.style.backgroundColor = "#45a049";
+
+            setTimeout(() => {
+              btn.textContent = originalText;
+              btn.style.backgroundColor = "#4CAF50";
+            }, 2000);
+          });
+      }
     </script>
   </body>
 </html>
