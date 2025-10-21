@@ -4,3 +4,5 @@
 data.db
 
 startup.log
+
+.env

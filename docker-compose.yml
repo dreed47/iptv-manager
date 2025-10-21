@@ -3,12 +3,12 @@ services:
   app:
     build: .
     environment:
-      - HDHR_ADVERTISE_HOST=192.168.86.254
-      - HDHR_ADVERTISE_PORT=5005
-      - HDHR_SCHEME=http
+      - HDHR_ADVERTISE_HOST=${HDHR_ADVERTISE_HOST}
+      - HDHR_ADVERTISE_PORT=${HDHR_ADVERTISE_PORT}
+      - HDHR_SCHEME=${HDHR_SCHEME}
       # SSDP disabled by default - prevents macOS Docker hang
       # Enable via web UI "Enable Discovery" button if needed
-      - HDHR_DISABLE_SSDP=1
+      - HDHR_DISABLE_SSDP=${HDHR_DISABLE_SSDP}
     ports:
       - "5005:5005"
       # Port 1900 not exposed - SSDP can be enabled via web UI if needed
