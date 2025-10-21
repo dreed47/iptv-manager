@@ -103,21 +103,46 @@
   <body>
     <h1>IPTV Configurations</h1>
 
-    <div style="margin-bottom: 10px">
-      <form method="POST" action="/hdhr/enable" style="display: inline">
-        {% if not hdhr_running %}
-        <button type="submit">Enable Discovery (for Plex)</button>
+    <div class="discovery-controls">
+      <strong>HDHomeRun Discovery (SSDP)</strong>
+      <div style="margin-top: 8px">
+        {% if can_enable_ssdp %}
+          <form method="POST" action="/hdhr/enable" style="display: inline">
+            {% if not hdhr_running %}
+            <button type="submit">Enable Discovery (for Plex)</button>
+            {% endif %}
+          </form>
+          <form method="POST" action="/hdhr/disable" style="display: inline">
+            {% if hdhr_running %}
+            <button type="submit">Disable Discovery</button>
+            {% endif %}
+          </form>
+          <span style="margin-left: 12px; font-size: 12px; color: #666"
+            >Status: {% if hdhr_running %}enabled{% else %}disabled{% endif %}</span
+          >
+        {% else %}
+          <p style="margin: 8px 0; color: #ff6600; font-size: 13px">
+            ⚠️ Auto-discovery is disabled by default on macOS to prevent 4-5 minute startup hangs.
+          </p>
+          <p style="margin: 8px 0; font-size: 13px; color: #2e7d32">
+            <strong>✓ Recommended Approach:</strong> Manually add the HDHomeRun device in Plex instead of using auto-discovery.
+          </p>
+          <p style="margin: 4px 0 4px 20px; font-size: 12px; color: #666">
+            In Plex, go to Settings → Live TV & DVR → Set Up Plex DVR → Enter the network address manually:<br/>
+            <code style="background: #f0f0f0; padding: 2px 6px; border-radius: 3px;">http://&lt;your-ip&gt;:5005</code>
+          </p>
+          <p style="margin: 16px 0 4px 0; font-size: 12px; color: #666">
+            <strong>If you really want auto-discovery on macOS:</strong>
+          </p>
+          <ol style="margin: 4px 0 4px 20px; font-size: 12px; color: #666">
+            <li>Stop the container: <code>docker-compose down</code></li>
+            <li>Edit your <code>.env</code> file: set <code>HDHR_DISABLE_SSDP=0</code></li>
+            <li>Uncomment port 1900/udp in <code>docker-compose.yml</code></li>
+            <li>Restart: <code>docker-compose -f docker-compose.yml -f docker-compose-macos.yml up</code></li>
+            <li><strong>Warning:</strong> First startup will hang for 4-5 minutes due to macOS Docker UDP port binding issue</li>
+          </ol>
         {% endif %}
-      </form>
-      <form method="POST" action="/hdhr/disable" style="display: inline">
-        {% if hdhr_running %}
-        <button type="submit">Disable Discovery</button>
-        {% endif %}
-      </form>
-      <span style="margin-left: 12px; font-size: 12px; color: #666"
-        >SSDP discovery is {% if hdhr_running %}enabled{% else %}disabled{%
-        endif %}</span
-      >
+      </div>
     </div>
 
     {% if success %}
