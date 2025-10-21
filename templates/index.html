@@ -4,193 +4,461 @@
     <meta charset="UTF-8" />
     <title>IPTV Manager</title>
     <style>
-      table,
-      th,
-      td {
-        border: 1px solid black;
-        border-collapse: collapse;
-        padding: 5px;
+      * {
+        box-sizing: border-box;
       }
-      /* limit column widths for long multiline cells */
-      .col-limited {
-        max-width: 220px;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
+      
+      body {
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+        background: linear-gradient(135deg, #2c3e50 0%, #3498db 100%);
+        margin: 0;
+        padding: 20px;
+        color: #333;
+        min-height: 100vh;
       }
-      /* allow wrapping inside edit textareas but keep visual width limited */
-      .textarea-limited {
-        max-width: 220px;
-        width: 220px;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: pre-wrap; /* preserve newlines but allow wrap */
+      
+      .container {
+        max-width: 1400px;
+        margin: 0 auto;
+        background: #f8f9fa;
+        border-radius: 8px;
+        box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
+        padding: 24px;
       }
-      th {
-        background-color: #f2f2f2;
+      
+      h1 {
+        color: #2c3e50;
+        margin: 0 0 6px 0;
+        font-size: 28px;
+        font-weight: 600;
       }
-      input[type="text"] {
-        width: 100%;
-        margin: 2px 0;
-        max-width: 200px;
+      
+      h1 a:hover {
+        color: #3498db !important;
       }
-      textarea {
-        width: 100%;
-        margin: 2px 0;
-        max-width: 200px;
-        height: 80px;
-        resize: vertical;
-        font-family: Arial, sans-serif;
-        font-size: 12px;
+      
+      h2 {
+        color: #34495e;
+        font-size: 20px;
+        font-weight: 600;
+        margin: 24px 0 16px 0;
+        padding-bottom: 8px;
+        border-bottom: 2px solid #dee2e6;
       }
-      button {
-        margin: 2px;
-      }
+      
       .error {
-        color: red;
+        background-color: #fee;
+        color: #c33;
+        padding: 12px 16px;
+        border-radius: 6px;
+        border-left: 4px solid #c33;
+        margin: 15px 0;
       }
-      .discovery-controls {
-        margin: 20px 0;
-        padding: 10px;
-        background-color: #f8f8f8;
-        border: 1px solid #ddd;
-        border-radius: 4px;
-      }
-      }
+      
       .success {
-        color: green;
+        background-color: #efe;
+        color: #2d7a2d;
+        padding: 12px 16px;
+        border-radius: 6px;
+        border-left: 4px solid #2d7a2d;
+        margin: 15px 0;
       }
-      .stream-url {
-        background-color: #f0f8ff;
-        padding: 8px;
-        margin: 5px 0;
+      
+      .discovery-controls {
+        margin: 16px 0 20px 0;
+        padding: 16px;
+        background: #ffffff;
+        border-radius: 6px;
+        border: 1px solid #dee2e6;
+        box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+      }
+      
+      .discovery-controls strong {
+        font-size: 15px;
+        color: #2c3e50;
+        display: block;
+        margin-bottom: 10px;
+      }
+      
+      /* Configuration Card Styles */
+      .config-card {
+        background: #ffffff;
+        border: 1px solid #dee2e6;
+        border-radius: 6px;
+        padding: 20px;
+        margin-bottom: 20px;
+        box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+        transition: box-shadow 0.2s ease;
+      }
+      
+      .config-card:hover {
+        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
+      }
+      
+      .card-header {
+        display: grid;
+        grid-template-columns: 2fr 2fr 1.5fr 1.5fr;
+        gap: 14px;
+        padding-bottom: 16px;
+        border-bottom: 1px solid #e9ecef;
+        margin-bottom: 16px;
+      }
+      
+      .card-body {
+        display: grid;
+        grid-template-columns: 1fr 2fr 2fr 1.5fr;
+        gap: 16px;
+        margin-bottom: 16px;
+      }
+      
+      .card-footer {
+        display: grid;
+        grid-template-columns: 1fr 2fr;
+        gap: 20px;
+        padding-top: 16px;
+        border-top: 1px solid #e9ecef;
+      }
+      
+      .field-group {
+        display: flex;
+        flex-direction: column;
+      }
+      
+      .field-label {
+        font-weight: 600;
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+        color: #6c757d;
+        margin-bottom: 5px;
+      }
+      
+      .field-value {
+        font-size: 14px;
+        color: #212529;
+        padding: 8px 10px;
+        background: #f8f9fa;
         border-radius: 4px;
-        word-break: break-all;
-        font-family: monospace;
-        font-size: 12px;
+        border: 1px solid #dee2e6;
       }
-      .copy-btn {
-        background-color: #4caf50;
-        color: white;
-        border: none;
-        padding: 4px 8px;
-        border-radius: 3px;
-        cursor: pointer;
-        margin-left: 8px;
+      
+      .field-value-multi {
+        font-size: 13px;
+        color: #495057;
+        padding: 8px 10px;
+        background: #f8f9fa;
+        border-radius: 4px;
+        border: 1px solid #dee2e6;
+        max-height: 100px;
+        overflow-y: auto;
+        white-space: pre-line;
+        line-height: 1.5;
       }
-      .copy-btn:hover {
-        background-color: #45a049;
-      }
+      
+      /* Form Styles */
       .form-group {
-        margin-bottom: 8px;
+        margin-bottom: 10px;
       }
+      
       .form-label {
         display: block;
-        font-weight: bold;
-        margin-bottom: 2px;
+        font-weight: 600;
+        margin-bottom: 5px;
         font-size: 12px;
+        color: #495057;
       }
+      
       .form-help {
         font-size: 11px;
-        color: #666;
-        margin-top: 2px;
+        color: #6c757d;
+        margin-top: 3px;
+        font-style: italic;
       }
-      .channel-row {
-        vertical-align: top;
+      
+      input[type="text"] {
+        width: 100%;
+        padding: 8px 10px;
+        border: 1px solid #ced4da;
+        border-radius: 4px;
+        font-size: 14px;
+        transition: border-color 0.2s ease;
+        font-family: inherit;
+        background: #ffffff;
+      }
+      
+      input[type="text"]:focus {
+        outline: none;
+        border-color: #3498db;
+        box-shadow: 0 0 0 3px rgba(52, 152, 219, 0.1);
+      }
+      
+      textarea {
+        width: 100%;
+        padding: 8px 10px;
+        border: 1px solid #ced4da;
+        border-radius: 4px;
+        font-size: 13px;
+        resize: vertical;
+        font-family: 'Courier New', monospace;
+        line-height: 1.4;
+        transition: border-color 0.2s ease;
+        background: #ffffff;
+      }
+      
+      textarea:focus {
+        outline: none;
+        border-color: #3498db;
+        box-shadow: 0 0 0 3px rgba(52, 152, 219, 0.1);
+      }
+      
+      /* Button Styles */
+      button {
+        padding: 8px 16px;
+        border: none;
+        border-radius: 4px;
+        font-size: 13px;
+        font-weight: 600;
+        cursor: pointer;
+        transition: all 0.2s ease;
+        margin: 3px;
+        box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12);
+      }
+      
+      button[type="submit"][name="edit"],
+      button[type="submit"][value="add"] {
+        background: #3498db;
+        color: white;
+      }
+      
+      button[type="submit"][name="edit"]:hover,
+      button[type="submit"][value="add"]:hover {
+        background: #2980b9;
+        transform: translateY(-1px);
+        box-shadow: 0 2px 6px rgba(52, 152, 219, 0.3);
+      }
+      
+      button[type="submit"][name="delete"] {
+        background: #95a5a6;
+        color: white;
+      }
+      
+      button[type="submit"][name="delete"]:hover {
+        background: #7f8c8d;
+        transform: translateY(-1px);
+        box-shadow: 0 2px 6px rgba(127, 140, 141, 0.3);
+      }
+      
+      button[type="submit"]:not([name="edit"]):not([name="delete"]):not([value="add"]) {
+        background: #2c3e50;
+        color: white;
+      }
+      
+      button[type="submit"]:not([name="edit"]):not([name="delete"]):not([value="add"]):hover {
+        background: #1a252f;
+        transform: translateY(-1px);
+        box-shadow: 0 2px 6px rgba(44, 62, 80, 0.3);
+      }
+      
+      .copy-btn {
+        background: #27ae60;
+        color: white;
+        border: none;
+        padding: 5px 10px;
+        border-radius: 4px;
+        cursor: pointer;
+        font-size: 12px;
+        font-weight: 600;
+        margin-left: 6px;
+        transition: all 0.2s ease;
+      }
+      
+      .copy-btn:hover {
+        background: #229954;
+        transform: translateY(-1px);
+      }
+      
+      /* Actions and Links Section */
+      .actions-section {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+      }
+      
+      .actions-section form {
+        margin: 0;
+      }
+      
+      .links-section {
+        background: #f8f9fa;
+        padding: 14px;
+        border-radius: 4px;
+        border: 1px solid #dee2e6;
+      }
+      
+      .links-section h3 {
+        margin: 0 0 10px 0;
+        font-size: 12px;
+        color: #495057;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+      }
+      
+      .stream-url {
+        background-color: #e7f5e7;
+        padding: 8px 10px;
+        margin: 6px 0;
+        border-radius: 4px;
+        word-break: break-all;
+        font-family: 'Courier New', monospace;
+        font-size: 11px;
+        border: 1px solid #c3e6cb;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+      }
+      
+      .link-item {
+        margin: 5px 0;
+      }
+      
+      .link-item a {
+        color: #3498db;
+        text-decoration: none;
+        font-size: 12px;
+        font-weight: 500;
+      }
+      
+      .link-item a:hover {
+        color: #2980b9;
+        text-decoration: underline;
+      }
+      
+      /* Add New Form */
+      .add-new-form {
+        background: #ffffff;
+        padding: 20px;
+        border-radius: 6px;
+        border: 1px solid #dee2e6;
+        box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+      }
+      
+      .form-row {
+        display: grid;
+        grid-template-columns: repeat(2, 1fr);
+        gap: 14px;
+        margin-bottom: 14px;
+      }
+      
+      @media (max-width: 1200px) {
+        .card-header {
+          grid-template-columns: 1fr 1fr;
+        }
+        
+        .card-body {
+          grid-template-columns: 1fr;
+        }
+        
+        .card-footer {
+          grid-template-columns: 1fr;
+        }
+      }
+      
+      @media (max-width: 768px) {
+        .card-header {
+          grid-template-columns: 1fr;
+        }
+        
+        .form-row {
+          grid-template-columns: 1fr;
+        }
       }
     </style>
   </head>
   <body>
-    <h1>IPTV Configurations</h1>
+    <div class="container">
+      <h1><a href="/" style="color: #2c3e50; text-decoration: none; transition: color 0.2s ease;">🎬 IPTV Manager</a></h1>
+      <p style="color: #666; margin-top: 0;">Manage your IPTV configurations and playlists</p>
 
-    <div class="discovery-controls">
-      <strong>HDHomeRun Discovery (SSDP)</strong>
-      <div style="margin-top: 8px">
-        {% if can_enable_ssdp %}
-          <form method="POST" action="/hdhr/enable" style="display: inline">
-            {% if not hdhr_running %}
-            <button type="submit">Enable Discovery (for Plex)</button>
-            {% endif %}
-          </form>
-          <form method="POST" action="/hdhr/disable" style="display: inline">
-            {% if hdhr_running %}
-            <button type="submit">Disable Discovery</button>
-            {% endif %}
-          </form>
-          <span style="margin-left: 12px; font-size: 12px; color: #666"
-            >Status: {% if hdhr_running %}enabled{% else %}disabled{% endif %}</span
-          >
-        {% else %}
-          <p style="margin: 8px 0; color: #ff6600; font-size: 13px">
-            ⚠️ Auto-discovery is disabled by default on macOS to prevent 4-5 minute startup hangs.
-          </p>
-          <p style="margin: 8px 0; font-size: 13px; color: #2e7d32">
-            <strong>✓ Recommended Approach:</strong> Manually add the HDHomeRun device in Plex instead of using auto-discovery.
-          </p>
-          <p style="margin: 4px 0 4px 20px; font-size: 12px; color: #666">
-            In Plex, go to Settings → Live TV & DVR → Set Up Plex DVR → Enter the network address manually:<br/>
-            <code style="background: #f0f0f0; padding: 2px 6px; border-radius: 3px;">http://&lt;your-ip&gt;:5005</code>
-          </p>
-          <p style="margin: 16px 0 4px 0; font-size: 12px; color: #666">
-            <strong>If you really want auto-discovery on macOS:</strong>
-          </p>
-          <ol style="margin: 4px 0 4px 20px; font-size: 12px; color: #666">
-            <li>Stop the container: <code>docker-compose down</code></li>
-            <li>Edit your <code>.env</code> file: set <code>HDHR_DISABLE_SSDP=0</code></li>
-            <li>Uncomment port 1900/udp in <code>docker-compose.yml</code></li>
-            <li>Restart: <code>docker-compose -f docker-compose.yml -f docker-compose-macos.yml up</code></li>
-            <li><strong>Warning:</strong> First startup will hang for 4-5 minutes due to macOS Docker UDP port binding issue</li>
-          </ol>
-        {% endif %}
+      <div class="discovery-controls">
+        <strong>🔍 HDHomeRun Discovery (SSDP)</strong>
+        <div style="margin-top: 8px">
+          {% if can_enable_ssdp %}
+            <form method="POST" action="/hdhr/enable" style="display: inline">
+              {% if not hdhr_running %}
+              <button type="submit">Enable Discovery (for Plex)</button>
+              {% endif %}
+            </form>
+            <form method="POST" action="/hdhr/disable" style="display: inline">
+              {% if hdhr_running %}
+              <button type="submit">Disable Discovery</button>
+              {% endif %}
+            </form>
+            <span style="margin-left: 12px; font-size: 13px; color: #555; font-weight: 500;">
+              Status: <strong style="color: {% if hdhr_running %}#27ae60{% else %}#95a5a6{% endif %}">
+                {% if hdhr_running %}Enabled ✓{% else %}Disabled{% endif %}
+              </strong>
+            </span>
+          {% else %}
+            <!-- Collapsible macOS warning - collapsed by default -->
+            <!-- DEBUG: can_enable_ssdp={{ can_enable_ssdp }}, ssdp_disabled_by_env={{ ssdp_disabled_by_env }} -->
+            <div style="margin-top: 8px;">
+              <button 
+                type="button"
+                onclick="toggleMacOSInstructions(this)"
+                style="background: transparent; border: 1px solid #e67e22; color: #e67e22; padding: 8px 16px; font-size: 13px; cursor: pointer; border-radius: 4px; font-weight: 500; margin-bottom: 12px;"
+              >
+                ⚠️ macOS: Auto-discovery disabled (click for details)
+              </button>
+              
+              <div id="macos-instructions" style="display: none; margin-top: 12px; padding: 16px; background: #fff3cd; border-left: 4px solid #e67e22; border-radius: 4px;">
+                <p style="margin: 0 0 12px 0; color: #e67e22; font-size: 14px; font-weight: 500;">
+                  ⚠️ Auto-discovery is disabled by default on macOS to prevent 4-5 minute startup hangs.
+                </p>
+                <p style="margin: 0 0 12px 0; font-size: 14px; color: #27ae60; font-weight: 600;">
+                  ✓ Recommended Approach: Manually add the HDHomeRun device in Plex instead of using auto-discovery.
+                </p>
+                <p style="margin: 0 0 16px 0; font-size: 13px; color: #555;">
+                  In Plex, go to Settings → Live TV & DVR → Set Up Plex DVR → Enter the network address manually:<br/>
+                  <code style="background: #34495e; color: #ecf0f1; padding: 4px 8px; border-radius: 4px; font-size: 12px;">http://&lt;your-ip&gt;:5005</code>
+                </p>
+                
+                <p style="margin: 16px 0 8px 0; font-size: 13px; color: #555; font-weight: 600;">
+                  If you really want auto-discovery on macOS:
+                </p>
+                <ol style="margin: 4px 0 0 20px; font-size: 12px; color: #666; line-height: 1.8;">
+                  <li>Stop the container: <code style="background: #ecf0f1; padding: 2px 6px; border-radius: 3px;">docker-compose down</code></li>
+                  <li>Edit your <code style="background: #ecf0f1; padding: 2px 6px; border-radius: 3px;">.env</code> file: set <code style="background: #ecf0f1; padding: 2px 6px; border-radius: 3px;">HDHR_DISABLE_SSDP=0</code></li>
+                  <li>Uncomment port 1900/udp in <code style="background: #ecf0f1; padding: 2px 6px; border-radius: 3px;">docker-compose.yml</code></li>
+                  <li>Restart: <code style="background: #ecf0f1; padding: 2px 6px; border-radius: 3px;">docker-compose -f docker-compose.yml -f docker-compose-macos.yml up</code></li>
+                  <li><strong style="color: #e74c3c;">Warning:</strong> First startup will hang for 4-5 minutes due to macOS Docker UDP port binding issue</li>
+                </ol>
+              </div>
+            </div>
+          {% endif %}
+        </div>
       </div>
-    </div>
 
-    {% if success %}
-    <p class="success">{{ success }}</p>
-    {% endif %} {% if error %}
-    <p class="error">{{ error }}</p>
-    {% endif %}
+      {% if success %}
+      <p class="success">✓ {{ success }}</p>
+      {% endif %}
+      
+      {% if error %}
+      <p class="error">✗ {{ error }}</p>
+      {% endif %}
 
-    <!-- List of items -->
-    <table>
-      <tr>
-        <th>Name</th>
-        <th>Server URL</th>
-        <th>Username</th>
-        <th>Password</th>
-        <th>Languages</th>
-        <th class="col-limited">Includes</th>
-        <th class="col-limited">Excludes</th>
-        <th class="col-limited">EPG Channels</th>
-        <th>Actions</th>
-        <th>Downloads & Streaming</th>
-      </tr>
+      <!-- Configuration Cards -->
+      <h2>📋 IPTV Configurations</h2>
+      
       {% for item in items %}
-      <tr class="channel-row">
-        <td>{{ item.name }}</td>
-        <td>{{ item.server_url }}</td>
-        <td>{{ item.username }}</td>
-        <td>{{ item.user_pass }}</td>
-        <td>{{ item.languages }}</td>
-        <td
-          class="col-limited"
-          title="{{ item.includes }}"
-          style="white-space: pre-line"
-        >
-          {{ item.includes | replace(',', ' ') }}
-        </td>
-        <td class="col-limited" title="{{ item.excludes }}">
-          {{ item.excludes }}
-        </td>
-        <td class="col-limited" title="{{ item.epg_channels }}">
-          {{ item.epg_channels }}
-        </td>
-        <td>
-          <form method="POST" action="/">
-            <input type="hidden" name="item_id" value="{{ item.id }}" />
-
+      <div class="config-card">
+        <form method="POST" action="/">
+          <input type="hidden" name="item_id" value="{{ item.id }}" />
+          
+          <!-- Card Header: Name, Server, Username, Password -->
+          <div class="card-header">
             <div class="form-group">
-              <label class="form-label" for="name_{{ item.id }}">Name:</label>
+              <label class="form-label" for="name_{{ item.id }}">Configuration Name</label>
               <input
                 type="text"
                 id="name_{{ item.id }}"
@@ -202,9 +470,7 @@
             </div>
 
             <div class="form-group">
-              <label class="form-label" for="server_url_{{ item.id }}"
-                >Server URL:</label
-              >
+              <label class="form-label" for="server_url_{{ item.id }}">Server URL</label>
               <input
                 type="text"
                 id="server_url_{{ item.id }}"
@@ -216,9 +482,7 @@
             </div>
 
             <div class="form-group">
-              <label class="form-label" for="username_{{ item.id }}"
-                >Username:</label
-              >
+              <label class="form-label" for="username_{{ item.id }}">Username</label>
               <input
                 type="text"
                 id="username_{{ item.id }}"
@@ -230,9 +494,7 @@
             </div>
 
             <div class="form-group">
-              <label class="form-label" for="user_pass_{{ item.id }}"
-                >Password:</label
-              >
+              <label class="form-label" for="user_pass_{{ item.id }}">Password</label>
               <input
                 type="text"
                 id="user_pass_{{ item.id }}"
@@ -242,196 +504,221 @@
                 required
               />
             </div>
+          </div>
 
+          <!-- Card Body: Languages, Includes, Excludes, EPG Channels -->
+          <div class="card-body">
             <div class="form-group">
-              <label class="form-label" for="languages_{{ item.id }}"
-                >Languages:</label
-              >
+              <label class="form-label" for="languages_{{ item.id }}">Languages</label>
               <textarea
                 id="languages_{{ item.id }}"
                 name="new_languages"
-                placeholder="One language code per line&#10;Example:&#10;fr&#10;en&#10;es"
+                placeholder="One per line&#10;fr&#10;en&#10;es"
                 maxlength="200"
-              >
-{{ item.languages | replace(',', '
-') }}</textarea
-              >
+                rows="4"
+              >{{ item.languages | replace(',', '\n') }}</textarea>
               <div class="form-help">
-                Extracted from tvg-name prefix like "FR - Show Name"
+                Language codes from tvg-name prefix (e.g., "FR - Show Name")
               </div>
             </div>
 
             <div class="form-group">
-              <label class="form-label" for="includes_{{ item.id }}"
-                >Includes:</label
-              >
+              <label class="form-label" for="includes_{{ item.id }}">Includes (Priority)</label>
               <textarea
                 id="includes_{{ item.id }}"
                 name="new_includes"
-                class="textarea-limited"
-                placeholder="One keyword per line&#10;Example:&#10;100|hbo&#10;200|premium&#10;300|sports"
+                placeholder="One per line&#10;100|hbo&#10;200|premium&#10;300|sports"
                 maxlength="10000"
-                rows="45"
-                style="height: 250px"
-              >
-{{ item.includes | replace(',', '
-') }}</textarea
-              >
+                rows="8"
+              >{{ item.includes | replace(',', '\n') }}</textarea>
               <div class="form-help">
-                Overrides excludes - channels containing these words will be
-                included. Format: number|keyword (e.g., 100|ESPN)
+                Overrides excludes. Format: number|keyword (e.g., 100|ESPN)
               </div>
             </div>
 
             <div class="form-group">
-              <label class="form-label" for="excludes_{{ item.id }}"
-                >Excludes:</label
-              >
+              <label class="form-label" for="excludes_{{ item.id }}">Excludes</label>
               <textarea
                 id="excludes_{{ item.id }}"
                 name="new_excludes"
-                class="textarea-limited"
-                placeholder="One keyword per line&#10;Example:&#10;telemundo&#10;sling&#10;adult"
+                placeholder="One per line&#10;telemundo&#10;sling&#10;adult"
                 maxlength="200"
-              >
-{{ item.excludes | replace(',', '
-') }}</textarea
-              >
+                rows="4"
+              >{{ item.excludes | replace(',', '\n') }}</textarea>
               <div class="form-help">
-                Excludes channels containing these words (unless also in
-                includes)
+                Exclude channels containing these keywords
               </div>
             </div>
+
             <div class="form-group">
-              <label class="form-label" for="epg_channels_{{ item.id }}"
-                >EPG Channels:</label
-              >
+              <label class="form-label" for="epg_channels_{{ item.id }}">EPG Channels</label>
               <textarea
                 id="epg_channels_{{ item.id }}"
                 name="new_epg_channels"
-                placeholder="One channel name per line&#10;Example:&#10;US: CW PITTSBURGH&#10;US: FOX NEWS&#10;NFL REDZONE"
+                placeholder="One per line&#10;US: CW PITTSBURGH&#10;US: FOX NEWS&#10;NFL REDZONE"
                 maxlength="1000"
                 rows="4"
-              >
-{{ item.epg_channels }}</textarea
-              >
+              >{{ item.epg_channels }}</textarea>
               <div class="form-help">
-                One channel name per line for EPG filtering (exact match)
+                Channel names for EPG filtering (exact match)
               </div>
             </div>
+          </div>
 
-            <button type="submit" name="edit" value="edit">Save</button>
-            <button type="submit" name="delete" value="delete">Delete</button>
-          </form>
-          <form method="POST" action="/generate_m3u">
-            <input type="hidden" name="item_id" value="{{ item.id }}" />
-            <button type="submit">Fetch M3U</button>
-          </form>
-          <form method="POST" action="/generate_filtered_m3u">
-            <input type="hidden" name="item_id" value="{{ item.id }}" />
-            <button type="submit">Fetch Filtered M3U</button>
-          </form>
-        </td>
-        <td>
-          {% if item.has_m3u %}
-          <a href="/download_m3u/{{ item.id }}" download>Download M3U</a><br />
-          {% endif %} {% if item.has_filtered %}
-          <a href="/download_filtered_m3u/{{ item.id }}" download
-            >Download Filtered M3U</a
-          ><br />
-          <!-- Streaming URL Section -->
-          <div style="margin-top: 8px">
-            <strong>Streaming URL:</strong>
-            <div class="stream-url">
-              <span id="stream-url-text-{{ item.id }}"
-                >{{ item.stream_url }}</span
-              >
-              <button class="copy-btn" onclick="copyStreamUrl('{{ item.id }}')">
-                Copy
-              </button>
+          <!-- Card Footer: Actions and Streaming Links -->
+          <div class="card-footer">
+            <div class="actions-section">
+              <div style="margin-bottom: 12px;">
+                <strong style="color: #667eea; font-size: 13px; text-transform: uppercase; letter-spacing: 0.5px;">Actions</strong>
+              </div>
+              <button type="submit" name="edit" value="edit">💾 Save Changes</button>
+              <button type="submit" name="delete" value="delete">🗑️ Delete</button>
+        </form>
+              <form method="POST" action="/generate_m3u" style="margin: 0;">
+                <input type="hidden" name="item_id" value="{{ item.id }}" />
+                <button type="submit">📥 Fetch M3U</button>
+              </form>
+              <form method="POST" action="/generate_filtered_m3u" style="margin: 0;">
+                <input type="hidden" name="item_id" value="{{ item.id }}" />
+                <button type="submit">🔍 Fetch Filtered M3U</button>
+              </form>
             </div>
-            <small>Use this URL in your IPTV player</small>
-          </div>
-          <!-- Add EPG streaming link -->
-          <div style="margin-top: 8px">
-            <strong>EPG URL:</strong>
-            <div class="stream-url">
-              {{ item.epg_url }}
-              <button class="copy-btn" onclick="copyEpgUrl('{{ item.id }}')">
-                Copy
-              </button>
+
+            <div class="links-section">
+              <h3>📡 Downloads & Streaming</h3>
+              
+              {% if item.has_m3u %}
+              <div class="link-item">
+                <a href="/download_m3u/{{ item.id }}" download>📄 Download M3U Playlist</a>
+              </div>
+              {% endif %}
+              
+              {% if item.has_filtered %}
+              <div class="link-item">
+                <a href="/download_filtered_m3u/{{ item.id }}" download>📄 Download Filtered M3U</a>
+              </div>
+              
+              <!-- Streaming URL Section -->
+              <div style="margin-top: 12px;">
+                <strong style="font-size: 12px; color: #667eea;">M3U Streaming URL:</strong>
+                <div class="stream-url">
+                  <span id="stream-url-text-{{ item.id }}" style="flex: 1;">{{ item.stream_url }}</span>
+                  <button class="copy-btn" onclick="copyStreamUrl('{{ item.id }}')">
+                    📋 Copy
+                  </button>
+                </div>
+              </div>
+              
+              <!-- EPG streaming link -->
+              <div style="margin-top: 12px;">
+                <strong style="font-size: 12px; color: #667eea;">EPG URL:</strong>
+                <div class="stream-url">
+                  <span style="flex: 1;">{{ item.epg_url }}</span>
+                  <button class="copy-btn" onclick="copyEpgUrl('{{ item.id }}')">
+                    📋 Copy
+                  </button>
+                </div>
+              </div>
+              
+              <!-- HDHomeRun helper links -->
+              <div style="margin-top: 16px;">
+                <strong style="font-size: 12px; color: #667eea;">HDHomeRun API:</strong>
+                <div style="margin-top: 6px; display: grid; grid-template-columns: repeat(2, 1fr); gap: 4px;">
+                  <a href="/discover.json" target="_blank" style="font-size: 12px;">discover.json</a>
+                  <a href="/lineup_status.json" target="_blank" style="font-size: 12px;">lineup_status.json</a>
+                  <a href="/lineup.json" target="_blank" style="font-size: 12px;">lineup.json</a>
+                  <a href="/hdhr/debug_lineup" target="_blank" style="font-size: 12px;">debug_lineup</a>
+                </div>
+              </div>
+              {% endif %}
             </div>
           </div>
-          <!-- HDHomeRun helper links -->
-          <div style="margin-top: 8px">
-            <strong>HDHR Links:</strong><br />
-            <a href="/discover.json" target="_blank">discover.json</a><br />
-            <a href="/lineup_status.json" target="_blank">lineup_status.json</a
-            ><br />
-            <a href="/lineup.json" target="_blank">lineup.json</a><br />
-            <a href="/hdhr/debug_lineup" target="_blank">debug_lineup</a>
-          </div>
-          {% endif %}
-        </td>
-      </tr>
+      </div>
       {% endfor %}
-    </table>
 
-    <!-- Add new item -->
-    <h2>Add New IPTV Configuration</h2>
-    <form method="POST" action="/">
-      <div class="form-group">
-        <label class="form-label" for="name">Name:</label>
-        <input
-          type="text"
-          id="name"
-          name="name"
-          placeholder="Configuration Name"
-          maxlength="50"
-          required
-        />
+
+      <!-- Add new item -->
+      <h2>➕ Add New IPTV Configuration</h2>
+      <div class="add-new-form">
+        <form method="POST" action="/">
+          <div class="form-row">
+            <div class="form-group">
+              <label class="form-label" for="name">Configuration Name</label>
+              <input
+                type="text"
+                id="name"
+                name="name"
+                placeholder="My IPTV Service"
+                maxlength="50"
+                required
+              />
+            </div>
+
+            <div class="form-group">
+              <label class="form-label" for="server_url">Server URL</label>
+              <input
+                type="text"
+                id="server_url"
+                name="server_url"
+                placeholder="http://cf.vtsp.cyou:8080"
+                maxlength="50"
+                required
+              />
+            </div>
+          </div>
+
+          <div class="form-row">
+            <div class="form-group">
+              <label class="form-label" for="username">Username</label>
+              <input
+                type="text"
+                id="username"
+                name="username"
+                placeholder="your_username"
+                maxlength="50"
+                required
+              />
+            </div>
+
+            <div class="form-group">
+              <label class="form-label" for="user_pass">Password</label>
+              <input
+                type="text"
+                id="user_pass"
+                name="user_pass"
+                placeholder="your_password"
+                maxlength="50"
+                required
+              />
+            </div>
+          </div>
+
+          <button type="submit" name="add" value="add">➕ Add Configuration</button>
+        </form>
       </div>
-
-      <div class="form-group">
-        <label class="form-label" for="server_url">Server URL:</label>
-        <input
-          type="text"
-          id="server_url"
-          name="server_url"
-          placeholder="http://cf.vtsp.cyou:8080"
-          maxlength="50"
-          required
-        />
-      </div>
-
-      <div class="form-group">
-        <label class="form-label" for="username">Username:</label>
-        <input
-          type="text"
-          id="username"
-          name="username"
-          placeholder="Username"
-          maxlength="50"
-          required
-        />
-      </div>
-
-      <div class="form-group">
-        <label class="form-label" for="user_pass">Password:</label>
-        <input
-          type="text"
-          id="user_pass"
-          name="user_pass"
-          placeholder="Password"
-          maxlength="50"
-          required
-        />
-      </div>
-
-      <button type="submit" name="add" value="add">Add</button>
-    </form>
+    </div>
+    <!-- End container -->
 
     <script>
+      function toggleMacOSInstructions(button) {
+        console.log('Toggle function called');
+        const instructions = document.getElementById('macos-instructions');
+        console.log('Instructions element:', instructions);
+        
+        if (!instructions) {
+          console.error('Could not find macos-instructions element');
+          return;
+        }
+        
+        if (instructions.style.display === 'none' || instructions.style.display === '') {
+          instructions.style.display = 'block';
+          button.innerHTML = '▼ macOS: Auto-discovery disabled (click to hide)';
+        } else {
+          instructions.style.display = 'none';
+          button.innerHTML = '⚠️ macOS: Auto-discovery disabled (click for details)';
+        }
+      }
+      
       function copyStreamUrl(itemId) {
         const streamUrlElement = document.getElementById(
           `stream-url-text-${itemId}`
