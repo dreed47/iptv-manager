@@ -32,23 +32,42 @@ def get_advertised_base_url() -> str:
     return f"{scheme}://{host}:{port}"
 
 def load_channel_lineup(db: Session = Depends(get_db)) -> list:
-    """Load channels from filtered M3U file for first item"""
+    """Load and merge channels from all filtered M3U files"""
     channels = []
-    try:
-        item = db.query(Item).first()
-        if not item:
-            return channels
-        
+    # Get ALL items, not just the first one
+    items = db.query(Item).all()
+    if not items:
+        logger.warning("No IPTV configurations found")
+        return channels
+
+    # Update device ID based on advertised IP/port
+    base_url = get_advertised_base_url()
+    import urllib.parse
+    parsed = urllib.parse.urlparse(base_url)
+    ip = parsed.hostname or "127.0.0.1"
+    port = int(parsed.port) if parsed.port else 5005
+    hdhomerun_emulator.update_device_id((ip, port))
+
+    logger.info(f"Loading channels from {len(items)} IPTV configuration(s)")
+
+    # Track used channel numbers to avoid conflicts
+    used_guide_numbers = set()
+    next_available_number = 1
+
+    for item in items:
         filtered_path = os.path.join("/app/m3u_files", f"filtered_playlist_{item.id}.m3u")
         if not os.path.exists(filtered_path):
-            return channels
-            
+            logger.warning(f"Filtered M3U not found for config '{item.name}' (ID {item.id})")
+            continue
+
+        logger.info(f"Loading channels from '{item.name}' ({filtered_path})")
+
         with open(filtered_path, 'r') as f:
             lines = f.readlines()
-            
+
         i = 0
-        channel_number = 1
-        
+        config_channel_count = 0
+
         while i < len(lines):
             line = lines[i].strip()
             if line.startswith('#EXTINF'):
@@ -57,40 +76,49 @@ def load_channel_lineup(db: Session = Depends(get_db)) -> list:
                     if ',' in line:
                         attrs, name = line.split(',', 1)
                         name = name.strip()
-                        
+
                         # Extract metadata
                         tvg_id = ""
                         tvg_name = ""
                         tvg_chno = ""
                         group = ""
-                        
+
                         id_match = re.search(r'tvg-id="([^"]+)"', attrs)
                         if id_match:
                             tvg_id = id_match.group(1)
-                            
+
                         name_match = re.search(r'tvg-name="([^"]+)"', attrs)
                         if name_match:
                             tvg_name = name_match.group(1)
-                            
+
                         chno_match = re.search(r'tvg-chno="([^"]+)"', attrs)
                         if chno_match:
                             tvg_chno = chno_match.group(1)
-                            
+
                         group_match = re.search(r'group-title="([^"]+)"', attrs)
                         if group_match:
                             group = group_match.group(1)
-                            
+
                         # Prefer tvg-name over channel name if available
                         display_name = tvg_name or name
                         # Clean up common name issues
                         display_name = display_name.replace('_', ' ').strip()
-                            
+
                         # Get the URL
                         url = lines[i + 1].strip()
-                        
-                        # Use tvg-chno if available, otherwise use sequential channel_number
-                        guide_number = tvg_chno if tvg_chno else str(channel_number)
-                        
+
+                        # Determine guide number - avoid conflicts across configs
+                        if tvg_chno and tvg_chno not in used_guide_numbers:
+                            guide_number = tvg_chno
+                        else:
+                            # Find next available sequential number
+                            while str(next_available_number) in used_guide_numbers:
+                                next_available_number += 1
+                            guide_number = str(next_available_number)
+                            next_available_number += 1
+
+                        used_guide_numbers.add(guide_number)
+
                         # Add required fields for Plex
                         channel_data = {
                             "GuideNumber": guide_number,
@@ -103,31 +131,28 @@ def load_channel_lineup(db: Session = Depends(get_db)) -> list:
                             "VideoCodec": "H264",
                             "AudioCodec": "AAC"
                         }
-                        
+
                         # Optional group/network info
                         if group:
                             channel_data["NetworkName"] = group
                             channel_data["NetworkAffiliate"] = group
-                            
+
                         channels.append(channel_data)
-                        channel_number += 1
-                        
-                        logger.debug(f"Added channel: {display_name} ({channel_number-1}) - ID: {tvg_id}")
+                        config_channel_count += 1
+
                 i += 2
             else:
                 i += 1
-                
-        logger.info(f"Loaded {len(channels)} channels for HDHomeRun lineup")
-        
-        # Log the first few channels for debugging
-        if channels:
-            logger.info("First channel example:")
-            logger.info(json.dumps(channels[0], indent=2))
-            
-    except Exception as e:
-        logger.error(f"Error loading channel lineup: {e}")
-        logger.exception(e)  # Log full traceback
-    
+
+        logger.info(f"  Loaded {config_channel_count} channels from '{item.name}'")
+
+    logger.info(f"Total: Loaded {len(channels)} channels for HDHomeRun lineup from {len(items)} configuration(s)")
+
+    # Log the first few channels for debugging
+    if channels:
+        logger.info("First channel example:")
+        logger.info(json.dumps(channels[0], indent=2))
+
     return channels
 
 @router.on_event("startup")
@@ -210,41 +235,5 @@ async def hdhr_lineup_status(db: Session = Depends(get_db)):
 async def hdhr_lineup(db: Session = Depends(get_db)):
     """Return channel lineup"""
     # Note: SSDP doesn't need to be running for HTTP endpoints to work
-    return load_channel_lineup(db)
-
-@router.post("/lineup.post")
-async def hdhr_lineup_post(request: Request, db: Session = Depends(get_db)):
-    """Handle lineup commands"""
-    # Note: SSDP doesn't need to be running for HTTP endpoints to work
-    
-    form = await request.form()
-    scan = form.get("scan")
-    
-    if scan == "start":
-        # Reload channels
-        channels = load_channel_lineup(db)
-        logger.info(f"Scan started - loaded {len(channels)} channels")
-        logger.info("Channel details:")
-        for ch in channels[:3]:  # Log first 3 channels
-            logger.info(json.dumps(ch, indent=2))
-        return {"Status": "Success", "Progress": 100}
-    elif scan == "abort":
-        return {"Status": "Success"}
-    else:
-        raise HTTPException(status_code=400, detail="Invalid scan command")
-
-@router.get("/hdhr/debug_lineup")
-async def debug_lineup(db: Session = Depends(get_db)):
-    """Debug endpoint to view channel lineup"""
     channels = load_channel_lineup(db)
-    return {
-        "channel_count": len(channels),
-        "first_three_channels": channels[:3] if channels else [],
-        "lineup_status": {
-            "ScanInProgress": 0,
-            "ScanPossible": 1,
-            "Source": "Cable",
-            "SourceList": ["Cable"],
-            "Found": len(channels)
-        }
-    }
+    return channels
