@@ -8,12 +8,18 @@ Languages:
 
 ```
 en
+us
+go
+sl
+prime
 ```
 
 Includes:
 
 ```
 2|US: CBS 2 (KDKA) PITTSBURGH HD
+4|US: ABC 4 (WTAE) PITTSBURGH HD
+11|PRIME: WPXI PITTSBURGH (NBC)
 53|US: FOX 53 (WPGH)
 77|GO: METV
 114|US: ANTENNA TV

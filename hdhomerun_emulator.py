@@ -13,9 +13,12 @@ class HDHomeRunEmulator:
     def __init__(self, http_port=5005, config_items=None):
         self.http_port = http_port
         self.device_id = self._generate_device_id(config_items)
-        self.model = "HDTC-2US"
-        self.friendly_name = "IPTV HDHomeRun"
-        self.tuner_count = 2
+        # Model number configurable via environment variable
+        self.model = os.getenv("HDHR_MODEL", "HDHR3-US")
+        # Friendly name configurable via environment variable
+        self.friendly_name = os.getenv("HDHR_FRIENDLY_NAME", "IPTV HDHomeRun")
+        # Tuner count configurable via environment variable (default 2)
+        self.tuner_count = int(os.getenv("HDHR_TUNER_COUNT", "2"))
         self.running = False
         self.thread = None
         self._stop_event = threading.Event()
