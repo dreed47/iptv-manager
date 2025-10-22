@@ -28,11 +28,12 @@ def get_advertised_base_url() -> str:
         or "127.0.0.1"  # Safe default, will be updated when emulator starts
     )
     scheme = os.getenv("HDHR_SCHEME", "http")
-    port = os.getenv("HDHR_ADVERTISE_PORT", "5005")
+    # Prefer explicit advertised port; otherwise fall back to APP_PORT if provided
+    port = os.getenv("HDHR_ADVERTISE_PORT") or os.getenv("APP_PORT") or "5005"
     return f"{scheme}://{host}:{port}"
 
 def load_channel_lineup(db: Session = Depends(get_db)) -> list:
-    """Load and merge channels from all filtered M3U files"""
+    """Load and merge channels from all filtered M3U files with de-duplication and explicit numbering preference"""
     channels = []
     # Get ALL items, not just the first one
     items = db.query(Item).all()
@@ -50,9 +51,22 @@ def load_channel_lineup(db: Session = Depends(get_db)) -> list:
 
     logger.info(f"Loading channels from {len(items)} IPTV configuration(s)")
 
-    # Track used channel numbers to avoid conflicts
+    # Helpers for name normalization
+    import unicodedata
+    import re as _re
+    def _normalize(s: str) -> str:
+        s = (s or "").lower().strip()
+        s = unicodedata.normalize('NFKD', s)
+        s = ''.join(c for c in s if not unicodedata.combining(c))
+        s = ' '.join(s.split())
+        return s
+    def _strict_norm(s: str) -> str:
+        return _re.sub(r'[^a-z0-9]+', '', _normalize(s))
+
+    # Track used channel numbers to avoid conflicts and deduplicate by name
     used_guide_numbers = set()
     next_available_number = 1
+    channels_by_name = {}
 
     for item in items:
         filtered_path = os.path.join("/app/m3u_files", f"filtered_playlist_{item.id}.m3u")
@@ -107,17 +121,19 @@ def load_channel_lineup(db: Session = Depends(get_db)) -> list:
                         # Get the URL
                         url = lines[i + 1].strip()
 
-                        # Determine guide number - avoid conflicts across configs
-                        if tvg_chno and tvg_chno not in used_guide_numbers:
+                        # Determine guide number - prefer explicit tvg-chno when present
+                        explicit_number = False
+                        if tvg_chno:
                             guide_number = tvg_chno
+                            explicit_number = True
                         else:
-                            # Find next available sequential number
+                            # Find next available sequential number avoiding conflicts
                             while str(next_available_number) in used_guide_numbers:
                                 next_available_number += 1
                             guide_number = str(next_available_number)
                             next_available_number += 1
 
-                        used_guide_numbers.add(guide_number)
+                        # We'll manage used_guide_numbers when finalizing insert/replace
 
                         # Add required fields for Plex
                         channel_data = {
@@ -129,7 +145,9 @@ def load_channel_lineup(db: Session = Depends(get_db)) -> list:
                             "Favorite": 0,
                             "DRM": 0,
                             "VideoCodec": "H264",
-                            "AudioCodec": "AAC"
+                            "AudioCodec": "AAC",
+                            # Internal flag to prefer channels with explicit numbering
+                            "_ExplicitNumber": 1 if explicit_number else 0
                         }
 
                         # Optional group/network info
@@ -137,14 +155,38 @@ def load_channel_lineup(db: Session = Depends(get_db)) -> list:
                             channel_data["NetworkName"] = group
                             channel_data["NetworkAffiliate"] = group
 
-                        channels.append(channel_data)
-                        config_channel_count += 1
+                        # Deduplicate by normalized name; prefer explicit-number entries
+                        norm_name = _strict_norm(display_name)
+                        existing = channels_by_name.get(norm_name)
+                        if existing is None:
+                            channels_by_name[norm_name] = channel_data
+                            used_guide_numbers.add(guide_number)
+                            config_channel_count += 1
+                        else:
+                            if (not existing.get("_ExplicitNumber")) and channel_data.get("_ExplicitNumber"):
+                                # Replace non-explicit with explicit; update used numbers
+                                try:
+                                    used_guide_numbers.discard(existing.get("GuideNumber", ""))
+                                except Exception:
+                                    pass
+                                channels_by_name[norm_name] = channel_data
+                                used_guide_numbers.add(guide_number)
+                            else:
+                                # Keep existing (either both non-explicit or existing already explicit)
+                                pass
 
                 i += 2
             else:
                 i += 1
 
         logger.info(f"  Loaded {config_channel_count} channels from '{item.name}'")
+
+    # Produce final channel list from dedup map
+    channels = list(channels_by_name.values())
+    # Remove internal flags
+    for ch in channels:
+        if "_ExplicitNumber" in ch:
+            del ch["_ExplicitNumber"]
 
     logger.info(f"Total: Loaded {len(channels)} channels for HDHomeRun lineup from {len(items)} configuration(s)")
 
