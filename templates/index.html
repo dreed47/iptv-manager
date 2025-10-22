@@ -382,7 +382,7 @@
 
       <div class="discovery-controls">
         <strong>🔍 HDHomeRun Discovery (SSDP)</strong>
-        <div style="margin-top: 8px">
+  <div style="margin-top: 8px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
           {% if can_enable_ssdp %}
             <form method="POST" action="/hdhr/enable" style="display: inline">
               {% if not hdhr_running %}
@@ -394,7 +394,7 @@
               <button type="submit">Disable Discovery</button>
               {% endif %}
             </form>
-            <span style="margin-left: 12px; font-size: 13px; color: #555; font-weight: 500;">
+            <span style="margin-left: 12px; font-size: 13px; color: #555; font-weight: 500; white-space: nowrap;">
               Status: <strong style="color: {% if hdhr_running %}#27ae60{% else %}#95a5a6{% endif %}">
                 {% if hdhr_running %}Enabled ✓{% else %}Disabled{% endif %}
               </strong>
