@@ -1,7 +1,9 @@
 services:
   app:
     ports:
-      - "5005:5005"
+      # Host port is configurable via .env (APP_PORT). Container listens on 5005.
+      - "${APP_PORT:-5005}:5005"
       # Do NOT expose 1900/udp on macOS
     environment:
+      # Keep SSDP disabled on macOS to avoid multicast issues
       - HDHR_DISABLE_SSDP=1

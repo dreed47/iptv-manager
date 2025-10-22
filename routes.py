@@ -377,21 +377,39 @@ async def generate_filtered_m3u(item_id: int = Form(...), db: Session = Depends(
             m3u_content = f.read()
 
         languages = [lang.strip().lower() for lang in (item.languages or "").split(",") if lang.strip()]
-        # Parse includes, keep mapping of substring to number if present
-        includes = []  # list of (number, substring) or (None, substring)
+        # Normalization helper used for includes/excludes and matching
+        import unicodedata
+        def normalize(s):
+            s = s.lower().strip()
+            s = unicodedata.normalize('NFKD', s)
+            s = ''.join(c for c in s if not unicodedata.combining(c))
+            s = ' '.join(s.split())
+            return s
+        # Stricter normalization for includes exact matching: remove non-alphanumerics
+        def strict_normalize(s):
+            t = normalize(s)
+            return re.sub(r'[^a-z0-9]+', '', t)
+
+        # Build an includes map for exact name matching (robust normalization): normalized_name -> channel_number (or None)
+        includes_map = {}
+        raw_includes = []
         for inc in (item.includes or "").split(","):
             inc = inc.strip()
             if not inc:
                 continue
             if '|' in inc:
-                num, substr = inc.split('|', 1)
-                includes.append((num.strip(), substr.strip().lower()))
+                num, name = inc.split('|', 1)
+                raw_includes.append((num.strip(), name.strip()))
+                includes_map[strict_normalize(name)] = num.strip()
             else:
-                includes.append((None, inc.lower()))
+                raw_includes.append((None, inc.strip()))
+                includes_map[strict_normalize(inc)] = None
         excludes = [ex.strip().lower() for ex in (item.excludes or "").split(",") if ex.strip()]
         has_wildcard_exclude = "*" in excludes
 
-        logger.info(f"Filtering item {item_id} with languages={languages}, includes={includes}, excludes={excludes}, wildcard_exclude={has_wildcard_exclude}")
+        logger.info(
+            f"Filtering item {item_id} with languages={languages}, includes={raw_includes}, excludes={excludes}, wildcard_exclude={has_wildcard_exclude}"
+        )
 
         filtered_content = "#EXTM3U\n"
         lines = m3u_content.splitlines()
@@ -401,16 +419,6 @@ async def generate_filtered_m3u(item_id: int = Form(...), db: Session = Depends(
         i = 0
         if lines and lines[0].strip() == "#EXTM3U":
             i = 1
-
-
-        import unicodedata
-        def normalize(s):
-            # Lowercase, strip, remove diacritics, collapse whitespace
-            s = s.lower().strip()
-            s = unicodedata.normalize('NFKD', s)
-            s = ''.join(c for c in s if not unicodedata.combining(c))
-            s = ' '.join(s.split())
-            return s
 
         while i < len(lines):
             if lines[i].startswith("#EXTINF") and i + 1 < len(lines) and not lines[i + 1].startswith("#"):
@@ -459,32 +467,46 @@ async def generate_filtered_m3u(item_id: int = Form(...), db: Session = Depends(
                             excluded = True
                             break
 
-                # 3. Include logic (overrides exclude)
+                # 3. Include logic (allow-list when provided): exact match after normalization
                 included = False
                 chno_to_apply = None
-                for num, inc in includes:
-                    if inc and normalize(inc) in search_text:
-                        included = True
-                        if num:
-                            chno_to_apply = num
-                        break
+                if includes_map:
+                    # Compare against both provided channel_name and tvg_name for exact match (normalized)
+                    key_candidates = [strict_normalize(channel_name), strict_normalize(tvg_name)]
+                    for cand in key_candidates:
+                        if cand in includes_map:
+                            included = True
+                            chno_to_apply = includes_map[cand]
+                            break
+                        # Allow common suffix variants like 'HD'/'4K' without enabling substring matches
+                        for inc_key, num in includes_map.items():
+                            if cand == inc_key + "hd" or cand == inc_key + "4k" or cand == inc_key + "fhd" or cand == inc_key + "uhd":
+                                included = True
+                                chno_to_apply = num
+                                break
+                        if included:
+                            break
 
                 # Final decision
-                if (not excluded) or (excluded and included):
-                    # If chno_to_apply is set, add or update tvg-chno attribute in extinf
-                    if chno_to_apply:
-                        # Remove existing tvg-chno if present
-                        extinf_new = re.sub(r'\s*tvg-chno="[^"]*"', '', extinf)
-                        # Insert tvg-chno before the comma (end of attribute list)
-                        idx = extinf_new.find(',')
-                        if idx != -1:
-                            extinf_new = extinf_new[:idx] + f' tvg-chno="{chno_to_apply}"' + extinf_new[idx:]
+                if includes_map:
+                    # With includes present, only keep if explicitly included (and not excluded unless included)
+                    if included:
+                        if chno_to_apply:
+                            extinf_new = re.sub(r'\s*tvg-chno="[^"]*"', '', extinf)
+                            idx = extinf_new.find(',')
+                            if idx != -1:
+                                extinf_new = extinf_new[:idx] + f' tvg-chno="{chno_to_apply}"' + extinf_new[idx:]
+                            else:
+                                extinf_new = extinf_new + f' tvg-chno="{chno_to_apply}"'
+                            filtered_content += f"{extinf_new}\n{url}\n"
                         else:
-                            extinf_new = extinf_new + f' tvg-chno="{chno_to_apply}"'
-                        filtered_content += f"{extinf_new}\n{url}\n"
-                    else:
+                            filtered_content += f"{extinf}\n{url}\n"
+                        num_records += 1
+                else:
+                    # No includes: keep anything not excluded and matching language rules
+                    if not excluded:
                         filtered_content += f"{extinf}\n{url}\n"
-                    num_records += 1
+                        num_records += 1
 
                 i += 2
             else:
@@ -660,71 +682,3 @@ async def stream_epg(item_id: int, db: Session = Depends(get_db)):
             "Access-Control-Allow-Origin": "*"
         }
     )
-# Add this new function to routes.py
-async def generate_filtered_epg(item_id: int, db: Session):
-    """Generate filtered EPG based on channel names provided by user"""
-    try:
-        item = db.query(Item).filter(Item.id == item_id).first()
-        if not item:
-            logger.warning(f"Item with id {item_id} not found for EPG generation")
-            return False
-        
-        if not item.epg_channels:
-            logger.warning(f"No EPG channels specified for item {item_id}")
-            return False
-        
-        epg_path = os.path.join("/app/m3u_files", f"epg_{item_id}.xml")
-        if not os.path.exists(epg_path):
-            logger.warning(f"EPG file not found for item {item_id} at {epg_path}")
-            return False
-        
-        # Parse channel names from user input
-        channel_names = {name.strip() for name in item.epg_channels.split(",") if name.strip()}
-        logger.info(f"Filtering EPG for {len(channel_names)} channel names: {list(channel_names)[:10]}")
-        
-        # Read and parse original EPG
-        with open(epg_path, 'r', encoding='utf-8') as f:
-            epg_content = f.read()
-        
-        # Parse XML
-        root = ET.fromstring(epg_content)
-        
-        # Create new root for filtered EPG
-        new_root = ET.Element('tv')
-        new_root.attrib.update(root.attrib)
-        
-        channels_kept = 0
-        programmes_kept = 0
-        kept_channel_ids = set()
-        
-        # Find and keep matching channels
-        for channel in root.findall('.//channel'):
-            display_name_elem = channel.find('display-name')
-            if display_name_elem is not None:
-                display_name = display_name_elem.text
-                if display_name and display_name in channel_names:
-                    new_root.append(channel)
-                    channels_kept += 1
-                    kept_channel_ids.add(channel.get('id'))
-                    logger.debug(f"Keeping channel: {display_name}")
-        
-        # Find and keep matching programmes
-        for programme in root.findall('.//programme'):
-            if programme.get('channel') in kept_channel_ids:
-                new_root.append(programme)
-                programmes_kept += 1
-        
-        logger.info(f"EPG filtering kept {channels_kept} channels and {programmes_kept} programmes")
-        
-        # Save filtered EPG
-        filtered_epg_path = os.path.join("/app/m3u_files", f"filtered_epg_{item_id}.xml")
-        
-        with open(filtered_epg_path, 'w', encoding='utf-8') as f:
-            f.write('<?xml version="1.0" encoding="UTF-8"?>\n')
-            f.write(ET.tostring(new_root, encoding='unicode'))
-        
-        return channels_kept > 0
-        
-    except Exception as e:
-        logger.error(f"Failed to generate filtered EPG: {str(e)}")
-        return False

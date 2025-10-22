@@ -3,13 +3,15 @@ services:
     build: .
     environment:
       - HDHR_ADVERTISE_HOST=${HDHR_ADVERTISE_HOST}
-      - HDHR_ADVERTISE_PORT=${HDHR_ADVERTISE_PORT}
+      # Use a single port setting; advertise the same port Plex will hit on the host
+      - HDHR_ADVERTISE_PORT=${APP_PORT}
       - HDHR_SCHEME=${HDHR_SCHEME}
       # SSDP disabled by default - prevents macOS Docker hang
       # Enable via web UI "Enable Discovery" button if needed
       - HDHR_DISABLE_SSDP=${HDHR_DISABLE_SSDP}
     ports:
-      - "5005:5005"
+      # Host port is configurable via .env (APP_PORT). Container listens on 5005.
+      - "${APP_PORT:-5005}:5005"
       # Port 1900 not exposed - SSDP can be enabled via web UI if needed
       # Uncomment only if you want auto-discovery AND you're on Linux
       # - "1900:1900/udp"
