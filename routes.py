@@ -430,11 +430,19 @@ async def generate_filtered_m3u(item_id: int = Form(...), db: Session = Depends(
                 tvg_name = attributes.get('tvg-name', '')
                 channel_language = ""
                 if " - " in tvg_name:
+                    # Standard format: "EN - Channel Name"
                     channel_language = tvg_name.split(" - ")[0].strip().lower()
-                elif len(tvg_name) >= 2:
-                    channel_language = tvg_name[:2].lower()
+                elif languages:
+                    # No standard separator - check if any language appears at start of tvg_name
+                    tvg_lower = tvg_name.lower()
+                    for lang in languages:
+                        if tvg_lower.startswith(lang.lower() + ":") or tvg_lower.startswith(lang.lower() + " "):
+                            channel_language = lang.lower()
+                            break
+                    # If still no match, don't filter by language for this channel
+                    # (allow includes to work)
 
-                # 1. Language check
+                # 1. Language check (only if we found a valid language prefix)
                 if languages and channel_language and channel_language not in languages:
                     i += 2
                     continue

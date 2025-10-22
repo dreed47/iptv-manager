@@ -5,13 +5,14 @@ import logging
 import select
 import struct
 import os
+import hashlib
 
 logger = logging.getLogger(__name__)
 
 class HDHomeRunEmulator:
-    def __init__(self, http_port=5005):
+    def __init__(self, http_port=5005, config_items=None):
         self.http_port = http_port
-        self.device_id = "12345678"
+        self.device_id = self._generate_device_id(config_items)
         self.model = "HDTC-2US"
         self.friendly_name = "IPTV HDHomeRun"
         self.tuner_count = 2
@@ -21,6 +22,27 @@ class HDHomeRunEmulator:
         # Check environment variable for default state, but allow runtime override
         self._env_disabled = os.getenv("HDHR_DISABLE_SSDP", "0") == "1"
         self.ssdp_disabled = self._env_disabled
+    
+    def _generate_device_id(self, ip_port_tuple=None):
+        """Generate a stable 8-digit hex device ID based on IP and port."""
+        # Use provided tuple or detect
+        if ip_port_tuple:
+            ip, port = ip_port_tuple
+        else:
+            ip = self.get_host_ip()
+            port = self.http_port
+        id_source = f"{ip}:{port}"
+        hash_obj = hashlib.md5(id_source.encode())
+        device_id = hash_obj.hexdigest()[:8].upper()
+        logger.info(f"Generated device ID from {id_source}: {device_id}")
+        return device_id
+    
+    def update_device_id(self, ip_port_tuple=None):
+        """Update device ID based on current IP/port."""
+        new_id = self._generate_device_id(ip_port_tuple)
+        if new_id != self.device_id:
+            logger.info(f"Device ID changed from {self.device_id} to {new_id}")
+            self.device_id = new_id
         
     def is_env_disabled(self):
         """Check if SSDP is disabled via environment variable"""
