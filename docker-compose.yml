@@ -6,6 +6,12 @@ services:
       # Use a single port setting; advertise the same port Plex will hit on the host
       - HDHR_ADVERTISE_PORT=${APP_PORT}
       - HDHR_SCHEME=${HDHR_SCHEME}
+      # Model number shown in Plex (default "HDHR3-US")
+      - HDHR_MODEL=${HDHR_MODEL:-HDHR3-US}
+      # Friendly name shown in Plex (default "IPTV HDHomeRun")
+      - HDHR_FRIENDLY_NAME=${HDHR_FRIENDLY_NAME:-IPTV HDHomeRun}
+      # Number of concurrent tuners to advertise (default 2 if not set)
+      - HDHR_TUNER_COUNT=${HDHR_TUNER_COUNT:-2}
       # SSDP disabled by default - prevents macOS Docker hang
       # Enable via web UI "Enable Discovery" button if needed
       - HDHR_DISABLE_SSDP=${HDHR_DISABLE_SSDP}
