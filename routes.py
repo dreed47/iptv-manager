@@ -59,6 +59,20 @@ async def index(request: Request, db: Session = Depends(get_db), error: str = No
     ssdp_disabled_by_env = hdhomerun_emulator.is_env_disabled()
     can_enable_ssdp = not ssdp_disabled_by_env  # Can only enable if not disabled by env
     
+    # Build an environment summary to display in the header (reflective of .env)
+    def build_env_pairs():
+        # Only show BaseURL, TunerCount, FriendlyName
+        pairs = []
+        # Get from env or fallback
+        tuner_count = os.getenv("HDHR_TUNER_COUNT", "2")
+        friendly_name = os.getenv("HDHR_FRIENDLY_NAME", "IPTV HDHomeRun")
+        pairs.append(("BaseURL", base_url))
+        pairs.append(("TunerCount", tuner_count))
+        pairs.append(("FriendlyName", friendly_name))
+        return pairs
+    
+    env_pairs = build_env_pairs()
+    
     context = {
         "request": request,
         "items": items_with_files,
@@ -68,6 +82,7 @@ async def index(request: Request, db: Session = Depends(get_db), error: str = No
         "hdhr_running": hdhomerun_emulator.is_running(),
         "can_enable_ssdp": can_enable_ssdp,
         "ssdp_disabled_by_env": ssdp_disabled_by_env,
+        "env_pairs": env_pairs,
     }
 
     # Render template to measure rendering time (helps diagnose hangs)
@@ -262,7 +277,7 @@ async def generate_m3u(item_id: int = Form(...), db: Session = Depends(get_db)):
         includes = [inc.strip() for inc in (item.includes or "").split(",") if inc.strip()]
         excludes = [exc.strip() for exc in (item.excludes or "").split(",") if exc.strip()]
 
-        logger.info(f"Starting M3U filtering process...")
+        logger.info("Starting M3U filtering process...")
         logger.info(f"Filter settings - Languages: {languages}, Includes: {includes}, Excludes: {excludes}")
         
         if includes or excludes or languages:

@@ -72,6 +72,27 @@
         border: 1px solid #dee2e6;
         box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
       }
+      .discovery-header {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 12px;
+      }
+      .discovery-title {
+        flex: 2 1 66%;
+      }
+      .env-summary {
+        font-family: 'Courier New', monospace;
+        font-size: 11px;
+        color: #6c757d;
+        text-align: right;
+        line-height: 1.4;
+        flex: 1 1 33%;
+        max-width: 33%;
+      }
+      .env-summary .env-line {
+        white-space: nowrap;
+      }
       
       .discovery-controls strong {
         font-size: 15px;
@@ -381,8 +402,17 @@
       <p style="color: #666; margin-top: 0;">Manage your IPTV configurations and playlists</p>
 
       <div class="discovery-controls">
-        <strong>🔍 HDHomeRun Discovery (SSDP)</strong>
-  <div style="margin-top: 8px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
+        <div class="discovery-header">
+          <div class="discovery-title"><strong>🔍 HDHomeRun Discovery (SSDP)</strong></div>
+          {% if env_pairs %}
+          <div class="env-summary">
+            {% for k, v in env_pairs %}
+              <div class="env-line">{{ k }}={{ v }}</div>
+            {% endfor %}
+          </div>
+          {% endif %}
+        </div>
+        <div style="margin-top: 8px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
           {% if can_enable_ssdp %}
             <form method="POST" action="/hdhr/enable" style="display: inline">
               {% if not hdhr_running %}
