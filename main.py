@@ -1,4 +1,5 @@
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from models import init_db
 from routes import router
 from hdhomerun_routes import router as hdhomerun_router
@@ -15,6 +16,13 @@ def create_app():
         # Disable docs to prevent OpenAPI spec generation delays
         docs_url=None,
         redoc_url=None
+    )
+
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_methods=["*"],
+        allow_headers=["*"],
     )
     
     # Initialize database in a background task to avoid blocking startup

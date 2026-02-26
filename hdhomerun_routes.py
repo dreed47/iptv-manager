@@ -17,6 +17,9 @@ router = APIRouter()
 # Create emulator instance but don't start it yet
 hdhomerun_emulator = HDHomeRunEmulator()
 
+# Module-level cache: guide_number -> real source URL (populated by load_channel_lineup)
+_channel_source_urls: dict = {}
+
 def get_advertised_base_url() -> str:
     """
     Returns the public BaseURL we want Plex to use when calling us.
@@ -27,7 +30,7 @@ def get_advertised_base_url() -> str:
         or os.getenv("PUBLIC_HOST")
         or "127.0.0.1"  # Safe default, will be updated when emulator starts
     )
-    scheme = os.getenv("HDHR_SCHEME", "http")
+    scheme = os.getenv("HDHR_SCHEME") or "http"
     # Prefer explicit advertised port; otherwise fall back to APP_PORT if provided
     port = os.getenv("HDHR_ADVERTISE_PORT") or os.getenv("APP_PORT") or "5005"
     return f"{scheme}://{host}:{port}"
@@ -141,13 +144,15 @@ def load_channel_lineup(db: Session = Depends(get_db)) -> list:
                             "GuideName": display_name,
                             "GuideSourceID": tvg_id,  # Important for EPG matching
                             "HD": 1,
-                            "URL": url,
+                            # Use local proxy URL so Plex hits this server, not the provider directly
+                            "URL": f"{base_url}/auto/v{guide_number}",
                             "Favorite": 0,
                             "DRM": 0,
                             "VideoCodec": "H264",
                             "AudioCodec": "AAC",
-                            # Internal flag to prefer channels with explicit numbering
-                            "_ExplicitNumber": 1 if explicit_number else 0
+                            # Internal fields stripped before returning lineup
+                            "_ExplicitNumber": 1 if explicit_number else 0,
+                            "_SourceURL": url,
                         }
 
                         # Optional group/network info
@@ -183,10 +188,19 @@ def load_channel_lineup(db: Session = Depends(get_db)) -> list:
 
     # Produce final channel list from dedup map
     channels = list(channels_by_name.values())
+
+    # Update module-level source URL cache before stripping internal fields
+    global _channel_source_urls
+    _channel_source_urls = {
+        ch["GuideNumber"]: ch["_SourceURL"]
+        for ch in channels
+        if "_SourceURL" in ch
+    }
+
     # Remove internal flags
     for ch in channels:
-        if "_ExplicitNumber" in ch:
-            del ch["_ExplicitNumber"]
+        ch.pop("_ExplicitNumber", None)
+        ch.pop("_SourceURL", None)
 
     logger.info(f"Total: Loaded {len(channels)} channels for HDHomeRun lineup from {len(items)} configuration(s)")
 
@@ -196,6 +210,56 @@ def load_channel_lineup(db: Session = Depends(get_db)) -> list:
         logger.info(json.dumps(channels[0], indent=2))
 
     return channels
+
+@router.get("/auto/v{channel_number:path}")
+async def stream_channel(channel_number: str, request: Request, db: Session = Depends(get_db)):
+    """Stream proxy for HDHomeRun channel requests from Plex."""
+    source_url = _channel_source_urls.get(channel_number)
+    if not source_url:
+        load_channel_lineup(db)
+        source_url = _channel_source_urls.get(channel_number)
+
+    if not source_url:
+        raise HTTPException(status_code=404, detail=f"Channel {channel_number} not found")
+
+    logger.info(f"Stream request for channel {channel_number} method={request.method} headers={dict(request.headers)}")
+    logger.info(f"Proxying channel {channel_number} -> {source_url}")
+
+    proxy_headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Accept": "*/*",
+        "Connection": "keep-alive",
+    }
+
+    def generate() -> Iterator[bytes]:
+        bytes_sent = 0
+        try:
+            logger.info(f"Opening upstream connection for channel {channel_number}")
+            with requests.get(
+                source_url,
+                headers=proxy_headers,
+                stream=True,
+                timeout=(10, None),  # 10s connect timeout, no read timeout
+            ) as resp:
+                logger.info(f"Upstream response for channel {channel_number}: status={resp.status_code} headers={dict(resp.headers)}")
+                resp.raise_for_status()
+                for chunk in resp.iter_content(chunk_size=65536):
+                    if chunk:
+                        bytes_sent += len(chunk)
+                        yield chunk
+        except GeneratorExit:
+            logger.info(f"Client disconnected for channel {channel_number} after {bytes_sent} bytes")
+        except Exception as exc:
+            logger.error(f"Stream error for channel {channel_number} after {bytes_sent} bytes: {exc}")
+        finally:
+            logger.info(f"Stream ended for channel {channel_number}, total bytes sent: {bytes_sent}")
+
+    return StreamingResponse(
+        generate(),
+        media_type="video/mp2t",
+        headers={"Cache-Control": "no-cache, no-store"},
+    )
+
 
 @router.on_event("startup")
 async def startup_event():
