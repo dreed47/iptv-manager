@@ -407,7 +407,9 @@
           {% if env_pairs %}
           <div class="env-summary">
             {% for k, v in env_pairs %}
-              <div class="env-line">{{ k }}={{ v }}</div>
+              <div class="env-line">
+                {{ k }}={% if v.startswith('http') %}<a href="{{ v }}" target="_blank" style="color: #6c757d; text-decoration: underline dotted;">{{ v }}</a>{% else %}{{ v }}{% endif %}
+              </div>
             {% endfor %}
           </div>
           {% endif %}

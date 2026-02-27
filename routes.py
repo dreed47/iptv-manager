@@ -69,6 +69,7 @@ async def index(request: Request, db: Session = Depends(get_db), error: str = No
         pairs.append(("BaseURL", base_url))
         pairs.append(("TunerCount", tuner_count))
         pairs.append(("FriendlyName", friendly_name))
+        pairs.append(("EPG XML", f"{base_url}/epg.xml"))
         return pairs
     
     env_pairs = build_env_pairs()
