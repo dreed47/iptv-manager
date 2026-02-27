@@ -29,6 +29,23 @@ Open the web UI at `http://localhost:5005`.
 | `HDHR_FRIENDLY_NAME`  | `IPTV HDHomeRun` | Device name shown in Plex. Useful for multiple instances. |
 | `HDHR_TUNER_COUNT`    | `2`              | Concurrent streams Plex may request. Raise for more simultaneous recordings. |
 | `HDHR_DISABLE_SSDP`   | `1`              | `1` = SSDP disabled (default, works everywhere). `0` = SSDP enabled (Linux only, enables Plex auto-discovery). |
+| `EPG_XML_SOURCES`     | *(see below)*    | Comma-separated XMLTV URL(s) to fetch guide data from. Defaults to `https://epg.pw/xmltv/epg_US.xml`. |
+| `EPG_CACHE_HOURS`     | `12`             | How long to cache the downloaded EPG before re-fetching. |
+
+### EPG Source
+
+Guide data is fetched from [epg.pw](https://epg.pw), a free service providing AI-generated XMLTV data for US channels, updated weekly. The app downloads the full feed, matches channels by name to your filtered playlist, and serves the result at `/epg.xml`.
+
+Channels that don't match get placeholder "No Guide Data" entries so they remain streamable in Plex.
+
+To use a different XMLTV source (e.g., for non-US channels):
+
+```sh
+# In .env — comma-separate multiple sources
+EPG_XML_SOURCES=https://epg.pw/xmltv/epg_US.xml,https://example.com/other.xml
+```
+
+Other regional feeds from epg.pw: `epg_UK.xml`, `epg_CA.xml`, `epg_AU.xml`, etc. — see https://epg.pw for the full list.
 
 ---
 
