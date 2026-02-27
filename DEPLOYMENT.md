@@ -38,6 +38,10 @@ Guide data is fetched from [epg.pw](https://epg.pw), a free service providing AI
 
 Channels that don't match get placeholder "No Guide Data" entries so they remain streamable in Plex.
 
+**Loop/replay channels** — channels with a `24/7:` style prefix (e.g., `24/7: THE BIG BANG THEORY`) are never matched against the EPG source. Their broadcast schedule wouldn't align with a 24/7 loop stream, so they always receive placeholder entries.
+
+**Auto-rebuild** — the EPG is automatically rebuilt in the background whenever you save a filtered playlist, so your guide stays in sync with your channel list without any manual steps.
+
 To use a different XMLTV source (e.g., for non-US channels):
 
 ```sh
@@ -111,6 +115,8 @@ curl http://localhost:5005/discover.json
 
 ### EPG / guide data missing
 
-- Click the **Refresh EPG** button in the web UI to force a fresh fetch.
+- The EPG rebuilds automatically after each filter save; allow ~2 minutes for the fetch to complete.
+- Click the **Refresh EPG** button in the web UI to force an immediate rebuild at any time.
 - Check logs for match results: `docker compose logs app | grep epg_manager`
 - Channels with no matched guide data get placeholder "No Guide Data" entries so they remain streamable in Plex.
+- Channels with a `24/7:` prefix are intentionally skipped for EPG matching and always show placeholder entries.

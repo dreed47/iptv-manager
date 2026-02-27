@@ -7,7 +7,7 @@ A web-based tool for managing, filtering, and serving IPTV playlists and EPG dat
 - **Web UI** — Add, edit, and manage IPTV configurations from a browser.
 - **M3U Playlist Fetching** — Download playlists from Xtream Codes or direct M3U URLs.
 - **Advanced Filtering** — Filter channels by language, keywords, channel numbers, and wildcards.
-- **EPG / Guide Data** — Fetches and matches guide data automatically; generates XMLTV with channel numbers and dummy entries for unmatched channels.
+- **EPG / Guide Data** — Fetches and matches guide data automatically; generates XMLTV with channel numbers and dummy entries for unmatched channels. Loop/replay channels (`24/7:` prefix) are always given placeholder entries. EPG rebuilds automatically after each filter save.
 - **HDHomeRun Emulation** — Appears as an HDHomeRun tuner to Plex Live TV.
 - **Docker** — Single `docker-compose.yml` works on macOS and Linux with no changes.
 
