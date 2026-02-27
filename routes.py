@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, Form, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, FileResponse, Response
 from fastapi.templating import Jinja2Templates
 import time
@@ -13,6 +13,7 @@ import requests
 import json
 import re
 import xml.etree.ElementTree as ET
+from epg_manager import get_epg as _refresh_epg
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -73,7 +74,8 @@ async def index(request: Request, db: Session = Depends(get_db), error: str = No
         return pairs
     
     env_pairs = build_env_pairs()
-    
+    friendly_name = os.getenv("HDHR_FRIENDLY_NAME", "IPTV Manager")
+
     context = {
         "request": request,
         "items": items_with_files,
@@ -84,6 +86,7 @@ async def index(request: Request, db: Session = Depends(get_db), error: str = No
         "can_enable_ssdp": can_enable_ssdp,
         "ssdp_disabled_by_env": ssdp_disabled_by_env,
         "env_pairs": env_pairs,
+        "friendly_name": friendly_name,
     }
 
     # Render template to measure rendering time (helps diagnose hangs)
@@ -159,7 +162,7 @@ async def handle_form(
     return RedirectResponse(url="/", status_code=303)
 
 @router.post("/generate_m3u", response_class=RedirectResponse)
-async def generate_m3u(item_id: int = Form(...), db: Session = Depends(get_db)):
+async def generate_m3u(background_tasks: BackgroundTasks, item_id: int = Form(...), db: Session = Depends(get_db)):
     try:
         item = db.query(Item).filter(Item.id == item_id).first()
         if not item:
@@ -361,7 +364,9 @@ async def generate_m3u(item_id: int = Form(...), db: Session = Depends(get_db)):
         redirect_url = f"/?success=Saved {num_records} records ({total_lines} lines) to M3U file from {source}"
         if epg_error:
             redirect_url += f"&error={urllib.parse.quote(epg_error)}"
-        
+
+        background_tasks.add_task(_refresh_epg, True)
+        logger.info("EPG rebuild queued in background after M3U save")
         return RedirectResponse(url=redirect_url, status_code=303)
     
     except Exception as e:
@@ -369,7 +374,7 @@ async def generate_m3u(item_id: int = Form(...), db: Session = Depends(get_db)):
         return RedirectResponse(url=f"/?error=Failed to save M3U file: {str(e)}", status_code=303)
 
 @router.post("/generate_filtered_m3u", response_class=RedirectResponse)
-async def generate_filtered_m3u(item_id: int = Form(...), db: Session = Depends(get_db)):
+async def generate_filtered_m3u(background_tasks: BackgroundTasks, item_id: int = Form(...), db: Session = Depends(get_db)):
 
     try:
         item = db.query(Item).filter(Item.id == item_id).first()
@@ -542,6 +547,8 @@ async def generate_filtered_m3u(item_id: int = Form(...), db: Session = Depends(
         success_msg = urllib.parse.quote(
             f"Filtered {num_records} of {input_record_count} records ({total_lines} lines)"
         )
+        background_tasks.add_task(_refresh_epg, True)
+        logger.info("EPG rebuild queued in background after filtered M3U save")
         return RedirectResponse(url=f"/?success={success_msg}", status_code=303)
 
     except Exception as e:
