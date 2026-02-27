@@ -54,6 +54,7 @@ def get_epg_source_urls() -> list[str]:
 
 _SUPERSCRIPT_RE = re.compile(r'[\u1D00-\u1DBF\u02B0-\u02FF\u00B2\u00B3\u00B9\u2070-\u209F\u1D2C-\u1D9A]+')
 _PROVIDER_PREFIX_RE = re.compile(r'^[A-Z]+:\s*')
+_LOOP_PREFIX_RE = re.compile(r'^\d+/\d+:\s*')   # e.g. "24/7:" — loop/replay channels
 _HD_SUFFIX_RE = re.compile(r'\b(hd|sd|4k)\b', re.I)
 _NONALNUM_RE = re.compile(r'[^a-z0-9\s]')
 _PAREN_RE = re.compile(r'\([^)]*\)')         # strip e.g. "(NBC)", "(KDKA)"
@@ -86,8 +87,9 @@ _ALIASES: dict[str, list[str]] = {
 
 
 def _strip_prefix(name: str) -> str:
-    """Remove SLING:, US:, GO:, PRIME: etc. and trailing superscripts."""
+    """Remove SLING:, US:, GO:, PRIME:, 24/7: etc. and trailing superscripts."""
     name = _PROVIDER_PREFIX_RE.sub('', name).strip()
+    name = _LOOP_PREFIX_RE.sub('', name).strip()
     name = _SUPERSCRIPT_RE.sub(' ', name).strip()
     return name
 
@@ -146,6 +148,9 @@ def get_channels_from_m3u() -> list[dict]:
 
             raw_name = tvg_name_m.group(1)
             clean = _strip_prefix(raw_name)
+            # Channels with a "24/7:" style prefix are loop/replay streams — their
+            # programme schedule won't match broadcast EPG data, so skip matching.
+            is_loop = bool(_LOOP_PREFIX_RE.match(raw_name))
             channels.append({
                 'tvg_id': tvg_id,
                 'tvg_chno': tvg_chno_m.group(1) if tvg_chno_m else '',
@@ -153,6 +158,7 @@ def get_channels_from_m3u() -> list[dict]:
                 'clean_name': clean,
                 'norm': _normalize(clean),
                 'logo': logo_m.group(1) if logo_m else '',
+                'epg_skip': is_loop,
             })
 
     logger.info(f"EPG: found {len(channels)} unique channels in filtered M3U files")
@@ -300,7 +306,7 @@ def build_epg_xml(our_channels: list[dict], epg_sources: list) -> str:
     our_all_by_norm: dict[str, list]   = {}
     for ch in our_channels:
         n = ch['norm']
-        if n:
+        if n and not ch.get('epg_skip'):
             our_all_by_norm.setdefault(n, []).append(ch)
             if n not in our_by_norm:
                 our_by_norm[n] = ch
