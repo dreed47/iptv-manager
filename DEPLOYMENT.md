@@ -1,143 +1,73 @@
 # Deployment Guide
 
-## Quick Start
+## Quick Start (Any Platform)
 
-### Linux/Debian (Production)
-
-```bash
-git clone <repo>
+```sh
+git clone https://github.com/dreed47/iptv-manager.git
 cd iptv-manager
-
-# Copy sample environment file
-cp sample.env .env
-
-# Edit .env and update your server's IP address
-# HDHR_ADVERTISE_HOST=<your-server-ip>
-# HDHR_DISABLE_SSDP=0  (already set correctly for Linux)
-
-# Start the application
-docker-compose up -d
-
-# Access web UI
-open http://<your-server-ip>:5005
-```
-
-### macOS (Development/Testing)
-
-```bash
-git clone <repo>
-cd iptv-manager
-
-# Copy sample environment file
-cp sample.env .env
-
-# Edit .env - NO CHANGES NEEDED for macOS!
-# HDHR_DISABLE_SSDP is already 0 by default
-# The docker-compose-macos.yml override will set it to 1 automatically
-
-# Start with macOS override (prevents 4-5 minute hang)
-docker-compose -f docker-compose.yml -f docker-compose-macos.yml up -d
-
-# Access web UI
-open http://localhost:5005
-```
-
----
-
-## Platform Differences
-
-| Platform     | Command                                                                  | SSDP Auto-Discovery |
-| ------------ | ------------------------------------------------------------------------ | ------------------- |
-| Linux/Debian | `docker-compose up -d`                                                   | ✅ Available        |
-| macOS        | `docker-compose -f docker-compose.yml -f docker-compose-macos.yml up -d` | ⚠️ Not recommended  |
-
-**Why the difference?**
-macOS Docker has a bug where binding to UDP port 1900 hangs for 4-5 minutes. The macOS override file disables SSDP to prevent this.
-
----
-
-## SSDP Auto-Discovery (Optional)
-
-SSDP/UPnP auto-discovery is **optional** - all HDHomeRun features work without it!
-
-### Option 1: Manual Plex Configuration (Recommended)
-
-Just add your server URL in Plex DVR settings:
-
-```
-http://192.168.86.254:5005
-```
-
-✅ Works on all platforms  
-✅ No configuration needed  
-✅ Instant startup
-
-### Option 2: Enable SSDP Auto-Discovery
-
-If you want Plex to **automatically** discover your device:
-
-**On Debian/Linux:**
-
-1. Click "Enable Discovery" button in web UI
-2. Plex will find it automatically
-
-**On macOS:**
-⚠️ Not recommended - causes 4-5 minute startup delay due to Docker bug
-
----
-
-## Quick Start
-
-### Any Platform (macOS, Debian, Ubuntu, etc.)
-
-```bash
-git clone <repo>
-cd iptv-manager
-docker-compose up -d
-
-# Access web UI
-open http://localhost:5005
-# or
-open http://<your-server-ip>:5005
-```
-
-**That's it!** Everything works out of the box.
-
----
-
-## Features
-
-| Feature                   | Status                          |
-| ------------------------- | ------------------------------- |
-| Web UI                    | ✅ Works                        |
-| HTTP API endpoints        | ✅ Works                        |
-| M3U playlist generation   | ✅ Works                        |
-| EPG filtering             | ✅ Works                        |
-| Manual Plex configuration | ✅ Works                        |
-| SSDP auto-discovery       | 🔘 Optional (enable via web UI) |
-| Startup time              | ⚡ Instant                      |
-
----
-
-## Environment Variables (.env file)
-
-Create a `.env` file from the sample:
-
-```bash
 cp sample.env .env
 ```
 
-| Variable              | Default          | Description                                                      |
-| --------------------- | ---------------- | ---------------------------------------------------------------- |
-| `HDHR_ADVERTISE_HOST` | `192.168.86.254` | **Update this** to your server's IP address                      |
-| `HDHR_ADVERTISE_PORT` | `5005`           | HTTP port                                                        |
-| `HDHR_SCHEME`         | `http`           | Protocol                                                         |
-| `HDHR_DISABLE_SSDP`   | `0`              | `0` = SSDP enabled (Linux), `1` = disabled (macOS auto-override) |
+Edit `.env` — at minimum set `HDHR_ADVERTISE_HOST` to your machine's LAN IP (or `127.0.0.1` if Plex runs on the same machine).
 
-**Important:**
+```sh
+docker compose up -d
+```
 
-- On Linux: `.env` has `HDHR_DISABLE_SSDP=0` - Enable/Disable buttons will appear in web UI
-- On macOS: `docker-compose-macos.yml` automatically overrides to `HDHR_DISABLE_SSDP=1` - Shows manual setup instructions in web UI
+Open the web UI at `http://localhost:5005`.
+
+---
+
+## Environment Variables
+
+| Variable              | Default          | Description |
+|-----------------------|------------------|-------------|
+| `APP_PORT`            | `5005`           | Host port Docker binds to. Change if running multiple instances. |
+| `HDHR_ADVERTISE_HOST` | `127.0.0.1`      | IP address Plex uses to reach the app. Use LAN IP if Plex is on another machine. |
+| `HDHR_SCHEME`         | `http`           | Protocol (`http` or `https`). |
+| `HDHR_MODEL`          | `HDHR3-US`       | HDHomeRun model string shown in Plex. |
+| `HDHR_FRIENDLY_NAME`  | `IPTV HDHomeRun` | Device name shown in Plex. Useful for multiple instances. |
+| `HDHR_TUNER_COUNT`    | `2`              | Concurrent streams Plex may request. Raise for more simultaneous recordings. |
+| `HDHR_DISABLE_SSDP`   | `1`              | `1` = SSDP disabled (default, works everywhere). `0` = SSDP enabled (Linux only, enables Plex auto-discovery). |
+
+---
+
+## Connecting to Plex
+
+### Manual (Recommended — works everywhere)
+
+1. Open Plex → Settings → Live TV & DVR → Set Up Plex DVR
+2. Choose **Enter device address manually**
+3. Enter: `http://<HDHR_ADVERTISE_HOST>:<APP_PORT>` (e.g., `http://192.168.1.50:5005`)
+4. Plex will find the tuner and guide automatically.
+
+### SSDP Auto-Discovery (Optional — Linux only)
+
+SSDP lets Plex find the device without manual configuration. It is disabled by default because macOS Docker hangs for several minutes when binding UDP port 1900.
+
+To enable on Linux:
+
+1. Set `HDHR_DISABLE_SSDP=0` in `.env`
+2. Uncomment the `1900:1900/udp` port line in `docker-compose.yml`
+3. Restart: `./restart_container.sh`
+
+Or toggle it at runtime from the web UI without editing any files.
+
+---
+
+## Rebuilding After Code Changes
+
+```sh
+./restart_container.sh             # incremental rebuild
+./restart_container.sh --no-cache  # full clean rebuild
+```
+
+## Updating from Git
+
+```sh
+./update.sh             # git pull + incremental rebuild
+./update.sh --no-cache  # git pull + full clean rebuild
+```
 
 ---
 
@@ -145,68 +75,25 @@ cp sample.env .env
 
 ### Can't access web UI
 
-```bash
-# Check if container is running
-docker-compose ps
+```sh
+# Check container status
+docker compose ps
 
 # Check logs
-docker-compose logs app
+docker compose logs app
 
-# Verify IP address matches your server
-# Edit docker-compose.yml and change HDHR_ADVERTISE_HOST
-
-# Check firewall allows port 5005
-# macOS: System Preferences > Security & Privacy > Firewall
-# Linux: sudo ufw allow 5005/tcp
+# Verify the port
+curl http://localhost:5005/discover.json
 ```
 
 ### Plex can't connect
 
-```bash
-# Add manually in Plex DVR settings:
-http://<HDHR_ADVERTISE_HOST>:5005
+- Confirm `HDHR_ADVERTISE_HOST` in `.env` is the IP Plex can reach (not `127.0.0.1` if Plex is on another machine).
+- Test reachability from the Plex machine: `curl http://<host>:5005/discover.json`
+- Allow port 5005 through any firewall: `sudo ufw allow 5005/tcp`
 
-# Test the discovery endpoint:
-curl http://192.168.86.254:5005/discover.json
+### EPG / guide data missing
 
-# Should return JSON with device info
-```
-
-### Want to enable SSDP auto-discovery?
-
-**On Linux/Debian:**
-
-1. Open web UI at http://your-server-ip:5005
-2. Click "Enable Discovery" button
-3. Plex will auto-discover the device
-
-**On macOS:**
-Not recommended - will cause 4-5 minute delays. Use manual Plex configuration instead.
-
----
-
-## Advanced: Permanent SSDP on Linux Only
-
-If you're **only** deploying on Linux and want SSDP auto-enabled:
-
-Edit `docker-compose.yml`:
-
-```yaml
-environment:
-  - HDHR_DISABLE_SSDP=0 # Change 1 to 0
-
-ports:
-  - "5005:5005"
-  - "1900:1900/udp" # Uncomment this
-```
-
-Then verify:
-
-```bash
-docker-compose logs app | grep SSDP
-
-# Should show:
-# INFO: SSDP socket.bind completed in 0.001s
-```
-
-**But honestly?** The web UI button is easier and more flexible.
+- Click the **Refresh EPG** button in the web UI to force a fresh fetch.
+- Check logs for match results: `docker compose logs app | grep epg_manager`
+- Channels with no matched guide data get placeholder "No Guide Data" entries so they remain streamable in Plex.

@@ -1,0 +1,35 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "Build IPTV Docker image",
+			"type": "shell",
+			"command": "docker build -t iptv-manager-working-app /Users/david/Desktop/code/iptv-manager-working 2>&1 | tail -6 && echo BUILD_OK"
+		},
+		{
+			"label": "Build IPTV Docker image (no cache)",
+			"type": "shell",
+			"command": "docker build --no-cache -t iptv-manager-working-app /Users/david/Desktop/code/iptv-manager-working 2>&1 | tail -8 && echo BUILD_OK"
+		},
+		{
+			"label": "Prune and rebuild IPTV image",
+			"type": "shell",
+			"command": "docker builder prune -f && docker build --no-cache -t iptv-manager-working-app /Users/david/Desktop/code/iptv-manager-working 2>&1 | tail -6 && echo BUILD_OK"
+		},
+		{
+			"label": "Restart container and test /epg.xml",
+			"type": "shell",
+			"command": "docker compose -f /Users/david/Desktop/code/iptv-manager-working/docker-compose.yml -f /Users/david/Desktop/code/iptv-manager-working/docker-compose-macos.yml up -d --force-recreate && sleep 3 && curl -s http://localhost:5005/epg.xml | head -c 200 && echo"
+		},
+		{
+			"label": "Test /epg.xml endpoint",
+			"type": "shell",
+			"command": "sleep 5 && curl -s --max-time 10 http://localhost:5005/epg.xml | head -c 500 && echo '---DONE---'"
+		},
+		{
+			"label": "Check EPG logs",
+			"type": "shell",
+			"command": "docker exec iptv-manager-working-app-1 ls /app/m3u_files/ && docker logs iptv-manager-working-app-1 2>&1 | grep -E 'EPG|epg|found.*channel|filtered' | tail -15"
+		}
+	]
+}

@@ -8,9 +8,9 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # services.py
-def create_item(db: Session, name: str, server_url: str, username: str, user_pass: str, languages: str, includes: str, excludes: str, epg_channels: str):
+def create_item(db: Session, name: str, server_url: str, username: str, user_pass: str, languages: str, includes: str, excludes: str):
     try:
-        db_item = Item(name=name, server_url=server_url, username=username, user_pass=user_pass, languages=languages, includes=includes, excludes=excludes, epg_channels=epg_channels)
+        db_item = Item(name=name, server_url=server_url, username=username, user_pass=user_pass, languages=languages, includes=includes, excludes=excludes)
         db.add(db_item)
         db.commit()
         db.refresh(db_item)
@@ -21,7 +21,7 @@ def create_item(db: Session, name: str, server_url: str, username: str, user_pas
         db.rollback()
         return None
 
-def update_item(db: Session, item_id: int, name: str, server_url: str, username: str, user_pass: str, languages: str, includes: str, excludes: str, epg_channels: str):
+def update_item(db: Session, item_id: int, name: str, server_url: str, username: str, user_pass: str, languages: str, includes: str, excludes: str):
     try:
         db_item = db.query(Item).filter(Item.id == item_id).first()
         if db_item:
@@ -32,7 +32,6 @@ def update_item(db: Session, item_id: int, name: str, server_url: str, username:
             db_item.languages = languages
             db_item.includes = includes
             db_item.excludes = excludes
-            db_item.epg_channels = epg_channels  # New field
             db.commit()
             db.refresh(db_item)
             logger.info(f"Updated item with id {item_id} to name '{name}'")

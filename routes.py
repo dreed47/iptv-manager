@@ -50,7 +50,7 @@ async def index(request: Request, db: Session = Depends(get_db), error: str = No
         item_dict['has_epg'] = f"filtered_epg_{item.id}.xml" in existing_files
         # Add streaming URLs to the item
         item_dict['stream_url'] = f"{base_url}/stream_filtered_m3u/{item.id}"
-        item_dict['epg_url'] = f"{base_url}/stream_epg/{item.id}"
+        item_dict['epg_url'] = f"{base_url}/epg.xml"
         items_with_files.append(item_dict)
 
     # Determine if SSDP discovery can be safely enabled
@@ -107,7 +107,6 @@ async def handle_form(
     languages: str = Form(None),
     includes: str = Form(None),
     excludes: str = Form(None),
-    epg_channels: str = Form(None),  
     item_id: int = Form(None),
     new_name: str = Form(None),
     new_server_url: str = Form(None),
@@ -116,7 +115,6 @@ async def handle_form(
     new_languages: str = Form(None),
     new_includes: str = Form(None),
     new_excludes: str = Form(None),
-    new_epg_channels: str = Form(None),  
     db: Session = Depends(get_db)
 ):
     #logger.info(f"Received form data: add={add}, edit={edit}, delete={delete}, name='{name}', server_url='{server_url}', username='{username}', user_pass='{user_pass}', languages='{languages}', includes='{includes}', excludes='{excludes}', guide_ids='{guide_ids}', item_id={item_id}, new_name='{new_name}', new_server_url='{new_server_url}', new_username='{new_username}', new_user_pass='{new_user_pass}', new_languages='{new_languages}', new_includes='{new_includes}', new_excludes='{new_excludes}', new_guide_ids='{new_guide_ids}'")
@@ -134,14 +132,9 @@ async def handle_form(
         new_includes = ','.join([inc.strip() for inc in new_includes.split('\n') if inc.strip()])
     if new_excludes and '\n' in new_excludes:
         new_excludes = ','.join([ex.strip() for ex in new_excludes.split('\n') if ex.strip()])
-    if epg_channels and '\n' in epg_channels:
-        epg_channels = ','.join([chan.strip() for chan in epg_channels.split('\n') if chan.strip()])
-    if new_epg_channels and '\n' in new_epg_channels:
-        new_epg_channels = ','.join([chan.strip() for chan in new_epg_channels.split('\n') if chan.strip()])
-            
     if add:
         logger.info(f"Processing add request with name: '{name}'")
-        result = create_item(db, name, server_url, username, user_pass, languages, includes, excludes, epg_channels)
+        result = create_item(db, name, server_url, username, user_pass, languages, includes, excludes)
         if not result:
             logger.warning("Item creation failed")
             return RedirectResponse(url="/?error=Failed to create item", status_code=303)
@@ -150,7 +143,7 @@ async def handle_form(
         if not item_id or not all([new_name, new_server_url, new_username, new_user_pass]):
             logger.warning(f"Missing item_id or fields for edit: item_id={item_id}")
             return RedirectResponse(url="/?error=Missing item ID or fields", status_code=303)
-        if not update_item(db, item_id, new_name, new_server_url, new_username, new_user_pass, new_languages, new_includes, new_excludes, new_epg_channels):
+        if not update_item(db, item_id, new_name, new_server_url, new_username, new_user_pass, new_languages, new_includes, new_excludes):
             logger.warning(f"Item update failed for id {item_id}")
             return RedirectResponse(url="/?error=Item not found", status_code=303)
     elif delete:
@@ -550,83 +543,9 @@ async def generate_filtered_m3u(item_id: int = Form(...), db: Session = Depends(
         )
         return RedirectResponse(url=f"/?success={success_msg}", status_code=303)
 
-        #epg_success = await generate_filtered_epg(item_id, db)
-        #if epg_success:
-        #    return RedirectResponse(url=f"/?success=Saved {num_records} filtered records ({total_lines} lines) to filtered M3U file and generated filtered EPG", status_code=303)
-        #else:
-        #    return RedirectResponse(url=f"/?success=Saved {num_records} filtered records ({total_lines} lines) to filtered M3U file&error=Failed to generate filtered EPG", status_code=303)
-
     except Exception as e:
         logger.error(f"Failed to generate filtered M3U for item {item_id}: {str(e)}")
         return RedirectResponse(url=f"/?error=Failed to save filtered M3U file: {str(e)}", status_code=303)
-
-async def generate_filtered_epg(item_id: int, db: Session):
-    """Generate filtered EPG based on channel names provided by user"""
-    try:
-        item = db.query(Item).filter(Item.id == item_id).first()
-        if not item:
-            logger.warning(f"Item with id {item_id} not found for EPG generation")
-            return False
-        
-        if not item.epg_channels:
-            logger.warning(f"No EPG channels specified for item {item_id}")
-            return False
-        
-        epg_path = os.path.join("/app/m3u_files", f"epg_{item_id}.xml")
-        if not os.path.exists(epg_path):
-            logger.warning(f"EPG file not found for item {item_id} at {epg_path}")
-            return False
-        
-        # Parse channel names from user input
-        channel_names = {name.strip() for name in item.epg_channels.split(",") if name.strip()}
-        logger.info(f"Filtering EPG for {len(channel_names)} channel names: {list(channel_names)[:10]}")
-        
-        # Read and parse original EPG
-        with open(epg_path, 'r', encoding='utf-8') as f:
-            epg_content = f.read()
-        
-        # Parse XML
-        root = ET.fromstring(epg_content)
-        
-        # Create new root for filtered EPG
-        new_root = ET.Element('tv')
-        new_root.attrib.update(root.attrib)
-        
-        channels_kept = 0
-        programmes_kept = 0
-        kept_channel_ids = set()
-        
-        # Find and keep matching channels
-        for channel in root.findall('.//channel'):
-            display_name_elem = channel.find('display-name')
-            if display_name_elem is not None:
-                display_name = display_name_elem.text
-                if display_name and display_name in channel_names:
-                    new_root.append(channel)
-                    channels_kept += 1
-                    kept_channel_ids.add(channel.get('id'))
-                    logger.debug(f"Keeping channel: {display_name}")
-        
-        # Find and keep matching programmes
-        for programme in root.findall('.//programme'):
-            if programme.get('channel') in kept_channel_ids:
-                new_root.append(programme)
-                programmes_kept += 1
-        
-        logger.info(f"EPG filtering kept {channels_kept} channels and {programmes_kept} programmes")
-        
-        # Save filtered EPG
-        filtered_epg_path = os.path.join("/app/m3u_files", f"filtered_epg_{item_id}.xml")
-        
-        with open(filtered_epg_path, 'w', encoding='utf-8') as f:
-            f.write('<?xml version="1.0" encoding="UTF-8"?>\n')
-            f.write(ET.tostring(new_root, encoding='unicode'))
-        
-        return channels_kept > 0
-        
-    except Exception as e:
-        logger.error(f"Failed to generate filtered EPG: {str(e)}")
-        return False
 
 @router.get("/download_m3u/{item_id}", response_class=FileResponse)
 async def download_m3u(item_id: int, db: Session = Depends(get_db)):
@@ -675,25 +594,3 @@ async def stream_filtered_m3u(item_id: int, db: Session = Depends(get_db)):
         }
     )
 
-@router.get("/stream_epg/{item_id}")
-async def stream_epg(item_id: int, db: Session = Depends(get_db)):
-    item = db.query(Item).filter(Item.id == item_id).first()
-    if not item:
-        raise HTTPException(status_code=404, detail="Item not found")
-    
-    epg_path = os.path.join("/app/m3u_files", f"filtered_epg_{item_id}.xml")
-    if not os.path.exists(epg_path):
-        raise HTTPException(status_code=404, detail="EPG file not found")
-    
-    # Return the EPG content directly with proper XML headers
-    with open(epg_path, "r", encoding="utf-8") as f:
-        epg_content = f.read()
-    
-    return Response(
-        content=epg_content,
-        media_type="application/xml",
-        headers={
-            "Content-Disposition": f'attachment; filename="filtered_epg_{item.name}.xml"',
-            "Access-Control-Allow-Origin": "*"
-        }
-    )

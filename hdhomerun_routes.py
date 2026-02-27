@@ -261,6 +261,34 @@ async def stream_channel(channel_number: str, request: Request, db: Session = De
     )
 
 
+@router.get("/epg.xml")
+async def serve_epg():
+    """
+    Serve a combined XMLTV EPG file built from iptv-org US guide data.
+    Pass this URL to Plex DVR as your guide source instead of a zip code:
+      http://<your-ip>:5005/epg.xml
+    Cached for 12 hours; force-refresh via POST /epg/refresh.
+    """
+    import asyncio
+    from epg_manager import get_epg
+    from fastapi.responses import Response as FastResponse
+    xml_content = await asyncio.get_event_loop().run_in_executor(None, get_epg)
+    return FastResponse(
+        content=xml_content,
+        media_type="application/xml",
+        headers={"Cache-Control": "max-age=3600", "Access-Control-Allow-Origin": "*"},
+    )
+
+
+@router.post("/epg/refresh")
+async def refresh_epg():
+    """Force a rebuild of the EPG cache from source URLs."""
+    import asyncio
+    from epg_manager import get_epg
+    await asyncio.get_event_loop().run_in_executor(None, lambda: get_epg(force_refresh=True))
+    return RedirectResponse(url="/?success=EPG refreshed successfully", status_code=303)
+
+
 @router.on_event("startup")
 async def startup_event():
     logger.info("HDHomeRun emulator lazy-start enabled (will start on first HDHR request)")
