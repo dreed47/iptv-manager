@@ -371,10 +371,9 @@ def build_epg_xml(our_channels: list[dict], epg_sources: list) -> str:
         chno   = (ch.get('tvg_chno') or '').strip()
         name   = ch['clean_name']
         parts.append(f'  <channel id="{_xml_esc(tvg_id)}">')
-        if chno:
-            # Numbered display-name first — most players (including Plex) sort by this
-            parts.append(f'    <display-name>{_xml_esc(chno + " " + name)}</display-name>')
-        parts.append(f'    <display-name>{_xml_esc(name)}</display-name>')
+        # Single display-name: numbered when available (Plex sorts by this), plain otherwise
+        display = f'{chno} {name}' if chno else name
+        parts.append(f'    <display-name>{_xml_esc(display)}</display-name>')
         if chno:
             parts.append(f'    <lcn>{_xml_esc(chno)}</lcn>')
         logo = ch.get('logo') or ''
