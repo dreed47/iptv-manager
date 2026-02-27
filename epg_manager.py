@@ -264,19 +264,23 @@ def _chno_sort_key(ch: dict):
         return (1, 9999, ch.get('clean_name', ''))
 
 
-def _dummy_programmes(tvg_id: str, ch_name: str) -> list[str]:
-    """7-day placeholder guide block so Plex shows the channel as tunable."""
-    now = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+def _dummy_programmes(tvg_id: str, ch_name: str, chno: str = '') -> list[str]:
+    """2-hour placeholder blocks for 7 days so Plex shows the channel name in the guide."""
+    now = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
+    # Align to the nearest 2-hour boundary
+    now = now.replace(hour=(now.hour // 2) * 2)
+    display_title = f"{chno} {ch_name}".strip() if chno else ch_name
     result = []
-    for day in range(7):
-        start = now + timedelta(days=day)
-        stop  = start + timedelta(days=1)
+    for block in range(7 * 12):  # 7 days × 12 two-hour blocks
+        start = now + timedelta(hours=block * 2)
+        stop  = start + timedelta(hours=2)
         sfmt  = start.strftime('%Y%m%d%H%M%S +0000')
         efmt  = stop.strftime('%Y%m%d%H%M%S +0000')
         result.append(
             f'  <programme start="{sfmt}" stop="{efmt}" channel="{_xml_esc(tvg_id)}">'
-            f'<title>No Guide Data</title>'
-            f'<desc>Guide data not available for {_xml_esc(ch_name)}.</desc>'
+            f'<title>{_xml_esc(display_title)}</title>'
+            f'<sub-title>No Guide Data</sub-title>'
+            f'<desc>Guide data is not available for this channel.</desc>'
             f'</programme>'
         )
     return result
@@ -390,7 +394,7 @@ def build_epg_xml(our_channels: list[dict], epg_sources: list) -> str:
 
     # ---- dummy programme blocks for unmatched channels ----
     for ch in unmatched_sorted:
-        parts.extend(_dummy_programmes(ch['tvg_id'], ch['clean_name']))
+        parts.extend(_dummy_programmes(ch['tvg_id'], ch['clean_name'], (ch.get('tvg_chno') or '').strip()))
 
     parts.append('</tv>')
 
