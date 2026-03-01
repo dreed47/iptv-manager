@@ -142,6 +142,20 @@ async def handle_form(
         if not result:
             logger.warning("Item creation failed")
             return RedirectResponse(url="/?error=Failed to create item", status_code=303)
+        # Purge any stale files from a previous config that had the same ID (SQLite ID reuse)
+        for fname in [
+            f"xtream_playlist_{result.id}.m3u",
+            f"filtered_playlist_{result.id}.m3u",
+            f"epg_{result.id}.xml",
+            f"filtered_epg_{result.id}.xml",
+        ]:
+            fpath = os.path.join("/app/m3u_files", fname)
+            try:
+                if os.path.exists(fpath):
+                    os.remove(fpath)
+                    logger.info(f"Removed stale {fname} on new config creation")
+            except Exception as e:
+                logger.warning(f"Could not remove stale {fname}: {e}")
     elif edit or (item_id and new_name and new_server_url and new_username and new_user_pass and not add and not delete):
         logger.info(f"Processing edit request for item {item_id}")
         if not item_id or not all([new_name, new_server_url, new_username, new_user_pass]):
@@ -150,6 +164,16 @@ async def handle_form(
         if not update_item(db, item_id, new_name, new_server_url, new_username, new_user_pass, new_languages, new_includes, new_excludes):
             logger.warning(f"Item update failed for id {item_id}")
             return RedirectResponse(url="/?error=Item not found", status_code=303)
+        # On save, only delete the filtered M3U so "Fetch Filtered M3U" re-runs with new filters,
+        # but keep the full M3U so the button stays enabled without re-fetching.
+        for fname in [f"filtered_playlist_{item_id}.m3u"]:
+            fpath = os.path.join("/app/m3u_files", fname)
+            try:
+                if os.path.exists(fpath):
+                    os.remove(fpath)
+                    logger.info(f"Removed {fname} after save to reset filtered fetch state")
+            except Exception as e:
+                logger.warning(f"Could not remove {fname}: {e}")
     elif delete:
         logger.info(f"Processing delete request for item {item_id}")
         if not item_id:
@@ -158,6 +182,20 @@ async def handle_form(
         if not delete_item(db, item_id):
             logger.warning(f"Item deletion failed for id {item_id}")
             return RedirectResponse(url="/?error=Item not found", status_code=303)
+        # Cleanup all files associated with this config
+        for fname in [
+            f"xtream_playlist_{item_id}.m3u",
+            f"filtered_playlist_{item_id}.m3u",
+            f"epg_{item_id}.xml",
+            f"filtered_epg_{item_id}.xml",
+        ]:
+            fpath = os.path.join("/app/m3u_files", fname)
+            try:
+                if os.path.exists(fpath):
+                    os.remove(fpath)
+                    logger.info(f"Removed {fname} after config deletion")
+            except Exception as e:
+                logger.warning(f"Could not remove {fname}: {e}")
     
     return RedirectResponse(url="/", status_code=303)
 
@@ -602,3 +640,150 @@ async def stream_filtered_m3u(item_id: int, db: Session = Depends(get_db)):
         }
     )
 
+
+# ---------------------------------------------------------------------------
+# Direct stream player (used by M3U browser play button)
+# ---------------------------------------------------------------------------
+
+@router.get("/stream_player", response_class=HTMLResponse)
+async def stream_player(request: Request, url: str = "", name: str = "Stream"):
+    """Open a direct stream URL in the player page."""
+    import urllib.parse as _up
+    stash_kb    = int(os.getenv("PLAYER_STASH_KB",    "1024"))
+    latency_max = float(os.getenv("PLAYER_LATENCY_MAX", "30.0"))
+    latency_min = float(os.getenv("PLAYER_LATENCY_MIN",  "5.0"))
+    return templates.TemplateResponse("player.html", {
+        "request": request,
+        "channel_number": "",
+        "channel_name": name,
+        "channel_name_encoded": _up.quote(name),
+        "stream_url_encoded": _up.quote(url, safe=""),
+        "stream_url_json": json.dumps(url),
+        "vlc_href": url,
+        "stash_kb": stash_kb,
+        "latency_max": latency_max,
+        "latency_min": latency_min,
+    })
+
+
+# ---------------------------------------------------------------------------
+# Full M3U browser
+# ---------------------------------------------------------------------------
+
+@router.get("/m3u_browser/{item_id}", response_class=HTMLResponse)
+async def m3u_browser(item_id: int, request: Request, db: Session = Depends(get_db)):
+    item = db.query(Item).filter(Item.id == item_id).first()
+    if not item:
+        raise HTTPException(status_code=404, detail="Item not found")
+    file_path = os.path.join("/app/m3u_files", f"xtream_playlist_{item_id}.m3u")
+    if not os.path.exists(file_path):
+        raise HTTPException(status_code=404, detail="Full M3U not fetched yet — click Fetch M3U first")
+    return templates.TemplateResponse("m3u_browser.html", {
+        "request": request,
+        "item_id": item_id,
+        "item_name": item.name,
+    })
+
+
+@router.get("/m3u_browser_data/{item_id}")
+async def m3u_browser_data(
+    item_id: int,
+    db: Session = Depends(get_db),
+    search: str = "",
+    group: str = "",
+    prefix: str = "",
+    page: int = 1,
+    per_page: int = 100,
+):
+    item = db.query(Item).filter(Item.id == item_id).first()
+    if not item:
+        raise HTTPException(status_code=404, detail="Item not found")
+    file_path = os.path.join("/app/m3u_files", f"xtream_playlist_{item_id}.m3u")
+    if not os.path.exists(file_path):
+        raise HTTPException(status_code=404, detail="Full M3U not found")
+
+    channels = []
+    groups: set = set()
+    prefixes: dict = {}
+
+    with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
+        lines = f.read().splitlines()
+
+    i = 1 if (lines and lines[0].strip() == "#EXTM3U") else 0
+    while i < len(lines):
+        line = lines[i]
+        if line.startswith("#EXTINF") and i + 1 < len(lines):
+            extinf = line
+            url = lines[i + 1]
+            attrs = {}
+            display_name = ""
+            if "," in extinf:
+                attr_part, display_name = extinf.split(",", 1)
+                for k, v in re.findall(r'(\S+?)="([^"]*)"', attr_part):
+                    attrs[k.lower()] = v
+            display_name = display_name.strip()
+            tvg_name = attrs.get("tvg-name", "").strip()
+            group_title = attrs.get("group-title", "").strip()
+
+            # Detect provider prefix  e.g. "SLING: ESPN" -> "SLING:", "EN - BBC" -> "EN -"
+            src = tvg_name or display_name
+            ch_prefix = ""
+            if ":" in src:
+                candidate = src.split(":")[0].strip()
+                if 1 < len(candidate) <= 15 and not any(c.isdigit() for c in candidate):
+                    ch_prefix = candidate + ":"
+            elif " - " in src:
+                candidate = src.split(" - ")[0].strip()
+                if 1 < len(candidate) <= 6:
+                    ch_prefix = candidate + " -"
+
+            if group_title:
+                groups.add(group_title)
+            if ch_prefix:
+                prefixes[ch_prefix] = prefixes.get(ch_prefix, 0) + 1
+
+            channels.append({
+                "name": display_name,
+                "tvg_name": tvg_name,
+                "group": group_title,
+                "prefix": ch_prefix,
+                "url": url,
+            })
+            i += 2
+        else:
+            i += 1
+
+    # Only include prefixes that appear on at least 5 channels (avoids one-off channel name colons)
+    MIN_PREFIX_COUNT = 5
+    valid_prefixes = {p for p, count in prefixes.items() if count >= MIN_PREFIX_COUNT}
+
+    # Clear prefix on channels whose detected prefix isn't a real provider
+    for ch in channels:
+        if ch["prefix"] and ch["prefix"] not in valid_prefixes:
+            ch["prefix"] = ""
+
+    # Apply filters
+    filtered = channels
+    if search:
+        s = search.lower()
+        filtered = [c for c in filtered if s in c["name"].lower() or s in c["tvg_name"].lower()]
+    if group:
+        filtered = [c for c in filtered if c["group"] == group]
+    if prefix:
+        filtered = [c for c in filtered if c["prefix"] == prefix]
+
+    total = len(filtered)
+    per_page = max(10, min(per_page, 500))
+    total_pages = max(1, (total + per_page - 1) // per_page)
+    page = max(1, min(page, total_pages))
+    start = (page - 1) * per_page
+
+    return {
+        "channels": filtered[start:start + per_page],
+        "total": total,
+        "page": page,
+        "per_page": per_page,
+        "total_pages": total_pages,
+        "groups": sorted(groups),
+        "prefixes": sorted(valid_prefixes),
+    }

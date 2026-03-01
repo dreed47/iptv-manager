@@ -1,0 +1,410 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>M3U Browser — {{ item_name }}</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      background: linear-gradient(135deg, #2c3e50 0%, #3498db 100%);
+      margin: 0; padding: 20px; min-height: 100vh; color: #333;
+    }
+    .container {
+      max-width: 1400px; margin: 0 auto; background: #f8f9fa;
+      border-radius: 8px; box-shadow: 0 4px 20px rgba(0,0,0,0.15); padding: 24px;
+    }
+
+    /* Header */
+    .header {
+      display: flex; align-items: center; justify-content: space-between;
+      flex-wrap: wrap; gap: 12px; margin-bottom: 20px;
+      padding-bottom: 16px; border-bottom: 2px solid #e9ecef;
+    }
+    .header h1 { margin: 0; font-size: 22px; font-weight: 700; color: #2c3e50; }
+    .header h1 span { color: #667eea; }
+    .header a.back { font-size: 14px; color: #3498db; text-decoration: none; font-weight: 500; }
+    .header a.back:hover { text-decoration: underline; }
+
+    /* Filter bar */
+    .filters {
+      display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; align-items: center;
+    }
+    .filters input[type="search"] {
+      flex: 1; min-width: 180px; padding: 8px 12px;
+      border: 1px solid #ced4da; border-radius: 6px; font-size: 14px; outline: none;
+    }
+    .filters input[type="search"]:focus { border-color: #667eea; }
+    .filters select {
+      padding: 8px 12px; border: 1px solid #ced4da; border-radius: 6px;
+      font-size: 13px; background: #fff; cursor: pointer; outline: none; max-width: 220px;
+    }
+    .filters select:focus { border-color: #667eea; }
+    .filters button {
+      padding: 8px 14px; border: none; border-radius: 6px; font-size: 13px;
+      font-weight: 600; cursor: pointer; transition: all 0.15s;
+    }
+    .btn-reset { background: #e9ecef; color: #495057; }
+    .btn-reset:hover { background: #dee2e6; }
+
+    /* Stats + bulk copy bar */
+    .bar {
+      display: flex; align-items: center; justify-content: space-between;
+      flex-wrap: wrap; gap: 8px; margin-bottom: 10px;
+      font-size: 13px; color: #6c757d;
+    }
+    .bar .stats b { color: #2c3e50; }
+    .btn-copy-sel {
+      padding: 7px 14px; border: none; border-radius: 6px; font-size: 13px;
+      font-weight: 600; cursor: pointer; background: #667eea; color: #fff;
+      transition: background 0.15s;
+    }
+    .btn-copy-sel:hover { background: #5063d4; }
+    .btn-copy-sel:disabled { background: #aaa; cursor: default; }
+
+    /* Table */
+    .table-wrap { overflow-x: auto; border-radius: 6px; border: 1px solid #dee2e6; }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    thead { background: #2c3e50; color: #fff; }
+    thead th {
+      padding: 10px 12px; text-align: left; font-weight: 600;
+      font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px; white-space: nowrap;
+    }
+    thead th.chk { width: 36px; text-align: center; }
+    thead th.act { width: 80px; text-align: center; }
+    tbody tr { border-bottom: 1px solid #e9ecef; transition: background 0.1s; }
+    tbody tr:last-child { border-bottom: none; }
+    tbody tr:hover { background: #f0f4ff; }
+    tbody tr.selected { background: #eef2ff; }
+    td { padding: 8px 12px; vertical-align: middle; }
+    td.chk { text-align: center; }
+    td.act { text-align: center; }
+    td.name { font-weight: 600; color: #2c3e50; max-width: 320px; }
+    td.name small { display: block; font-weight: 400; color: #888; font-size: 11px; margin-top: 2px; }
+    td.badge-cell { white-space: nowrap; }
+    .badge {
+      display: inline-block; padding: 2px 7px; border-radius: 10px;
+      font-size: 11px; font-weight: 600; white-space: nowrap;
+    }
+    .badge-prefix { background: #d4edda; color: #155724; }
+    .badge-group  { background: #d1ecf1; color: #0c5460; }
+    .badge-none   { background: #f0f0f0; color: #999; font-weight: 400; }
+    .btn-row-copy {
+      padding: 4px 10px; border: none; border-radius: 4px; font-size: 12px;
+      font-weight: 600; cursor: pointer; background: #e9ecef; color: #495057;
+      transition: background 0.15s;
+    }
+    .btn-row-copy:hover { background: #667eea; color: #fff; }
+    .btn-row-copy.copied { background: #27ae60; color: #fff; }
+    .btn-row-play {
+      padding: 4px 10px; border: none; border-radius: 4px; font-size: 12px;
+      font-weight: 600; cursor: pointer; background: #1a6b2e; color: #fff;
+      text-decoration: none; display: inline-block;
+      transition: background 0.15s;
+    }
+    .btn-row-play:hover { background: #25963f; color: #fff; }
+
+    /* Pagination */
+    .pagination {
+      display: flex; align-items: center; justify-content: center;
+      gap: 6px; margin-top: 18px; flex-wrap: wrap;
+    }
+    .pagination button {
+      padding: 6px 12px; border: 1px solid #ced4da; border-radius: 5px;
+      background: #fff; font-size: 13px; cursor: pointer; transition: all 0.15s;
+      min-width: 36px;
+    }
+    .pagination button:hover:not(:disabled) { background: #667eea; color: #fff; border-color: #667eea; }
+    .pagination button.active { background: #667eea; color: #fff; border-color: #667eea; font-weight: 700; }
+    .pagination button:disabled { opacity: 0.4; cursor: default; }
+    .pagination .page-info { font-size: 13px; color: #6c757d; padding: 0 6px; }
+
+    /* Empty / loading */
+    .empty { text-align: center; padding: 48px 24px; color: #888; font-size: 14px; }
+    .loading { text-align: center; padding: 48px 24px; color: #667eea; font-size: 15px; }
+
+    /* Toast */
+    #toast {
+      position: fixed; bottom: 24px; right: 24px; background: #2c3e50; color: #fff;
+      padding: 10px 18px; border-radius: 6px; font-size: 13px; font-weight: 600;
+      opacity: 0; transition: opacity 0.3s; pointer-events: none; z-index: 999;
+    }
+    #toast.show { opacity: 1; }
+  </style>
+</head>
+<body>
+<div class="container">
+
+  <div class="header">
+    <h1>📋 M3U Browser &mdash; <span>{{ item_name }}</span></h1>
+    <a class="back" href="/">← Back to Manager</a>
+  </div>
+
+  <!-- Filters -->
+  <div class="filters">
+    <input id="search" type="search" placeholder="Search channel name…" autocomplete="off" />
+    <select id="sel-group"><option value="">All Categories</option></select>
+    <select id="sel-prefix"><option value="">All Providers</option></select>
+    <select id="sel-perpage">
+      <option value="50">50 per page</option>
+      <option value="100" selected>100 per page</option>
+      <option value="200">200 per page</option>
+      <option value="500">500 per page</option>
+    </select>
+    <button class="btn-reset" onclick="resetFilters()">✕ Clear</button>
+  </div>
+
+  <!-- Stats + bulk copy -->
+  <div class="bar">
+    <div class="stats" id="stats">Loading…</div>
+    <div style="display:flex; gap:8px; align-items:center;">
+      <span id="sel-count" style="font-size:13px; color:#667eea;"></span>
+      <button class="btn-copy-sel" id="btn-copy-sel" disabled onclick="copySelected()">
+        📋 Copy Selected to Clipboard
+      </button>
+    </div>
+  </div>
+
+  <!-- Table -->
+  <div class="table-wrap">
+    <table id="channel-table">
+      <thead>
+        <tr>
+          <th class="chk"><input type="checkbox" id="chk-all" title="Select all on page" /></th>
+          <th>Channel Name</th>
+          <th>Provider</th>
+          <th>Category</th>
+          <th class="act">Copy</th>
+          <th class="act">Play</th>
+        </tr>
+      </thead>
+      <tbody id="tbody">
+        <tr><td colspan="6" class="loading">Loading channels…</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <!-- Pagination -->
+  <div class="pagination" id="pagination"></div>
+
+</div>
+<div id="toast"></div>
+
+<script>
+  const ITEM_ID = {{ item_id }};
+  let state = { search: "", group: "", prefix: "", page: 1, per_page: 100 };
+  let allGroups = [], allPrefixes = [];
+  let debounceTimer = null;
+  let selectedNames = new Set();
+
+  // ── Init ──────────────────────────────────────────────────────────────────
+  document.getElementById("search").addEventListener("input", e => {
+    clearTimeout(debounceTimer);
+    debounceTimer = setTimeout(() => { state.search = e.target.value.trim(); state.page = 1; load(); }, 280);
+  });
+  document.getElementById("sel-group").addEventListener("change", e => { state.group = e.target.value; state.page = 1; load(); });
+  document.getElementById("sel-prefix").addEventListener("change", e => { state.prefix = e.target.value; state.page = 1; load(); });
+  document.getElementById("sel-perpage").addEventListener("change", e => { state.per_page = parseInt(e.target.value); state.page = 1; load(); });
+  document.getElementById("chk-all").addEventListener("change", e => toggleSelectAll(e.target.checked));
+
+  function resetFilters() {
+    state = { search: "", group: "", prefix: "", page: 1, per_page: state.per_page };
+    document.getElementById("search").value = "";
+    document.getElementById("sel-group").value = "";
+    document.getElementById("sel-prefix").value = "";
+    selectedNames.clear();
+    updateSelUI();
+    load();
+  }
+
+  // ── Fetch data ─────────────────────────────────────────────────────────────
+  async function load() {
+    const params = new URLSearchParams({
+      search: state.search, group: state.group, prefix: state.prefix,
+      page: state.page, per_page: state.per_page
+    });
+    const url = `/m3u_browser_data/${ITEM_ID}?${params}`;
+    document.getElementById("tbody").innerHTML = '<tr><td colspan="6" class="loading">Loading…</td></tr>';
+    try {
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(await res.text());
+      const data = await res.json();
+      render(data);
+    } catch(e) {
+      document.getElementById("tbody").innerHTML = `<tr><td colspan="6" class="empty">Error: ${e.message}</td></tr>`;
+    }
+  }
+
+  // ── Render ─────────────────────────────────────────────────────────────────
+  function render(data) {
+    // Populate group/prefix dropdowns once (first load)
+    if (allGroups.length === 0 && data.groups.length > 0) {
+      allGroups = data.groups;
+      const gs = document.getElementById("sel-group");
+      allGroups.forEach(g => { const o = document.createElement("option"); o.value = g; o.textContent = g; gs.appendChild(o); });
+    }
+    if (allPrefixes.length === 0 && data.prefixes.length > 0) {
+      allPrefixes = data.prefixes;
+      const ps = document.getElementById("sel-prefix");
+      allPrefixes.forEach(p => { const o = document.createElement("option"); o.value = p; o.textContent = p; ps.appendChild(o); });
+    }
+
+    // Stats
+    const start = (data.page - 1) * data.per_page + 1;
+    const end   = Math.min(data.page * data.per_page, data.total);
+    document.getElementById("stats").innerHTML =
+      data.total === 0
+        ? "No channels found"
+        : `Showing <b>${start}–${end}</b> of <b>${data.total.toLocaleString()}</b> channels`;
+
+    // Table rows
+    const tbody = document.getElementById("tbody");
+    if (data.channels.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="6" class="empty">No channels match your filters.</td></tr>';
+      renderPagination(data);
+      return;
+    }
+
+    tbody.innerHTML = data.channels.map(ch => {
+      const copyName = ch.name || ch.tvg_name;
+      const isSelected = selectedNames.has(copyName);
+      const prefixBadge = ch.prefix
+        ? `<span class="badge badge-prefix">${esc(ch.prefix)}</span>`
+        : `<span class="badge badge-none">—</span>`;
+      const groupBadge = ch.group
+        ? `<span class="badge badge-group">${esc(ch.group)}</span>`
+        : `<span class="badge badge-none">—</span>`;
+      const tvgExtra = ch.tvg_name && ch.tvg_name !== ch.name
+        ? `<small>${esc(ch.tvg_name)}</small>` : "";
+      const playHref = ch.url ? `/stream_player?url=${encodeURIComponent(ch.url)}&name=${encodeURIComponent(copyName)}` : null;
+      return `<tr class="${isSelected ? 'selected' : ''}" data-name="${esc(copyName)}">
+        <td class="chk"><input type="checkbox" class="row-chk" value="${esc(copyName)}" ${isSelected ? "checked" : ""} onchange="toggleRow(this)"/></td>
+        <td class="name">${esc(ch.name)}${tvgExtra}</td>
+        <td class="badge-cell">${prefixBadge}</td>
+        <td class="badge-cell">${groupBadge}</td>
+        <td class="act"><button class="btn-row-copy" onclick="copyOne('${esc(copyName)}', this)">📋</button></td>
+        <td class="act">${playHref ? `<a class="btn-row-play" href="${playHref}" target="_blank" rel="noopener">▶</a>` : ''}</td>
+      </tr>`;
+
+    }).join("");
+
+    document.getElementById("chk-all").checked = false;
+    document.getElementById("chk-all").indeterminate = false;
+    renderPagination(data);
+  }
+
+  function renderPagination(data) {
+    const p = document.getElementById("pagination");
+    p.innerHTML = "";
+    if (data.total_pages <= 1) return;
+
+    const mk = (label, pg, cls="", disabled=false) => {
+      const b = document.createElement("button");
+      b.innerHTML = label;
+      b.className = cls;
+      b.disabled = disabled;
+      b.onclick = () => { state.page = pg; load(); window.scrollTo(0,0); };
+      p.appendChild(b);
+    };
+
+    mk("«", 1, "", data.page === 1);
+    mk("‹", data.page - 1, "", data.page === 1);
+
+    // Page window
+    let lo = Math.max(1, data.page - 2);
+    let hi = Math.min(data.total_pages, lo + 4);
+    lo = Math.max(1, hi - 4);
+    for (let i = lo; i <= hi; i++) mk(i, i, i === data.page ? "active" : "");
+
+    mk("›", data.page + 1, "", data.page === data.total_pages);
+    mk("»", data.total_pages, "", data.page === data.total_pages);
+
+    const info = document.createElement("span");
+    info.className = "page-info";
+    info.textContent = `Page ${data.page} of ${data.total_pages}`;
+    p.appendChild(info);
+  }
+
+  // ── Selection ──────────────────────────────────────────────────────────────
+  function toggleRow(chk) {
+    const name = chk.value;
+    chk.closest("tr").classList.toggle("selected", chk.checked);
+    if (chk.checked) selectedNames.add(name); else selectedNames.delete(name);
+    updateSelUI();
+    updateSelectAllChk();
+  }
+
+  function toggleSelectAll(checked) {
+    document.querySelectorAll(".row-chk").forEach(chk => {
+      chk.checked = checked;
+      chk.closest("tr").classList.toggle("selected", checked);
+      if (checked) selectedNames.add(chk.value); else selectedNames.delete(chk.value);
+    });
+    updateSelUI();
+  }
+
+  function updateSelectAllChk() {
+    const all = document.querySelectorAll(".row-chk");
+    const checked = document.querySelectorAll(".row-chk:checked");
+    const ca = document.getElementById("chk-all");
+    ca.checked = all.length > 0 && checked.length === all.length;
+    ca.indeterminate = checked.length > 0 && checked.length < all.length;
+  }
+
+  function updateSelUI() {
+    const n = selectedNames.size;
+    const btn = document.getElementById("btn-copy-sel");
+    const lbl = document.getElementById("sel-count");
+    btn.disabled = n === 0;
+    lbl.textContent = n > 0 ? `${n} selected` : "";
+  }
+
+  // ── Copy helpers ───────────────────────────────────────────────────────────
+  function copyOne(name, btn) {
+    copyToClipboard(name);
+    btn.textContent = "✓";
+    btn.classList.add("copied");
+    setTimeout(() => { btn.textContent = "📋"; btn.classList.remove("copied"); }, 1500);
+    showToast(`Copied: ${name}`);
+  }
+
+  function copySelected() {
+    if (selectedNames.size === 0) return;
+    const text = [...selectedNames].join("\n");
+    copyToClipboard(text);
+    showToast(`Copied ${selectedNames.size} channel name(s) to clipboard`);
+  }
+
+  function copyToClipboard(text) {
+    if (navigator.clipboard) {
+      navigator.clipboard.writeText(text).catch(() => fallbackCopy(text));
+    } else {
+      fallbackCopy(text);
+    }
+  }
+
+  function fallbackCopy(text) {
+    const ta = document.createElement("textarea");
+    ta.value = text; ta.style.position = "fixed"; ta.style.opacity = "0";
+    document.body.appendChild(ta); ta.select();
+    document.execCommand("copy");
+    document.body.removeChild(ta);
+  }
+
+  function showToast(msg) {
+    const t = document.getElementById("toast");
+    t.textContent = msg; t.classList.add("show");
+    clearTimeout(t._timer);
+    t._timer = setTimeout(() => t.classList.remove("show"), 2200);
+  }
+
+  function esc(s) {
+    return String(s ?? "").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;").replace(/'/g,"&#39;");
+  }
+
+  // ── Boot ───────────────────────────────────────────────────────────────────
+  load();
+</script>
+</body>
+</html>

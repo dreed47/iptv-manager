@@ -127,7 +127,7 @@
       
       .card-body {
         display: grid;
-        grid-template-columns: 1fr 2fr 2fr 1.5fr;
+        grid-template-columns: 1fr;
         gap: 16px;
         margin-bottom: 16px;
       }
@@ -296,6 +296,17 @@
       .copy-btn:hover {
         background: #229954;
         transform: translateY(-1px);
+      }
+
+      button:disabled,
+      button[disabled] {
+        background: #ccc !important;
+        color: #888 !important;
+        cursor: not-allowed !important;
+        opacity: 0.6;
+        transform: none !important;
+        box-shadow: none !important;
+        pointer-events: none;
       }
       
       /* Actions and Links Section */
@@ -480,82 +491,24 @@
       {% endif %}
 
       <!-- Configuration Cards -->
-      <h2>📋 IPTV Configurations</h2>
-      
       {% for item in items %}
       <div class="config-card">
         <form method="POST" action="/">
           <input type="hidden" name="item_id" value="{{ item.id }}" />
           
-          <!-- Card Header: Name, Server, Username, Password -->
-          <div class="card-header">
-            <div class="form-group">
-              <label class="form-label" for="name_{{ item.id }}">Configuration Name</label>
-              <input
-                type="text"
-                id="name_{{ item.id }}"
-                name="new_name"
-                value="{{ item.name }}"
-                maxlength="50"
-                required
-              />
-            </div>
-
-            <div class="form-group">
-              <label class="form-label" for="server_url_{{ item.id }}">Server URL</label>
-              <input
-                type="text"
-                id="server_url_{{ item.id }}"
-                name="new_server_url"
-                value="{{ item.server_url }}"
-                maxlength="50"
-                required
-              />
-            </div>
-
-            <div class="form-group">
-              <label class="form-label" for="username_{{ item.id }}">Username</label>
-              <input
-                type="text"
-                id="username_{{ item.id }}"
-                name="new_username"
-                value="{{ item.username }}"
-                maxlength="50"
-                required
-              />
-            </div>
-
-            <div class="form-group">
-              <label class="form-label" for="user_pass_{{ item.id }}">Password</label>
-              <input
-                type="text"
-                id="user_pass_{{ item.id }}"
-                name="new_user_pass"
-                value="{{ item.user_pass }}"
-                maxlength="50"
-                required
-              />
-            </div>
+          <!-- Card Header: display name only; credentials passed as hidden fields -->
+          <input type="hidden" name="new_name" value="{{ item.name }}" />
+          <input type="hidden" name="new_server_url" value="{{ item.server_url }}" />
+          <input type="hidden" name="new_username" value="{{ item.username }}" />
+          <input type="hidden" name="new_user_pass" value="{{ item.user_pass }}" />
+          <div style="margin-bottom: 14px; padding-bottom: 12px; border-bottom: 1px solid #e9ecef;">
+            <span style="font-size: 15px; font-weight: 700; color: #2c3e50;">{{ item.name }}</span>
           </div>
 
-          <!-- Card Body: Languages, Includes, Excludes -->
+          <!-- Card Body: Includes -->
           <div class="card-body">
             <div class="form-group">
-              <label class="form-label" for="languages_{{ item.id }}">Languages</label>
-              <textarea
-                id="languages_{{ item.id }}"
-                name="new_languages"
-                placeholder="One per line&#10;fr&#10;en&#10;es"
-                maxlength="200"
-                rows="4"
-              >{{ item.languages | replace(',', '\n') }}</textarea>
-              <div class="form-help">
-                Language codes from tvg-name prefix (e.g., "FR - Show Name")
-              </div>
-            </div>
-
-            <div class="form-group">
-              <label class="form-label" for="includes_{{ item.id }}">Includes (Priority)</label>
+              <label class="form-label" for="includes_{{ item.id }}">Includes</label>
               <textarea
                 id="includes_{{ item.id }}"
                 name="new_includes"
@@ -564,21 +517,7 @@
                 rows="8"
               >{{ item.includes | replace(',', '\n') }}</textarea>
               <div class="form-help">
-                Overrides excludes. Format: number|keyword (e.g., 100|ESPN)
-              </div>
-            </div>
-
-            <div class="form-group">
-              <label class="form-label" for="excludes_{{ item.id }}">Excludes</label>
-              <textarea
-                id="excludes_{{ item.id }}"
-                name="new_excludes"
-                placeholder="One per line&#10;telemundo&#10;sling&#10;adult"
-                maxlength="200"
-                rows="4"
-              >{{ item.excludes | replace(',', '\n') }}</textarea>
-              <div class="form-help">
-                Exclude channels containing these keywords
+                Format: number|channel name (e.g., 100|ESPN). Only listed channels are included.
               </div>
             </div>
 
@@ -599,8 +538,13 @@
               </form>
               <form method="POST" action="/generate_filtered_m3u" style="margin: 0;">
                 <input type="hidden" name="item_id" value="{{ item.id }}" />
-                <button type="submit">🔍 Fetch Filtered M3U</button>
+                <button type="submit" {% if not item.has_m3u %}disabled title="Fetch M3U first"{% endif %}>🔍 Fetch Filtered M3U</button>
               </form>
+              {% if item.has_filtered %}
+              <a href="/channels" target="_blank" style="display: inline-block; padding: 6px 12px; background: #667eea; color: #fff; font-size: 13px; font-weight: 600; border-radius: 6px; text-decoration: none; margin-top: 2px;">📺 Filtered Channel Viewer</a>
+              {% else %}
+              <button type="button" disabled title="Fetch Filtered M3U first">📺 Filtered Channel Viewer</button>
+              {% endif %}
             </div>
 
             <div class="links-section">
@@ -608,13 +552,16 @@
               
               {% if item.has_m3u %}
               <div class="link-item">
-                <a href="/download_m3u/{{ item.id }}" download>📄 Download M3U Playlist</a>
+                <a href="/download_m3u/{{ item.id }}" download>📄 Download FULL M3U Playlist</a>
+              </div>
+              <div class="link-item">
+                <a href="/m3u_browser/{{ item.id }}" target="_blank">🔎 Browse FULL M3U (find channels)</a>
               </div>
               {% endif %}
               
               {% if item.has_filtered %}
               <div class="link-item">
-                <a href="/download_filtered_m3u/{{ item.id }}" download>📄 Download Filtered M3U</a>
+                <a href="/download_filtered_m3u/{{ item.id }}" download>📄 Download Filtered M3U Playlist</a>
               </div>
               
               <!-- Streaming URL Section -->
@@ -647,12 +594,22 @@
               
               <!-- HDHomeRun helper links -->
               <div style="margin-top: 16px;">
-                <strong style="font-size: 12px; color: #667eea;">HDHomeRun API:</strong>
-                <div style="margin-top: 6px; display: grid; grid-template-columns: repeat(2, 1fr); gap: 4px;">
+                <strong style="font-size: 12px; color: #667eea;">HDHomeRun API Debugging:</strong>
+                <div style="margin-top: 6px; display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px;">
                   <a href="/discover.json" target="_blank" style="font-size: 12px;">discover.json</a>
                   <a href="/lineup_status.json" target="_blank" style="font-size: 12px;">lineup_status.json</a>
                   <a href="/lineup.json" target="_blank" style="font-size: 12px;">lineup.json</a>
-                  <a href="/hdhr/debug_lineup" target="_blank" style="font-size: 12px;">debug_lineup</a>
+                </div>
+              </div>
+
+              <!-- Media server setup guides -->
+              <div style="margin-top: 14px;">
+                <strong style="font-size: 12px; color: #667eea;">Media Server Setup Guides:</strong>
+                <div style="margin-top: 6px; display: grid; grid-template-columns: repeat(2, 1fr); gap: 4px 12px;">
+                  <a href="https://support.plex.tv/articles/225877347-live-tv-dvr/" target="_blank" rel="noopener" style="font-size: 12px;">📺 Plex Live TV &amp; DVR</a>
+                  <a href="https://jellyfin.org/docs/general/server/live-tv/setup-guide" target="_blank" rel="noopener" style="font-size: 12px;">🪼 Jellyfin Live TV</a>
+                  <a href="https://support.emby.media/support/solutions/articles/44001160415-live-tv-setup" target="_blank" rel="noopener" style="font-size: 12px;">🎬 Emby Live TV</a>
+                  <a href="https://github.com/dreed47/iptv-manager" target="_blank" rel="noopener" style="font-size: 12px;">📖 IPTV Manager on GitHub</a>
                 </div>
               </div>
               {% endif %}
@@ -662,7 +619,8 @@
       {% endfor %}
 
 
-      <!-- Add new item -->
+      <!-- Add new item: only shown when no config exists yet -->
+      {% if not items %}
       <h2>➕ Add New IPTV Configuration</h2>
       <div class="add-new-form">
         <form method="POST" action="/">
@@ -685,7 +643,7 @@
                 type="text"
                 id="server_url"
                 name="server_url"
-                placeholder="http://cf.vtsp.cyou:8080"
+                placeholder="http://your-iptv-server:8080"
                 maxlength="50"
                 required
               />
@@ -721,6 +679,7 @@
           <button type="submit" name="add" value="add">➕ Add Configuration</button>
         </form>
       </div>
+      {% endif %}
     </div>
     <!-- End container -->
 

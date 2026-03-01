@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import JSONResponse, StreamingResponse, RedirectResponse
+from fastapi.responses import JSONResponse, StreamingResponse, RedirectResponse, Response, HTMLResponse
+from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
 from models import get_db, Item
 from hdhomerun_emulator import HDHomeRunEmulator
@@ -13,6 +14,7 @@ from typing import Iterator
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+templates = Jinja2Templates(directory="templates")
 
 # Create emulator instance but don't start it yet
 hdhomerun_emulator = HDHomeRunEmulator()
@@ -116,6 +118,11 @@ def load_channel_lineup(db: Session = Depends(get_db)) -> list:
                         if group_match:
                             group = group_match.group(1)
 
+                        logo = ""
+                        logo_match = re.search(r'tvg-logo="([^"]+)"', attrs)
+                        if logo_match:
+                            logo = logo_match.group(1)
+
                         # Prefer tvg-name over channel name if available
                         display_name = tvg_name or name
                         # Clean up common name issues
@@ -154,6 +161,8 @@ def load_channel_lineup(db: Session = Depends(get_db)) -> list:
                             "_ExplicitNumber": 1 if explicit_number else 0,
                             "_SourceURL": url,
                         }
+                        if logo:
+                            channel_data["ImageURL"] = logo
 
                         # Optional group/network info
                         if group:
@@ -231,10 +240,19 @@ async def stream_channel(channel_number: str, request: Request, db: Session = De
         "Connection": "keep-alive",
     }
 
+    # Read tuning knobs from environment
+    chunk_size    = int(os.getenv("STREAM_CHUNK_KB",    "64"))  * 1024
+    prebuffer_kb  = int(os.getenv("STREAM_PREBUFFER_KB", "512"))
+    prebuffer_bytes = prebuffer_kb * 1024
+
     def generate() -> Iterator[bytes]:
         bytes_sent = 0
+        prebuf: list[bytes] = []
+        prebuf_size = 0
+        prebuffering = prebuffer_bytes > 0
         try:
-            logger.info(f"Opening upstream connection for channel {channel_number}")
+            logger.info(f"Opening upstream connection for channel {channel_number} "
+                        f"(chunk={chunk_size//1024}KB prebuffer={prebuffer_kb}KB)")
             with requests.get(
                 source_url,
                 headers=proxy_headers,
@@ -243,10 +261,26 @@ async def stream_channel(channel_number: str, request: Request, db: Session = De
             ) as resp:
                 logger.info(f"Upstream response for channel {channel_number}: status={resp.status_code} headers={dict(resp.headers)}")
                 resp.raise_for_status()
-                for chunk in resp.iter_content(chunk_size=65536):
-                    if chunk:
+                for chunk in resp.iter_content(chunk_size=chunk_size):
+                    if not chunk:
+                        continue
+                    if prebuffering:
+                        prebuf.append(chunk)
+                        prebuf_size += len(chunk)
+                        if prebuf_size >= prebuffer_bytes:
+                            logger.info(f"Pre-buffer filled ({prebuf_size//1024}KB), starting stream for channel {channel_number}")
+                            for c in prebuf:
+                                bytes_sent += len(c)
+                                yield c
+                            prebuf = []
+                            prebuffering = False
+                    else:
                         bytes_sent += len(chunk)
                         yield chunk
+            # Flush any remaining prebuffer (short stream)
+            for c in prebuf:
+                bytes_sent += len(c)
+                yield c
         except GeneratorExit:
             logger.info(f"Client disconnected for channel {channel_number} after {bytes_sent} bytes")
         except Exception as exc:
@@ -371,3 +405,62 @@ async def hdhr_lineup(db: Session = Depends(get_db)):
     # Note: SSDP doesn't need to be running for HTTP endpoints to work
     channels = load_channel_lineup(db)
     return channels
+
+@router.get("/channels", response_class=HTMLResponse)
+async def channel_browser(request: Request):
+    """Channel browser page — click to open streams in VLC or IINA"""
+    return templates.TemplateResponse("channels.html", {"request": request})
+
+@router.get("/player/{channel_number:path}", response_class=HTMLResponse)
+async def player_page(channel_number: str, request: Request, name: str = None, db: Session = Depends(get_db)):
+    """Full-page video player for a single channel using mpegts.js"""
+    # Ensure channel source URLs are populated
+    if not _channel_source_urls:
+        load_channel_lineup(db)
+    source_url = _channel_source_urls.get(channel_number)
+    if not source_url:
+        raise HTTPException(status_code=404, detail=f"Channel {channel_number} not found")
+
+    channel_name = name or f"Channel {channel_number}"
+    import urllib.parse as _up
+    # Build the proxy stream URL (goes through /auto/v{num} so the server handles auth)
+    base = str(request.base_url).rstrip("/")
+    stream_url = f"{base}/auto/v{channel_number}"
+
+    # Pass client-side buffer config from env to the template
+    stash_kb   = int(os.getenv("PLAYER_STASH_KB",   "1024"))  # mpegts.js stash buffer size
+    latency_max = float(os.getenv("PLAYER_LATENCY_MAX", "30.0"))  # max live buffer latency seconds
+    latency_min = float(os.getenv("PLAYER_LATENCY_MIN",  "5.0"))  # min live buffer remain seconds
+
+    return templates.TemplateResponse("player.html", {
+        "request": request,
+        "channel_number": channel_number,
+        "channel_name": channel_name,
+        "channel_name_encoded": _up.quote(channel_name),
+        "stream_url_encoded": _up.quote(stream_url, safe=""),
+        "stream_url_json": json.dumps(stream_url),
+        "vlc_href": f"/watch/{channel_number}?name={_up.quote(channel_name)}",
+        "stash_kb": stash_kb,
+        "latency_max": latency_max,
+        "latency_min": latency_min,
+    })
+
+@router.get("/watch/{channel_number:path}")
+async def watch_channel(channel_number: str, request: Request, name: str = None):
+    """
+    Return a single-entry M3U playlist for the given channel number.
+    macOS hands audio/x-mpegurl to whichever player handles .m3u files (VLC, IINA, etc.).
+    Pass ?name=Channel+Name to embed a friendly title in the EXTINF line.
+    """
+    safe_name = name or f"Channel {channel_number}"
+    # Build the stream URL from the request's base URL so VLC can reach the proxy
+    base = str(request.base_url).rstrip("/")
+    stream_url = f"{base}/auto/v{channel_number}"
+    # Sanitise name for content-disposition header
+    safe_filename = "".join(c for c in safe_name if c.isalnum() or c in " _-").strip() or f"channel_{channel_number}"
+    m3u = f"#EXTM3U\n#EXTINF:-1 tvg-name=\"{safe_name}\",{safe_name}\n{stream_url}\n"
+    return Response(
+        content=m3u,
+        media_type="application/octet-stream",
+        headers={"Content-Disposition": f'attachment; filename="{safe_filename}.m3u"'},
+    )
