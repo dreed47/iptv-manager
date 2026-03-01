@@ -105,7 +105,7 @@ The `GuideNumber` that Plex sees (and that the `/auto/v<number>` stream URL uses
 
 1. **Provider-supplied** (`tvg-chno` in the M3U `#EXTINF` line) — used directly as `GuideNumber`. These are treated as "explicit" and win any conflict.
 2. **Auto-assigned** — Channels without a `tvg-chno` get the next available sequential integer (1, 2, 3…), skipping any numbers already claimed by explicit entries.
-3. **Deduplication across configs** — When the same channel name appears in multiple IPTV configurations, the explicit-numbered entry wins. If neither has an explicit number, the first config's entry is kept.
+3. **Single configuration** — One IPTV configuration is supported. The filtered playlist is built from that single source.
 
 ### Channel Numbers in the EPG
 
@@ -116,7 +116,7 @@ The generated `/epg.xml` carries channel numbers in two places:
 ### Tips
 
 - If your provider supplies `tvg-chno` values, those numbers will match what appears in your filtered playlist, the lineup, and the guide — no manual mapping needed.
-- If you want specific channels at specific numbers (e.g., CNN at 200), use the **Include** filter with the `number|name` syntax, e.g., `200|CNN`, which forces that channel into your filtered playlist with the given number.
+- Channel numbers cannot be overridden via the includes list; they come from the `tvg-chno` attribute in your provider's M3U. Channels without a `tvg-chno` receive auto-assigned sequential numbers.
 - Channel numbers in the HDHomeRun lineup also appear in the stream URL: `http://<host>:5005/auto/v<GuideNumber>` — this is what Plex calls when playing a channel.
 
 ---

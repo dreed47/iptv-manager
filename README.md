@@ -4,7 +4,7 @@ A web-based tool for managing, filtering, and serving IPTV playlists and EPG dat
 
 ## Features
 
-- **Web UI** — Add, edit, and manage multiple IPTV configurations from a browser.
+- **Web UI** — Add, edit, and manage your IPTV configuration from a browser.
 - **M3U Playlist Fetching** — Download playlists from Xtream Codes or direct M3U URLs.
 - **Advanced Filtering** — Filter channels by language, keywords, channel numbers, and wildcards.
 - **Full M3U Browser** — Browse and preview every channel in the raw (unfiltered) playlist before committing to a filter. Includes provider/category filtering, copy-to-clipboard, and an in-browser stream player for each channel.
@@ -33,17 +33,18 @@ See [DEPLOYMENT.md](DEPLOYMENT.md) for full setup, media server integration, EPG
 1. **Add a config** — Enter your IPTV provider credentials (Xtream Codes or M3U URL) in the web UI.
 2. **Fetch playlist** — Click **Fetch M3U** to download the full channel list from your provider.
 3. **Browse (optional)** — Use **Browse All Channels** to explore the raw playlist and try playing streams before filtering.
-4. **Filter** — Set language, include, and exclude rules to build your curated lineup. Click **Save Changes** to apply.
+4. **Filter** — Build your curated lineup using the **Includes** list. Add channel names (one per line) to select exactly which channels appear in your lineup. Click **Save Changes** to apply.
 5. **View filtered lineup** — Click **Filtered Channel Viewer** to confirm the result.
 6. **Connect your media server** — Point Plex/Jellyfin/Emby DVR at `http://<your-ip>:5005`; it discovers the device as an HDHomeRun tuner.
 7. **Add the EPG** — In your media server's DVR settings, enter the EPG URL `http://<your-ip>:5005/epg.xml` so the guide populates automatically. See [EPG Options](#epg--guide-data) below for alternatives.
 
 ## Filtering Logic
 
-- **Languages** — Only channels with matching language codes are included.
-- **Includes** — Channels matching any substring (or `number|name`) are always included.
-- **Excludes** — Channels matching any substring are excluded, unless also in includes.
-- **Wildcard Exclude** — `*` in excludes means all channels are excluded unless explicitly included.
+The **Includes** list is the primary control. Add one channel name per line to select exactly which channels appear in your filtered lineup.
+
+- **Includes present** — Only channels whose name is an exact match to an entry in the includes list are kept. Excludes are ignored when includes are set.
+- **Excludes only** (no includes) — All channels pass through except those whose name contains an exclude substring.
+- **Wildcard exclude (`*`)** — All channels start as excluded; only exact matches in the includes list are kept. Equivalent to "allow-list only" mode.
 
 Saving filter changes resets the filtered playlist and triggers an automatic EPG rebuild, but leaves the original full playlist intact so you can re-filter without re-fetching.
 
