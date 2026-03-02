@@ -31,6 +31,7 @@ Open the web UI at `http://localhost:5005`.
 | `HDHR_DISABLE_SSDP`   | `1`              | `1` = SSDP disabled (default, works everywhere). `0` = SSDP enabled (Linux only, enables auto-discovery). |
 | `EPG_XML_SOURCES`     | *(see below)*    | Comma-separated XMLTV URL(s) to fetch guide data from. Defaults to `https://epg.pw/xmltv/epg_US.xml`. |
 | `EPG_CACHE_HOURS`     | `12`             | How long to cache the downloaded EPG before re-fetching. |
+| `ALLOW_FULL_M3U_DOWNLOAD` | `1`          | Set to `0` to disable the **Fetch M3U** button in the UI. Useful on shared or production deployments where you want to prevent accidental re-fetches or hitting provider rate limits. |
 
 ---
 

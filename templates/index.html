@@ -534,7 +534,11 @@
         </form>
               <form method="POST" action="/generate_m3u" style="margin: 0;">
                 <input type="hidden" name="item_id" value="{{ item.id }}" />
+                {% if allow_full_m3u_download %}
                 <button type="submit">📥 Fetch M3U</button>
+                {% else %}
+                <button type="button" disabled title="Fetch M3U is disabled (ALLOW_FULL_M3U_DOWNLOAD=0)">📥 Fetch M3U</button>
+                {% endif %}
               </form>
               <form method="POST" action="/generate_filtered_m3u" style="margin: 0;">
                 <input type="hidden" name="item_id" value="{{ item.id }}" />

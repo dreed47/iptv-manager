@@ -15,6 +15,8 @@ services:
       # SSDP disabled by default (avoids multicast issues on macOS/most Linux hosts)
       # Override with HDHR_DISABLE_SSDP=0 in .env if you want SSDP auto-discovery
       - HDHR_DISABLE_SSDP=${HDHR_DISABLE_SSDP:-1}
+      # Set to 0 to disable the Fetch M3U button in the UI
+      - ALLOW_FULL_M3U_DOWNLOAD=${ALLOW_FULL_M3U_DOWNLOAD:-1}
     ports:
       # Host port is configurable via .env (APP_PORT). Container listens on 5005.
       - "${APP_PORT:-5005}:5005"

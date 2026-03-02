@@ -76,6 +76,8 @@ async def index(request: Request, db: Session = Depends(get_db), error: str = No
     env_pairs = build_env_pairs()
     friendly_name = os.getenv("HDHR_FRIENDLY_NAME", "IPTV Manager")
 
+    allow_full_m3u_download = os.getenv("ALLOW_FULL_M3U_DOWNLOAD", "1").strip() == "1"
+
     context = {
         "request": request,
         "items": items_with_files,
@@ -87,6 +89,7 @@ async def index(request: Request, db: Session = Depends(get_db), error: str = No
         "ssdp_disabled_by_env": ssdp_disabled_by_env,
         "env_pairs": env_pairs,
         "friendly_name": friendly_name,
+        "allow_full_m3u_download": allow_full_m3u_download,
     }
 
     # Render template to measure rendering time (helps diagnose hangs)
