@@ -1,0 +1,25 @@
+# Example: run autoheal alongside IPTV Manager
+#
+# autoheal watches for containers whose Docker healthcheck enters an "unhealthy"
+# state and automatically restarts them.
+#
+# IMPORTANT: Only ONE instance of autoheal should run per Docker host.
+# If you already have autoheal running on this host (e.g. for other containers),
+# do NOT start a second instance — your existing autoheal will cover this
+# container automatically as long as AUTOHEAL_CONTAINER_LABEL=all is set.
+#
+# Usage:
+#   docker compose -f docker-compose.yml -f autoheal_example_docker_compose.yaml up -d
+#
+# Or add the autoheal service block directly into your docker-compose.yml.
+# See DEPLOYMENT.md for full details.
+
+services:
+  autoheal:
+    image: willfarrell/autoheal
+    container_name: autoheal
+    restart: unless-stopped
+    environment:
+      - AUTOHEAL_CONTAINER_LABEL=all
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock

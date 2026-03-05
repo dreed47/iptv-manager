@@ -187,6 +187,39 @@ Or toggle it at runtime from the web UI without editing any files.
 
 ---
 
+## Auto-Restart on Unhealthy Container (autoheal)
+
+The app's `docker-compose.yml` includes a Docker healthcheck that polls `http://localhost:5005/` every 30 seconds. If the container becomes **unhealthy**, Docker will not restart it on its own — but [autoheal](https://github.com/willfarrell/autoheal) can.
+
+autoheal is a lightweight sidecar container that watches all containers with a healthcheck and automatically restarts any that enter an `unhealthy` state.
+
+> **One instance per host:** Only one autoheal container should run on a given Docker host. If you already have autoheal running for other containers, do not start a second — your existing instance will cover IPTV Manager automatically as long as `AUTOHEAL_CONTAINER_LABEL=all` is set.
+
+### Running autoheal
+
+An example Compose file is provided at [`autoheal_example_docker_compose.yaml`](autoheal_example_docker_compose.yaml). You can run it alongside IPTV Manager using Docker's multiple-file override:
+
+```sh
+docker compose -f docker-compose.yml -f autoheal_example_docker_compose.yaml up -d
+```
+
+Or add the `autoheal` service block directly into your `docker-compose.yml`:
+
+```yaml
+  autoheal:
+    image: willfarrell/autoheal
+    container_name: autoheal
+    restart: unless-stopped
+    environment:
+      - AUTOHEAL_CONTAINER_LABEL=all
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+```
+
+`AUTOHEAL_CONTAINER_LABEL=all` tells autoheal to watch every container that has a healthcheck. To restrict it to only IPTV Manager, add the label `autoheal: "true"` to the `app` service in `docker-compose.yml` and set `AUTOHEAL_CONTAINER_LABEL=autoheal` instead.
+
+---
+
 ## Troubleshooting
 
 ### Can't access web UI
