@@ -1,6 +1,7 @@
 services:
   app:
     build: .
+    container_name: ${CONTAINER_NAME:-iptv-app}
     environment:
       - HDHR_ADVERTISE_HOST=${HDHR_ADVERTISE_HOST}
       # Use a single port setting; advertise the same port Plex will hit on the host
@@ -27,6 +28,17 @@ services:
       - ./m3u_files:/app/m3u_files
       - ./data:/app/data
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5005/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     dns:
       - 1.1.1.1
       - 8.8.8.8

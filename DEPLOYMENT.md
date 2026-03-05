@@ -23,6 +23,7 @@ Open the web UI at `http://localhost:5005`.
 | Variable              | Default          | Description |
 |-----------------------|------------------|-------------|
 | `APP_PORT`            | `5005`           | Host port Docker binds to. Change if running multiple instances. |
+| `CONTAINER_NAME`      | `iptv-app`       | Docker container name. Change when running multiple instances to avoid name conflicts. |
 | `HDHR_ADVERTISE_HOST` | `127.0.0.1`      | IP address your media server uses to reach this app. Use your LAN IP if they run on separate machines. |
 | `HDHR_SCHEME`         | `http`           | Protocol (`http` or `https`). |
 | `HDHR_MODEL`          | `HDHR3-US`       | HDHomeRun model string reported to media servers. |
