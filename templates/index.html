@@ -498,11 +498,14 @@
           
           <!-- Card Header: display name only; credentials passed as hidden fields -->
           <input type="hidden" name="new_name" value="{{ item.name }}" />
-          <input type="hidden" name="new_server_url" value="{{ item.server_url }}" />
           <input type="hidden" name="new_username" value="{{ item.username }}" />
           <input type="hidden" name="new_user_pass" value="{{ item.user_pass }}" />
           <div style="margin-bottom: 14px; padding-bottom: 12px; border-bottom: 1px solid #e9ecef;">
             <span style="font-size: 15px; font-weight: 700; color: #2c3e50;">{{ item.name }}</span>
+            <div class="form-group" style="margin-top: 10px;">
+              <label class="form-label" for="new_server_url_{{ item.id }}">Server URL</label>
+              <input type="text" id="new_server_url_{{ item.id }}" name="new_server_url" value="{{ item.server_url }}" maxlength="200" required />
+            </div>
           </div>
 
           <!-- Card Body: Includes -->
