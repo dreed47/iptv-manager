@@ -20,19 +20,24 @@ Open the web UI at `http://localhost:5005`.
 
 ## Environment Variables
 
-| Variable              | Default          | Description |
-|-----------------------|------------------|-------------|
-| `APP_PORT`            | `5005`           | Host port Docker binds to. Change if running multiple instances. |
-| `CONTAINER_NAME`      | `iptv-app`       | Docker container name. Change when running multiple instances to avoid name conflicts. |
-| `HDHR_ADVERTISE_HOST` | `127.0.0.1`      | IP address your media server uses to reach this app. Use your LAN IP if they run on separate machines. |
-| `HDHR_SCHEME`         | `http`           | Protocol (`http` or `https`). |
-| `HDHR_MODEL`          | `HDHR3-US`       | HDHomeRun model string reported to media servers. |
-| `HDHR_FRIENDLY_NAME`  | `IPTV HDHomeRun` | Device name shown in Plex/Jellyfin/Emby. Useful when running multiple instances. |
-| `HDHR_TUNER_COUNT`    | `2`              | Concurrent streams the media server may request. Raise for more simultaneous recordings. |
-| `HDHR_DISABLE_SSDP`   | `1`              | `1` = SSDP disabled (default, works everywhere). `0` = SSDP enabled (Linux only, enables auto-discovery). |
-| `EPG_XML_SOURCES`     | *(see below)*    | Comma-separated XMLTV URL(s) to fetch guide data from. Defaults to `https://epg.pw/xmltv/epg_US.xml`. |
-| `EPG_CACHE_HOURS`     | `12`             | How long to cache the downloaded EPG before re-fetching. |
-| `ALLOW_FULL_M3U_DOWNLOAD` | `1`          | Set to `0` to disable the **Fetch M3U** button in the UI. Useful on shared or production deployments where you want to prevent accidental re-fetches or hitting provider rate limits. |
+| Variable                  | Default          | Description |
+|---------------------------|------------------|-------------|
+| `APP_PORT`                | `5005`           | Host port Docker binds to. Change if running multiple instances. |
+| `CONTAINER_NAME`          | `iptv-app`       | Docker container name. Change when running multiple instances to avoid name conflicts. |
+| `HDHR_ADVERTISE_HOST`     | `127.0.0.1`      | IP address your media server uses to reach this app. Use your LAN IP if they run on separate machines. |
+| `HDHR_SCHEME`             | `http`           | Protocol (`http` or `https`). |
+| `HDHR_MODEL`              | `HDHR3-US`       | HDHomeRun model string reported to media servers. |
+| `HDHR_FRIENDLY_NAME`      | `IPTV HDHomeRun` | Device name shown in Plex/Jellyfin/Emby. Useful when running multiple instances. |
+| `HDHR_TUNER_COUNT`        | `2`              | Concurrent streams the media server may request. Raise for more simultaneous recordings. |
+| `HDHR_DISABLE_SSDP`       | `1`              | `1` = SSDP disabled (default, works everywhere). `0` = SSDP enabled (Linux only, enables auto-discovery). |
+| `EPG_XML_SOURCES`         | *(see below)*    | Comma-separated XMLTV URL(s) to fetch guide data from. Defaults to `https://epg.pw/xmltv/epg_US.xml`. |
+| `EPG_CACHE_HOURS`         | `12`             | How long to cache the downloaded EPG before re-fetching. |
+| `ALLOW_FULL_M3U_DOWNLOAD` | `1`              | Set to `0` to disable the **Fetch M3U** button in the UI. Useful on shared or production deployments where you want to prevent accidental re-fetches or hitting provider rate limits. |
+| `STREAM_CHUNK_KB`         | `64`             | Size in KB of each chunk read from the upstream source. Larger values (128, 256) reduce overhead; too large may increase latency. |
+| `STREAM_PREBUFFER_KB`     | `512`            | KB to buffer server-side before sending to the client. Increase (e.g. 1024, 2048) if streams stutter at startup. Set to `0` to disable. |
+| `STREAM_MAX_RETRIES`      | `5`              | How many times the proxy reconnects to the upstream source if the stream drops or goes stale. Set to `0` to disable auto-reconnect. |
+| `STREAM_RETRY_DELAY`      | `3`              | Seconds to wait between reconnect attempts. |
+| `STREAM_READ_TIMEOUT`     | `30`             | Seconds without incoming data before the proxy considers the stream stale and reconnects. Lower values (e.g. `15`) catch silent hangs faster. |
 
 ---
 

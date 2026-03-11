@@ -7,6 +7,7 @@ from hdhomerun_emulator import HDHomeRunEmulator
 import logging
 import re
 import os
+import time
 import requests
 import subprocess
 import json
@@ -231,7 +232,7 @@ async def stream_channel(channel_number: str, request: Request, db: Session = De
     if not source_url:
         raise HTTPException(status_code=404, detail=f"Channel {channel_number} not found")
 
-    logger.info(f"Stream request for channel {channel_number} method={request.method} headers={dict(request.headers)}")
+    logger.info(f"Stream request for channel {channel_number} method={request.method}")
     logger.info(f"Proxying channel {channel_number} -> {source_url}")
 
     proxy_headers = {
@@ -240,52 +241,104 @@ async def stream_channel(channel_number: str, request: Request, db: Session = De
         "Connection": "keep-alive",
     }
 
-    # Read tuning knobs from environment
-    chunk_size    = int(os.getenv("STREAM_CHUNK_KB",    "64"))  * 1024
-    prebuffer_kb  = int(os.getenv("STREAM_PREBUFFER_KB", "512"))
+    # Tuning knobs — all overridable via environment variables
+    chunk_size      = int(os.getenv("STREAM_CHUNK_KB",      "64"))  * 1024
+    prebuffer_kb    = int(os.getenv("STREAM_PREBUFFER_KB",  "512"))
     prebuffer_bytes = prebuffer_kb * 1024
+    max_retries     = int(os.getenv("STREAM_MAX_RETRIES",   "5"))
+    retry_delay     = float(os.getenv("STREAM_RETRY_DELAY", "3"))    # seconds between reconnects
+    read_timeout    = float(os.getenv("STREAM_READ_TIMEOUT","30"))   # seconds without data before reconnect
 
     def generate() -> Iterator[bytes]:
         bytes_sent = 0
+        attempt = 0
         prebuf: list[bytes] = []
         prebuf_size = 0
         prebuffering = prebuffer_bytes > 0
+        session = requests.Session()
         try:
-            logger.info(f"Opening upstream connection for channel {channel_number} "
-                        f"(chunk={chunk_size//1024}KB prebuffer={prebuffer_kb}KB)")
-            with requests.get(
-                source_url,
-                headers=proxy_headers,
-                stream=True,
-                timeout=(10, None),  # 10s connect timeout, no read timeout
-            ) as resp:
-                logger.info(f"Upstream response for channel {channel_number}: status={resp.status_code} headers={dict(resp.headers)}")
-                resp.raise_for_status()
-                for chunk in resp.iter_content(chunk_size=chunk_size):
-                    if not chunk:
-                        continue
-                    if prebuffering:
-                        prebuf.append(chunk)
-                        prebuf_size += len(chunk)
-                        if prebuf_size >= prebuffer_bytes:
-                            logger.info(f"Pre-buffer filled ({prebuf_size//1024}KB), starting stream for channel {channel_number}")
-                            for c in prebuf:
-                                bytes_sent += len(c)
-                                yield c
-                            prebuf = []
-                            prebuffering = False
-                    else:
-                        bytes_sent += len(chunk)
-                        yield chunk
-            # Flush any remaining prebuffer (short stream)
-            for c in prebuf:
-                bytes_sent += len(c)
-                yield c
+            while attempt <= max_retries:
+                if attempt > 0:
+                    logger.warning(
+                        f"Reconnect attempt {attempt}/{max_retries} for channel {channel_number} "
+                        f"after {bytes_sent} bytes — waiting {retry_delay}s..."
+                    )
+                    time.sleep(retry_delay)
+                    # Don't re-prebuffer if we already started streaming
+                    if bytes_sent > 0:
+                        prebuffering = False
+
+                try:
+                    logger.info(
+                        f"Connecting upstream for channel {channel_number} "
+                        f"(attempt={attempt} chunk={chunk_size//1024}KB prebuffer={prebuffer_kb}KB read_timeout={read_timeout}s)"
+                    )
+                    with session.get(
+                        source_url,
+                        headers=proxy_headers,
+                        stream=True,
+                        timeout=(10, read_timeout),
+                    ) as resp:
+                        resp.raise_for_status()
+                        logger.info(
+                            f"Upstream connected for channel {channel_number}: status={resp.status_code}"
+                        )
+
+                        for chunk in resp.iter_content(chunk_size=chunk_size):
+                            if not chunk:
+                                continue
+                            if prebuffering:
+                                prebuf.append(chunk)
+                                prebuf_size += len(chunk)
+                                if prebuf_size >= prebuffer_bytes:
+                                    logger.info(
+                                        f"Pre-buffer filled ({prebuf_size//1024}KB), "
+                                        f"starting stream for channel {channel_number}"
+                                    )
+                                    for c in prebuf:
+                                        bytes_sent += len(c)
+                                        yield c
+                                    prebuf = []
+                                    prebuffering = False
+                            else:
+                                bytes_sent += len(chunk)
+                                yield chunk
+
+                    # Upstream closed connection cleanly — flush any partial prebuffer then reconnect
+                    if prebuf:
+                        for c in prebuf:
+                            bytes_sent += len(c)
+                            yield c
+                        prebuf = []
+                        prebuffering = False
+                    logger.warning(
+                        f"Upstream closed stream for channel {channel_number} "
+                        f"after {bytes_sent} bytes; reconnecting..."
+                    )
+
+                except GeneratorExit:
+                    raise
+                except Exception as exc:
+                    logger.error(
+                        f"Stream error for channel {channel_number} after {bytes_sent} bytes "
+                        f"(attempt {attempt}/{max_retries}): {exc}"
+                    )
+                    # Flush any partial prebuffer before retrying
+                    if prebuf:
+                        for c in prebuf:
+                            bytes_sent += len(c)
+                            yield c
+                        prebuf = []
+                        prebuffering = False
+
+                attempt += 1
+
+            logger.error(f"Max retries ({max_retries}) reached for channel {channel_number}, giving up")
+
         except GeneratorExit:
             logger.info(f"Client disconnected for channel {channel_number} after {bytes_sent} bytes")
-        except Exception as exc:
-            logger.error(f"Stream error for channel {channel_number} after {bytes_sent} bytes: {exc}")
         finally:
+            session.close()
             logger.info(f"Stream ended for channel {channel_number}, total bytes sent: {bytes_sent}")
 
     return StreamingResponse(
