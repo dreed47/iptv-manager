@@ -790,3 +790,76 @@ async def m3u_browser_data(
         "groups": sorted(groups),
         "prefixes": sorted(valid_prefixes),
     }
+
+
+# ---------------------------------------------------------------------------
+# Stream Tester
+# ---------------------------------------------------------------------------
+
+@router.get("/stream_test", response_class=HTMLResponse)
+async def stream_test_page(request: Request):
+    return templates.TemplateResponse("stream_test.html", {"request": request})
+
+
+@router.post("/api/stream_test")
+async def api_stream_test(
+    username: str = Form(...),
+    password: str = Form(...),
+    server_url: str = Form(...),
+    tvg_id: str = Form(...),
+):
+    server_url = server_url.rstrip("/")
+    stream_url = f"{server_url}/live/{username}/{password}/{tvg_id}.ts"
+    headers = {
+        "User-Agent": "VLC/3.0.18 LibVLC/3.0.18",
+        "Accept": "*/*",
+        "Connection": "close",
+    }
+    try:
+        resp = requests.get(stream_url, stream=True, timeout=10, headers=headers, allow_redirects=True)
+        resp.raise_for_status()
+        chunk = next(resp.iter_content(chunk_size=4096), None)
+        resp.close()
+        if chunk:
+            return {"success": True, "stream_url": stream_url}
+        return {
+            "success": False,
+            "stream_url": stream_url,
+            "error": "Stream connected but returned no data",
+            "detail": f"HTTP {resp.status_code} — server responded but sent 0 bytes",
+        }
+    except requests.exceptions.HTTPError as e:
+        reason = e.response.reason or "Unknown"
+        body_preview = ""
+        try:
+            body_preview = e.response.text[:300].strip()
+        except Exception:
+            pass
+        return {
+            "success": False,
+            "stream_url": stream_url,
+            "error": f"HTTP {e.response.status_code}: {reason}",
+            "detail": body_preview or None,
+            "headers": dict(e.response.headers),
+        }
+    except requests.exceptions.ConnectionError as e:
+        return {
+            "success": False,
+            "stream_url": stream_url,
+            "error": "Connection failed",
+            "detail": str(e),
+        }
+    except requests.exceptions.Timeout:
+        return {
+            "success": False,
+            "stream_url": stream_url,
+            "error": "Connection timed out (10s)",
+            "detail": f"No response from server within 10 seconds: {stream_url}",
+        }
+    except Exception as e:
+        return {
+            "success": False,
+            "stream_url": stream_url,
+            "error": str(e),
+            "detail": type(e).__name__,
+        }

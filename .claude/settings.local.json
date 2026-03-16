@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(wc -l /Users/david/Desktop/code/iptv-manager-working/templates/*.html)"
+    ]
+  }
+}

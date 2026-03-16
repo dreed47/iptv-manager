@@ -1,0 +1,486 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Stream Tester — IPTV Manager</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: #f0f2f5;
+      color: #2c3e50;
+      padding: 24px;
+      min-height: 100vh;
+    }
+    .page-header {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      margin-bottom: 24px;
+    }
+    .page-header a {
+      color: #667eea;
+      text-decoration: none;
+      font-size: 13px;
+      font-weight: 500;
+    }
+    .page-header a:hover { text-decoration: underline; }
+    .page-header h1 {
+      font-size: 20px;
+      font-weight: 700;
+      color: #2c3e50;
+    }
+    .card {
+      background: #fff;
+      border-radius: 10px;
+      box-shadow: 0 2px 8px rgba(0,0,0,.08);
+      overflow: hidden;
+      max-width: 1100px;
+      margin: 0 auto;
+    }
+    .card-header {
+      background: #2c3e50;
+      color: #fff;
+      padding: 14px 20px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .card-header h2 { font-size: 15px; font-weight: 600; }
+    .btn-add {
+      background: #667eea;
+      color: #fff;
+      border: none;
+      border-radius: 6px;
+      padding: 7px 14px;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .btn-add:hover { background: #5a6fd6; }
+
+    /* Table */
+    table {
+      width: 100%;
+      border-collapse: collapse;
+    }
+    thead th {
+      background: #ecf0f1;
+      color: #555;
+      font-size: 12px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: .5px;
+      padding: 10px 12px;
+      text-align: left;
+      border-bottom: 2px solid #dce1e7;
+    }
+    tbody tr { border-bottom: 1px solid #ecf0f1; }
+    tbody tr:last-child { border-bottom: none; }
+    tbody tr:hover { background: #f8f9ff; }
+    tbody td {
+      padding: 10px 12px;
+      font-size: 13px;
+      vertical-align: middle;
+    }
+    /* Editable cells */
+    td input {
+      width: 100%;
+      border: 1px solid transparent;
+      border-radius: 4px;
+      padding: 4px 6px;
+      font-size: 13px;
+      font-family: inherit;
+      color: #2c3e50;
+      background: transparent;
+    }
+    td input:focus {
+      outline: none;
+      border-color: #667eea;
+      background: #fff;
+    }
+    td input[type="password"] { letter-spacing: 2px; }
+    .col-actions { white-space: nowrap; width: 1%; }
+    .col-actions .action-row { display: flex; gap: 6px; align-items: center; }
+
+    /* Buttons */
+    .btn {
+      border: none;
+      border-radius: 5px;
+      padding: 5px 12px;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background .15s, opacity .15s;
+    }
+    .btn:disabled { opacity: .5; cursor: not-allowed; }
+    .btn-test { background: #667eea; color: #fff; min-width: 52px; }
+    .btn-test:hover:not(:disabled) { background: #5a6fd6; }
+    .btn-test.success { background: #27ae60; }
+    .btn-test.error   { background: #e74c3c; }
+    .btn-view { background: #1a1a2e; color: #fff; }
+    .btn-view:hover:not(:disabled) { opacity: .8; }
+    .btn-delete { background: #e74c3c; color: #fff; }
+    .btn-delete:hover { background: #c0392b; }
+    .btn-save-row { background: #27ae60; color: #fff; }
+    .btn-save-row:hover { background: #219a52; }
+
+    /* Error modal */
+    .modal-overlay {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,.5);
+      z-index: 100;
+      align-items: center;
+      justify-content: center;
+    }
+    .modal-overlay.open { display: flex; }
+    .modal {
+      background: #fff;
+      border-radius: 10px;
+      box-shadow: 0 8px 32px rgba(0,0,0,.25);
+      width: 420px;
+      max-width: 90vw;
+      overflow: hidden;
+    }
+    .modal-header {
+      background: #e74c3c;
+      color: #fff;
+      padding: 14px 18px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      font-weight: 700;
+      font-size: 14px;
+    }
+    .modal-close {
+      background: none;
+      border: none;
+      color: #fff;
+      font-size: 18px;
+      cursor: pointer;
+      line-height: 1;
+      padding: 0 2px;
+    }
+    .modal-body {
+      padding: 20px 18px;
+      font-size: 13px;
+      color: #2c3e50;
+      word-break: break-word;
+      line-height: 1.6;
+    }
+    .modal-body .err-label {
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: .5px;
+      color: #888;
+      margin-top: 14px;
+      margin-bottom: 3px;
+    }
+    .modal-body .err-label:first-child { margin-top: 0; }
+    .modal-body .err-value {
+      background: #f7f8fa;
+      border: 1px solid #e1e4e8;
+      border-radius: 5px;
+      padding: 7px 10px;
+      font-family: ui-monospace, "SF Mono", monospace;
+      font-size: 12px;
+      white-space: pre-wrap;
+    }
+    .modal-body .err-headers { max-height: 140px; overflow-y: auto; }
+    .modal-footer {
+      padding: 12px 18px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      border-top: 1px solid #ecf0f1;
+      gap: 8px;
+    }
+    .modal-footer button {
+      border: none;
+      border-radius: 6px;
+      padding: 7px 18px;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .btn-modal-copy { background: #ecf0f1; color: #2c3e50; }
+    .btn-modal-copy:hover { background: #dce1e7; }
+    .btn-modal-close { background: #667eea; color: #fff; margin-left: auto; }
+    .btn-modal-close:hover { background: #5a6fd6; }
+
+    /* Empty state */
+    .empty-row td {
+      text-align: center;
+      color: #aaa;
+      font-size: 13px;
+      padding: 32px;
+    }
+  </style>
+</head>
+<body>
+
+  <div class="page-header">
+    <a href="/">← Back</a>
+    <h1>🧪 Stream Tester</h1>
+  </div>
+
+  <!-- Error modal -->
+  <div class="modal-overlay" id="error-modal" onclick="closeModal(event)">
+    <div class="modal">
+      <div class="modal-header">
+        <span>Test Failed</span>
+        <button class="modal-close" onclick="closeErrorModal()">✕</button>
+      </div>
+      <div class="modal-body" id="modal-error-body"></div>
+      <div class="modal-footer">
+        <button class="btn-modal-copy" id="modal-copy-btn" onclick="copyModalText()">📋 Copy</button>
+        <button class="btn-modal-close" onclick="closeErrorModal()">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-header">
+      <h2>Test Entries</h2>
+      <button class="btn-add" onclick="addRow()">+ Add Row</button>
+    </div>
+    <table id="test-table">
+      <thead>
+        <tr>
+          <th style="width:16%">Username</th>
+          <th style="width:16%">Password</th>
+          <th style="width:28%">Server URL</th>
+          <th style="width:16%">TVG-ID</th>
+          <th style="width:24%" class="col-actions">Actions</th>
+        </tr>
+      </thead>
+      <tbody id="table-body"></tbody>
+    </table>
+  </div>
+
+  <script>
+    const STORAGE_KEY = 'stream_tester_rows';
+
+    // Load saved rows on page load
+    function loadRows() {
+      try {
+        return JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]');
+      } catch { return []; }
+    }
+
+    function saveRows(rows) {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(rows));
+    }
+
+    function renderTable() {
+      const rows = loadRows();
+      const tbody = document.getElementById('table-body');
+      tbody.innerHTML = '';
+
+      if (rows.length === 0) {
+        tbody.innerHTML = '<tr class="empty-row"><td colspan="5">No entries yet. Click "+ Add Row" to get started.</td></tr>';
+        return;
+      }
+
+      rows.forEach((row, idx) => renderRow(tbody, row, idx));
+    }
+
+    function renderRow(tbody, row, idx) {
+      const tr = document.createElement('tr');
+      tr.dataset.idx = idx;
+      tr.innerHTML = `
+        <td><input type="text"     class="f-username"   value="${esc(row.username)}"   placeholder="username"   /></td>
+        <td><input type="password" class="f-password"   value="${esc(row.password)}"   placeholder="password"   /></td>
+        <td><input type="text"     class="f-server_url" value="${esc(row.server_url)}" placeholder="http://host:port" /></td>
+        <td><input type="text"     class="f-tvg_id"     value="${esc(row.tvg_id)}"     placeholder="12345"      /></td>
+        <td class="col-actions">
+          <div class="action-row">
+            <div>
+              <button class="btn btn-test" onclick="testRow(${idx}, this)">Test</button>
+            </div>
+            <button class="btn btn-view" onclick="viewRow(${idx})" disabled title="Run Test first">View</button>
+            <button class="btn btn-save-row" onclick="saveRow(${idx})">Save</button>
+            <button class="btn btn-delete" onclick="deleteRow(${idx})">Delete</button>
+          </div>
+        </td>
+      `;
+      tbody.appendChild(tr);
+    }
+
+    function esc(str) {
+      return (str || '').replace(/"/g, '&quot;').replace(/</g, '&lt;');
+    }
+
+    function getRowData(idx) {
+      const tr = document.querySelector(`tr[data-idx="${idx}"]`);
+      if (!tr) return null;
+      return {
+        username:   tr.querySelector('.f-username').value.trim(),
+        password:   tr.querySelector('.f-password').value.trim(),
+        server_url: tr.querySelector('.f-server_url').value.trim(),
+        tvg_id:     tr.querySelector('.f-tvg_id').value.trim(),
+      };
+    }
+
+    function addRow() {
+      const rows = loadRows();
+      rows.push({ username: '', password: '', server_url: '', tvg_id: '' });
+      saveRows(rows);
+      renderTable();
+      // Focus first input of new row
+      const trs = document.querySelectorAll('#table-body tr[data-idx]');
+      if (trs.length) trs[trs.length - 1].querySelector('input')?.focus();
+    }
+
+    function saveRow(idx) {
+      const data = getRowData(idx);
+      if (!data) return;
+      const rows = loadRows();
+      rows[idx] = data;
+      saveRows(rows);
+      // Brief visual confirmation
+      const btn = document.querySelector(`tr[data-idx="${idx}"] .btn-save-row`);
+      if (btn) { const orig = btn.textContent; btn.textContent = 'Saved!'; setTimeout(() => btn.textContent = orig, 1200); }
+    }
+
+    function deleteRow(idx) {
+      const rows = loadRows();
+      rows.splice(idx, 1);
+      saveRows(rows);
+      renderTable();
+    }
+
+    async function testRow(idx, btn) {
+      // Save current field values first
+      saveRow(idx);
+
+      const data = getRowData(idx);
+      if (!data) return;
+
+      // Reset state
+      btn.className = 'btn btn-test';
+      btn.textContent = '…';
+      btn.disabled = true;
+
+      const form = new FormData();
+      form.append('username',   data.username);
+      form.append('password',   data.password);
+      form.append('server_url', data.server_url);
+      form.append('tvg_id',     data.tvg_id);
+
+      try {
+        const res = await fetch('/api/stream_test', { method: 'POST', body: form });
+        const json = await res.json();
+        const tr = btn.closest('tr');
+        const viewBtn = tr.querySelector('.btn-view');
+        if (json.success) {
+          btn.className = 'btn btn-test success';
+          btn.textContent = 'Test ✓';
+          tr.dataset.streamUrl = json.stream_url;
+          viewBtn.disabled = false;
+          viewBtn.title = '';
+        } else {
+          btn.className = 'btn btn-test error';
+          btn.textContent = 'Test ✗';
+          viewBtn.disabled = true;
+          viewBtn.title = 'Test failed — fix the error and retry';
+          showErrorModal(json);
+        }
+      } catch (e) {
+        btn.className = 'btn btn-test error';
+        btn.textContent = 'Test ✗';
+        showErrorModal({ error: 'Request failed', detail: e.message });
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    function viewRow(idx) {
+      const tr = document.querySelector(`tr[data-idx="${idx}"]`);
+      const testBtn = tr?.querySelector('.btn-test');
+
+      // Only allow View if the test passed (button is green)
+      if (!testBtn || !testBtn.classList.contains('success')) {
+        alert('Please run the Test first and ensure it passes before viewing.');
+        return;
+      }
+
+      const streamUrl = tr.dataset.streamUrl;
+      const name = encodeURIComponent(getRowData(idx)?.tvg_id || 'Stream');
+      window.open(`/stream_player?url=${encodeURIComponent(streamUrl)}&name=${name}`, '_blank');
+    }
+
+    let _modalCopyText = '';
+
+    function showErrorModal(json) {
+      const body = document.getElementById('modal-error-body');
+      body.innerHTML = '';
+      const parts = [];
+
+      function row(label, value, extra) {
+        if (!value) return;
+        const l = document.createElement('div');
+        l.className = 'err-label';
+        l.textContent = label;
+        const v = document.createElement('div');
+        v.className = 'err-value' + (extra ? ' ' + extra : '');
+        v.textContent = value;
+        body.appendChild(l);
+        body.appendChild(v);
+        parts.push(`${label}:\n${value}`);
+      }
+
+      const msg = typeof json === 'string' ? json : json.error;
+      row('Error', msg);
+      if (json.detail) row('Detail', json.detail);
+      if (json.stream_url) row('URL Tested', json.stream_url);
+      if (json.headers) {
+        const hdrs = Object.entries(json.headers).map(([k,v]) => `${k}: ${v}`).join('\n');
+        row('Response Headers', hdrs, 'err-headers');
+      }
+
+      _modalCopyText = parts.join('\n\n');
+
+      // Reset copy button label
+      const copyBtn = document.getElementById('modal-copy-btn');
+      copyBtn.textContent = '📋 Copy';
+
+      document.getElementById('error-modal').classList.add('open');
+    }
+
+    function copyModalText() {
+      const btn = document.getElementById('modal-copy-btn');
+      try {
+        const ta = document.createElement('textarea');
+        ta.value = _modalCopyText;
+        ta.style.cssText = 'position:fixed;opacity:0;top:0;left:0';
+        document.body.appendChild(ta);
+        ta.focus();
+        ta.select();
+        document.execCommand('copy');
+        document.body.removeChild(ta);
+        btn.textContent = '✓ Copied!';
+        setTimeout(() => btn.textContent = '📋 Copy', 2000);
+      } catch (e) {
+        alert('Copy failed: ' + e.message);
+      }
+    }
+
+    function closeErrorModal() {
+      document.getElementById('error-modal').classList.remove('open');
+    }
+
+    function closeModal(e) {
+      // Close if clicking the backdrop, not the modal itself
+      if (e.target === document.getElementById('error-modal')) closeErrorModal();
+    }
+
+    // Initial render
+    renderTable();
+  </script>
+</body>
+</html>
