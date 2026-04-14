@@ -38,6 +38,7 @@ Open the web UI at `http://localhost:5005`.
 | `STREAM_MAX_RETRIES`      | `5`              | How many times the proxy reconnects to the upstream source if the stream drops or goes stale. Set to `0` to disable auto-reconnect. |
 | `STREAM_RETRY_DELAY`      | `3`              | Seconds to wait between reconnect attempts. |
 | `STREAM_READ_TIMEOUT`     | `30`             | Seconds without incoming data before the proxy considers the stream stale and reconnects. Lower values (e.g. `15`) catch silent hangs faster. |
+| `HEALTH_CHECK_TVG_ID`     | *(none)*         | Channel TVG-ID used by `GET /api/health` for Uptime Kuma / Home Assistant probes. Pick a reliable, low-priority channel. See [Monitoring](#monitoring). |
 
 ---
 
@@ -267,3 +268,62 @@ curl http://localhost:5005/discover.json
 - Test a stream directly: `curl -I "http://<host>:5005/auto/v<GuideNumber>"`
 - The app proxies all streams — it connects to your provider and forwards the data. If the provider URL is unreachable or the token has expired, re-fetch the M3U.
 - Use the **Browse All Channels** → ▶ play button to test individual stream URLs directly before they go through the HDHomeRun proxy.
+
+---
+
+## Monitoring
+
+The app exposes a health-check endpoint at `GET /api/health` that external tools can poll to determine if your IPTV provider is reachable.
+
+### How it works
+
+1. If a proxy stream is already active, the endpoint returns `{"status": "skipped"}` (HTTP 200) instead of running a test. This prevents interrupting a live stream and avoids false alerts.
+2. Otherwise it opens a connection to your provider, reads the first 4 KB of data, then immediately closes — the same check the stream_test page performs manually.
+3. Returns `{"status": "ok"}` (HTTP 200) on success, or `{"status": "down"}` (HTTP 503) on failure.
+
+### Setup
+
+1. Find the TVG-ID of a reliable, low-priority channel (visible on the Stream Tester page).
+2. Add it to `.env`:
+   ```
+   HEALTH_CHECK_TVG_ID=12345
+   ```
+3. Rebuild the container.
+
+You can also override the channel per-request with `?tvg_id=12345`, or target a specific config with `?item_id=1`.
+
+### Uptime Kuma
+
+| Field | Value |
+|-------|-------|
+| Monitor type | **HTTP(S) — JSON Query** |
+| URL | `http://<host>:5005/api/health` |
+| JSON Query | `$.status` |
+| Expected value | `ok` |
+
+`skipped` returns HTTP 200 so Uptime Kuma won't alert while you're actively watching live TV.
+
+### Home Assistant
+
+Add a REST sensor to `configuration.yaml`:
+
+```yaml
+sensor:
+  - platform: rest
+    name: IPTV Status
+    resource: http://<host>:5005/api/health
+    value_template: "{{ value_json.status }}"
+    json_attributes:
+      - latency_ms
+      - active_streams
+    scan_interval: 60
+```
+
+The sensor state will be `ok`, `down`, or `skipped`. Use it in automations or a dashboard card. Example automation trigger:
+
+```yaml
+trigger:
+  - platform: state
+    entity_id: sensor.iptv_status
+    to: "down"
+```

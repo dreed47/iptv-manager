@@ -219,6 +219,112 @@
       font-size: 13px;
       padding: 32px;
     }
+
+    /* Health check card */
+    .health-card {
+      margin-top: 24px;
+    }
+    .health-body {
+      padding: 20px;
+    }
+    .health-desc {
+      font-size: 13px;
+      color: #555;
+      margin-bottom: 18px;
+    }
+    .health-field {
+      margin-bottom: 14px;
+    }
+    .health-field label {
+      display: block;
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: .5px;
+      color: #888;
+      margin-bottom: 5px;
+    }
+    .health-field .field-hint {
+      font-size: 11px;
+      color: #aaa;
+      margin-top: 4px;
+    }
+    .url-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .url-row code {
+      flex: 1;
+      background: #f7f8fa;
+      border: 1px solid #e1e4e8;
+      border-radius: 5px;
+      padding: 7px 10px;
+      font-family: ui-monospace, "SF Mono", monospace;
+      font-size: 12px;
+      color: #2c3e50;
+      word-break: break-all;
+    }
+    .tvg-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .tvg-row select,
+    .tvg-row input[type="text"] {
+      flex: 1;
+      border: 1px solid #dce1e7;
+      border-radius: 5px;
+      padding: 6px 9px;
+      font-size: 13px;
+      font-family: inherit;
+      color: #2c3e50;
+      background: #fff;
+    }
+    .tvg-row select:focus,
+    .tvg-row input:focus { outline: none; border-color: #667eea; }
+    .health-result {
+      margin-top: 14px;
+      padding: 10px 12px;
+      border-radius: 6px;
+      font-size: 12px;
+      font-family: ui-monospace, "SF Mono", monospace;
+      white-space: pre-wrap;
+      word-break: break-all;
+      display: none;
+    }
+    .health-result.ok     { background: #eafaf1; border: 1px solid #a9dfbf; color: #1e8449; }
+    .health-result.down   { background: #fdf2f2; border: 1px solid #f1948a; color: #922b21; }
+    .health-result.other  { background: #f7f8fa; border: 1px solid #e1e4e8; color: #2c3e50; }
+    .integrations {
+      margin-top: 20px;
+      border-top: 1px solid #ecf0f1;
+      padding-top: 16px;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 14px;
+    }
+    @media (max-width: 680px) { .integrations { grid-template-columns: 1fr; } }
+    .integration-block h3 {
+      font-size: 12px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: .5px;
+      color: #888;
+      margin-bottom: 8px;
+    }
+    .integration-block pre {
+      background: #f7f8fa;
+      border: 1px solid #e1e4e8;
+      border-radius: 5px;
+      padding: 10px 12px;
+      font-size: 11px;
+      font-family: ui-monospace, "SF Mono", monospace;
+      white-space: pre-wrap;
+      word-break: break-all;
+      color: #2c3e50;
+      margin: 0;
+    }
   </style>
 </head>
 <body>
@@ -262,6 +368,68 @@
     </table>
   </div>
 
+  <!-- Health check card -->
+  <div class="card health-card">
+    <div class="card-header">
+      <h2>Health Check Endpoint</h2>
+    </div>
+    <div class="health-body">
+      <p class="health-desc">
+        Use this endpoint with <strong>Uptime Kuma</strong> or <strong>Home Assistant</strong> to monitor
+        stream availability. The endpoint skips the test automatically if a proxy stream is already active,
+        so it won't interrupt live viewing.
+      </p>
+
+      <div class="health-field">
+        <label>TVG-ID to test</label>
+        <div class="tvg-row">
+          <select id="health-tvg-select" onchange="onTvgSelectChange()">
+            <option value="">— select from saved rows —</option>
+          </select>
+          <input type="text" id="health-tvg-input" placeholder="or type a TVG-ID" oninput="updateHealthUrl()" />
+        </div>
+        <div class="field-hint">Pick a reliable, low-priority channel. Set <code>HEALTH_CHECK_TVG_ID</code> in <code>.env</code> to make it permanent (then no <code>?tvg_id=</code> needed).</div>
+      </div>
+
+      <div class="health-field">
+        <label>Endpoint URL</label>
+        <div class="url-row">
+          <code id="health-url"></code>
+          <button class="btn btn-save-row" onclick="copyHealthUrl()" id="copy-health-btn">Copy</button>
+          <button class="btn btn-test" onclick="testHealth()" id="test-health-btn">Test</button>
+        </div>
+      </div>
+
+      <div class="health-result" id="health-result"></div>
+
+      <div class="integrations">
+        <div class="integration-block">
+          <h3>Uptime Kuma</h3>
+          <pre>Monitor type: HTTP(S) — JSON Query
+URL: <span id="uk-url"></span>
+JSON Query: $.status
+Expected value: ok
+
+Note: "skipped" returns HTTP 200
+so it won't trigger an alert while
+a stream is active.</pre>
+        </div>
+        <div class="integration-block">
+          <h3>Home Assistant</h3>
+          <pre id="ha-snippet">sensor:
+  - platform: rest
+    name: IPTV Status
+    resource: <span id="ha-url"></span>
+    value_template: "{% raw %}{{ value_json.status }}{% endraw %}"
+    json_attributes:
+      - latency_ms
+      - active_streams
+    scan_interval: 60</pre>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <script>
     const STORAGE_KEY = 'stream_tester_rows';
 
@@ -283,10 +451,12 @@
 
       if (rows.length === 0) {
         tbody.innerHTML = '<tr class="empty-row"><td colspan="5">No entries yet. Click "+ Add Row" to get started.</td></tr>';
-        return;
+      } else {
+        rows.forEach((row, idx) => renderRow(tbody, row, idx));
       }
 
-      rows.forEach((row, idx) => renderRow(tbody, row, idx));
+      // Keep the health card TVG-ID dropdown in sync
+      if (typeof populateTvgSelect === 'function') populateTvgSelect();
     }
 
     function renderRow(tbody, row, idx) {
@@ -481,6 +651,89 @@
 
     // Initial render
     renderTable();
+
+    // ── Health check card ──────────────────────────────────────────────────
+
+    function buildHealthUrl() {
+      const tvgId = document.getElementById('health-tvg-input').value.trim();
+      const base = window.location.origin + '/api/health';
+      return tvgId ? base + '?tvg_id=' + encodeURIComponent(tvgId) : base;
+    }
+
+    function updateHealthUrl() {
+      const url = buildHealthUrl();
+      document.getElementById('health-url').textContent = url;
+      document.getElementById('uk-url').textContent = url;
+      document.getElementById('ha-url').textContent = url;
+    }
+
+    function onTvgSelectChange() {
+      const sel = document.getElementById('health-tvg-select');
+      if (sel.value) {
+        document.getElementById('health-tvg-input').value = sel.value;
+      }
+      updateHealthUrl();
+    }
+
+    function populateTvgSelect() {
+      const rows = loadRows();
+      const sel = document.getElementById('health-tvg-select');
+      // Clear existing options except the placeholder
+      while (sel.options.length > 1) sel.remove(1);
+      rows.forEach((row, idx) => {
+        if (row.tvg_id) {
+          const opt = document.createElement('option');
+          opt.value = row.tvg_id;
+          opt.textContent = row.tvg_id + (row.username ? '  (' + row.username + ')' : '');
+          sel.appendChild(opt);
+        }
+      });
+    }
+
+    async function copyHealthUrl() {
+      const url = buildHealthUrl();
+      const btn = document.getElementById('copy-health-btn');
+      try {
+        await navigator.clipboard.writeText(url);
+        btn.textContent = 'Copied!';
+      } catch {
+        // Fallback for non-secure contexts
+        const ta = document.createElement('textarea');
+        ta.value = url;
+        ta.style.cssText = 'position:fixed;opacity:0;top:0;left:0';
+        document.body.appendChild(ta);
+        ta.focus(); ta.select();
+        document.execCommand('copy');
+        document.body.removeChild(ta);
+        btn.textContent = 'Copied!';
+      }
+      setTimeout(() => btn.textContent = 'Copy', 2000);
+    }
+
+    async function testHealth() {
+      const url = buildHealthUrl();
+      const result = document.getElementById('health-result');
+      const btn = document.getElementById('test-health-btn');
+      btn.textContent = '…'; btn.disabled = true;
+      result.style.display = 'none';
+      result.className = 'health-result';
+      try {
+        const res = await fetch(url);
+        const json = await res.json();
+        result.textContent = JSON.stringify(json, null, 2);
+        result.className = 'health-result ' + (json.status === 'ok' ? 'ok' : json.status === 'skipped' ? 'other' : 'down');
+        result.style.display = 'block';
+      } catch (e) {
+        result.textContent = 'Request failed: ' + e.message;
+        result.className = 'health-result down';
+        result.style.display = 'block';
+      }
+      btn.textContent = 'Test'; btn.disabled = false;
+    }
+
+    // Initialise health card
+    populateTvgSelect();
+    updateHealthUrl();
   </script>
 </body>
 </html>

@@ -12,6 +12,8 @@ A web-based tool for managing, filtering, and serving IPTV playlists and EPG dat
 - **EPG / Guide Data** — Fetches and name-matches guide data automatically; generates a standards-compliant XMLTV file with channel numbers. Unmatched channels receive placeholder "No Guide Data" entries so they remain streamable. EPG rebuilds automatically after each filter save.
 - **Channel Number Preservation** — `tvg-chno` values from your provider are passed through to the HDHomeRun lineup and EPG so Plex shows the correct channel numbers.
 - **HDHomeRun Emulation** — Appears as an HDHomeRun tuner on your network; Plex, Jellyfin, and Emby discover it automatically or via manual IP entry.
+- **Stream Tester** — Test credentials and channel IDs directly from the browser before committing them to your config.
+- **Health Check Endpoint** — `GET /api/health` returns stream reachability as JSON; integrates with Uptime Kuma (JSON Query monitor) and Home Assistant (REST sensor). Skips the test automatically when a live stream is active to avoid interruptions.
 - **Docker** — Single `docker-compose.yml` works on macOS and Linux with no changes.
 
 ## Quick Start
@@ -88,8 +90,10 @@ Channel numbers flow through the entire stack so what you see in your IPTV app m
 | `services.py` | Business logic / CRUD |
 | `epg_manager.py` | EPG fetching, name-matching, and XMLTV generation |
 | `templates/index.html` | Main web UI |
+| `templates/channels.html` | Channel browser UI |
 | `templates/m3u_browser.html` | Full M3U browser UI |
 | `templates/player.html` | In-browser stream player |
+| `templates/stream_test.html` | Stream connection tester and health check config |
 | `m3u_files/` | Downloaded playlists, filtered playlists, and cached EPG |
 | `data/` | SQLite database |
 | `docker-compose.yml` | Container definition |

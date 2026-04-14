@@ -23,6 +23,14 @@ hdhomerun_emulator = HDHomeRunEmulator()
 # Module-level cache: guide_number -> real source URL (populated by load_channel_lineup)
 _channel_source_urls: dict = {}
 
+# Active proxy stream counter — incremented when a stream starts, decremented when it ends
+_active_stream_count: int = 0
+
+
+def get_active_stream_count() -> int:
+    """Return the number of proxy streams currently in progress."""
+    return _active_stream_count
+
 def get_advertised_base_url() -> str:
     """
     Returns the public BaseURL we want Plex to use when calling us.
@@ -250,12 +258,14 @@ async def stream_channel(channel_number: str, request: Request, db: Session = De
     read_timeout    = float(os.getenv("STREAM_READ_TIMEOUT","30"))   # seconds without data before reconnect
 
     def generate() -> Iterator[bytes]:
+        global _active_stream_count
         bytes_sent = 0
         attempt = 0
         prebuf: list[bytes] = []
         prebuf_size = 0
         prebuffering = prebuffer_bytes > 0
         session = requests.Session()
+        _active_stream_count += 1
         try:
             while attempt <= max_retries:
                 if attempt > 0:
@@ -338,6 +348,7 @@ async def stream_channel(channel_number: str, request: Request, db: Session = De
         except GeneratorExit:
             logger.info(f"Client disconnected for channel {channel_number} after {bytes_sent} bytes")
         finally:
+            _active_stream_count -= 1
             session.close()
             logger.info(f"Stream ended for channel {channel_number}, total bytes sent: {bytes_sent}")
 
@@ -462,7 +473,9 @@ async def hdhr_lineup(db: Session = Depends(get_db)):
 @router.get("/channels", response_class=HTMLResponse)
 async def channel_browser(request: Request):
     """Channel browser page — click to open streams in VLC or IINA"""
-    return templates.TemplateResponse("channels.html", {"request": request})
+    template = templates.get_template("channels.html")
+    rendered = template.render({"request": request})
+    return HTMLResponse(content=rendered)
 
 @router.get("/player/{channel_number:path}", response_class=HTMLResponse)
 async def player_page(channel_number: str, request: Request, name: str = None, db: Session = Depends(get_db)):
@@ -485,7 +498,8 @@ async def player_page(channel_number: str, request: Request, name: str = None, d
     latency_max = float(os.getenv("PLAYER_LATENCY_MAX", "30.0"))  # max live buffer latency seconds
     latency_min = float(os.getenv("PLAYER_LATENCY_MIN",  "5.0"))  # min live buffer remain seconds
 
-    return templates.TemplateResponse("player.html", {
+    template = templates.get_template("player.html")
+    rendered = template.render({
         "request": request,
         "channel_number": channel_number,
         "channel_name": channel_name,
@@ -497,6 +511,7 @@ async def player_page(channel_number: str, request: Request, name: str = None, d
         "latency_max": latency_max,
         "latency_min": latency_min,
     })
+    return HTMLResponse(content=rendered)
 
 @router.get("/watch/{channel_number:path}")
 async def watch_channel(channel_number: str, request: Request, name: str = None):

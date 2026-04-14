@@ -1,5 +1,5 @@
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Form, Request
-from fastapi.responses import HTMLResponse, RedirectResponse, FileResponse, Response
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, FileResponse, Response
 from fastapi.templating import Jinja2Templates
 import time
 from sqlalchemy.orm import Session
@@ -7,7 +7,7 @@ from models import get_db, Item
 from services import create_item, update_item, delete_item, get_all_items
 import logging
 import os
-from hdhomerun_routes import hdhomerun_emulator
+from hdhomerun_routes import hdhomerun_emulator, get_active_stream_count
 import urllib.parse
 import requests
 import json
@@ -655,7 +655,8 @@ async def stream_player(request: Request, url: str = "", name: str = "Stream"):
     stash_kb    = int(os.getenv("PLAYER_STASH_KB",    "1024"))
     latency_max = float(os.getenv("PLAYER_LATENCY_MAX", "30.0"))
     latency_min = float(os.getenv("PLAYER_LATENCY_MIN",  "5.0"))
-    return templates.TemplateResponse("player.html", {
+    template = templates.get_template("player.html")
+    rendered = template.render({
         "request": request,
         "channel_number": "",
         "channel_name": name,
@@ -667,6 +668,7 @@ async def stream_player(request: Request, url: str = "", name: str = "Stream"):
         "latency_max": latency_max,
         "latency_min": latency_min,
     })
+    return HTMLResponse(content=rendered)
 
 
 # ---------------------------------------------------------------------------
@@ -681,11 +683,13 @@ async def m3u_browser(item_id: int, request: Request, db: Session = Depends(get_
     file_path = os.path.join("/app/m3u_files", f"xtream_playlist_{item_id}.m3u")
     if not os.path.exists(file_path):
         raise HTTPException(status_code=404, detail="Full M3U not fetched yet — click Fetch M3U first")
-    return templates.TemplateResponse("m3u_browser.html", {
+    template = templates.get_template("m3u_browser.html")
+    rendered = template.render({
         "request": request,
         "item_id": item_id,
         "item_name": item.name,
     })
+    return HTMLResponse(content=rendered)
 
 
 @router.get("/m3u_browser_data/{item_id}")
@@ -798,7 +802,9 @@ async def m3u_browser_data(
 
 @router.get("/stream_test", response_class=HTMLResponse)
 async def stream_test_page(request: Request):
-    return templates.TemplateResponse("stream_test.html", {"request": request})
+    template = templates.get_template("stream_test.html")
+    rendered = template.render({"request": request})
+    return HTMLResponse(content=rendered)
 
 
 @router.post("/api/stream_test")
@@ -863,3 +869,84 @@ async def api_stream_test(
             "error": str(e),
             "detail": type(e).__name__,
         }
+
+
+# ---------------------------------------------------------------------------
+# Health check endpoint (for Uptime Kuma, Home Assistant, etc.)
+# ---------------------------------------------------------------------------
+
+@router.get("/api/health")
+async def api_health(
+    db: Session = Depends(get_db),
+    item_id: int = None,
+    tvg_id: str = None,
+):
+    active = get_active_stream_count()
+
+    # Skip the test if a proxy stream is already in progress
+    if active > 0:
+        return {"status": "skipped", "reason": "stream_active", "active_streams": active}
+
+    # Resolve tvg_id: query param → env var → error
+    tvg_id = tvg_id or os.getenv("HEALTH_CHECK_TVG_ID", "").strip()
+    if not tvg_id:
+        return JSONResponse(
+            status_code=400,
+            content={"status": "error", "reason": "no_tvg_id_configured",
+                     "detail": "Set HEALTH_CHECK_TVG_ID in .env or pass ?tvg_id= as a query param"},
+        )
+
+    # Load credentials from DB
+    if item_id is not None:
+        item = db.query(Item).filter(Item.id == item_id).first()
+    else:
+        item = db.query(Item).first()
+
+    if not item:
+        return JSONResponse(
+            status_code=404,
+            content={"status": "error", "reason": "no_item_found",
+                     "detail": "No IPTV configuration found in database"},
+        )
+
+    server_url = item.server_url.rstrip("/")
+    stream_url = f"{server_url}/live/{item.username}/{item.user_pass}/{tvg_id}.ts"
+    headers = {
+        "User-Agent": "VLC/3.0.18 LibVLC/3.0.18",
+        "Accept": "*/*",
+        "Connection": "close",
+    }
+
+    t0 = time.monotonic()
+    try:
+        resp = requests.get(stream_url, stream=True, timeout=10, headers=headers, allow_redirects=True)
+        resp.raise_for_status()
+        chunk = next(resp.iter_content(chunk_size=4096), None)
+        resp.close()
+        latency_ms = int((time.monotonic() - t0) * 1000)
+        if chunk:
+            return {"status": "ok", "latency_ms": latency_ms, "item": item.name, "active_streams": 0}
+        return JSONResponse(
+            status_code=503,
+            content={"status": "down", "error": "Stream connected but returned no data",
+                     "latency_ms": latency_ms, "item": item.name, "active_streams": 0},
+        )
+    except requests.exceptions.HTTPError as e:
+        latency_ms = int((time.monotonic() - t0) * 1000)
+        return JSONResponse(
+            status_code=503,
+            content={"status": "down",
+                     "error": f"HTTP {e.response.status_code}: {e.response.reason or 'Unknown'}",
+                     "latency_ms": latency_ms, "item": item.name, "active_streams": 0},
+        )
+    except requests.exceptions.Timeout:
+        return JSONResponse(
+            status_code=503,
+            content={"status": "down", "error": "Connection timed out (10s)",
+                     "item": item.name, "active_streams": 0},
+        )
+    except Exception as e:
+        return JSONResponse(
+            status_code=503,
+            content={"status": "down", "error": str(e), "item": item.name, "active_streams": 0},
+        )
