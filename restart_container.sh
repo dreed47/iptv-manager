@@ -7,11 +7,13 @@ WD="$(cd "$(dirname "$0")" && pwd)"
 NO_CACHE=${1:-}
 
 # Read CONTAINER_NAME from .env (falls back to the docker-compose default)
+# Uses grep rather than sourcing the file so unquoted values with spaces don't cause errors
 if [ -f "${WD}/.env" ]; then
-    # shellcheck disable=SC1091
-    . "${WD}/.env"
+    _cn=$(grep -E '^CONTAINER_NAME=' "${WD}/.env" | head -1 | cut -d= -f2- | tr -d '"'"'")
+    CONTAINER_NAME=${_cn:-iptv-app}
+else
+    CONTAINER_NAME=iptv-app
 fi
-CONTAINER_NAME=${CONTAINER_NAME:-iptv-app}
 
 # Stop and remove any stray container with the same name that compose can't own
 docker stop "${CONTAINER_NAME}" 2>/dev/null || true
