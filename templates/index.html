@@ -496,15 +496,36 @@
         <form method="POST" action="/">
           <input type="hidden" name="item_id" value="{{ item.id }}" />
           
-          <!-- Card Header: display name only; credentials passed as hidden fields -->
+          <!-- Card Header: display name only; credentials in collapsible section -->
           <input type="hidden" name="new_name" value="{{ item.name }}" />
-          <input type="hidden" name="new_username" value="{{ item.username }}" />
-          <input type="hidden" name="new_user_pass" value="{{ item.user_pass }}" />
           <div style="margin-bottom: 14px; padding-bottom: 12px; border-bottom: 1px solid #e9ecef;">
             <span style="font-size: 15px; font-weight: 700; color: #2c3e50;">{{ item.name }}</span>
             <div class="form-group" style="margin-top: 10px;">
               <label class="form-label" for="new_server_url_{{ item.id }}">Server URL</label>
               <input type="text" id="new_server_url_{{ item.id }}" name="new_server_url" value="{{ item.server_url }}" maxlength="200" required />
+            </div>
+
+            <!-- Collapsible credentials section -->
+            <div style="margin-top: 10px;">
+              <button
+                type="button"
+                onclick="toggleCredentials('{{ item.id }}')"
+                style="background: transparent; border: 1px solid #ced4da; color: #6c757d; padding: 5px 12px; font-size: 12px; cursor: pointer; border-radius: 4px; font-weight: 500;"
+              >
+                🔐 Edit Credentials
+              </button>
+              <div id="credentials-{{ item.id }}" style="display: none; margin-top: 10px; padding: 12px; background: #f8f9fa; border: 1px solid #dee2e6; border-radius: 4px;">
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
+                  <div class="form-group" style="margin-bottom: 0;">
+                    <label class="form-label" for="new_username_{{ item.id }}">Username</label>
+                    <input type="text" id="new_username_{{ item.id }}" name="new_username" value="{{ item.username }}" maxlength="100" autocomplete="off" />
+                  </div>
+                  <div class="form-group" style="margin-bottom: 0;">
+                    <label class="form-label" for="new_user_pass_{{ item.id }}">Password</label>
+                    <input type="text" id="new_user_pass_{{ item.id }}" name="new_user_pass" value="{{ item.user_pass }}" maxlength="100" autocomplete="off" />
+                  </div>
+                </div>
+              </div>
             </div>
           </div>
 
@@ -694,6 +715,22 @@
     <!-- End container -->
 
     <script>
+      function toggleCredentials(itemId) {
+        const panel = document.getElementById('credentials-' + itemId);
+        const btn = event.currentTarget;
+        if (panel.style.display === 'none') {
+          panel.style.display = 'block';
+          btn.innerHTML = '🔐 Hide Credentials';
+          btn.style.borderColor = '#3498db';
+          btn.style.color = '#3498db';
+        } else {
+          panel.style.display = 'none';
+          btn.innerHTML = '🔐 Edit Credentials';
+          btn.style.borderColor = '#ced4da';
+          btn.style.color = '#6c757d';
+        }
+      }
+
       function toggleMacOSInstructions(button) {
         console.log('Toggle function called');
         const instructions = document.getElementById('macos-instructions');
