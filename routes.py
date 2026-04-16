@@ -918,11 +918,11 @@ async def api_health(
     }
 
     t0 = time.monotonic()
+    resp = None
     try:
         resp = requests.get(stream_url, stream=True, timeout=10, headers=headers, allow_redirects=True)
         resp.raise_for_status()
         chunk = next(resp.iter_content(chunk_size=4096), None)
-        resp.close()
         latency_ms = int((time.monotonic() - t0) * 1000)
         if chunk:
             return {"status": "ok", "latency_ms": latency_ms, "item": item.name, "active_streams": 0}
@@ -950,3 +950,6 @@ async def api_health(
             status_code=503,
             content={"status": "down", "error": str(e), "item": item.name, "active_streams": 0},
         )
+    finally:
+        if resp is not None:
+            resp.close()
