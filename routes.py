@@ -12,6 +12,7 @@ import urllib.parse
 import requests
 import json
 import re
+import threading
 import xml.etree.ElementTree as ET
 from epg_manager import get_epg as _refresh_epg
 
@@ -49,9 +50,16 @@ async def index(request: Request, db: Session = Depends(get_db), error: str = No
         item_dict['has_m3u'] = f"xtream_playlist_{item.id}.m3u" in existing_files
         item_dict['has_filtered'] = f"filtered_playlist_{item.id}.m3u" in existing_files
         item_dict['has_epg'] = f"filtered_epg_{item.id}.xml" in existing_files
-        # Add streaming URLs to the item
         item_dict['stream_url'] = f"{base_url}/stream_filtered_m3u/{item.id}"
         item_dict['epg_url'] = f"{base_url}/epg.xml"
+        item_dict['m3u_refresh_hours'] = int(item.m3u_refresh_hours or 0)
+        # Last fetch time from file mtime
+        m3u_path = os.path.join("/app/m3u_files", f"xtream_playlist_{item.id}.m3u")
+        try:
+            mtime = os.path.getmtime(m3u_path)
+            item_dict['m3u_last_fetched_ts'] = int(mtime)
+        except FileNotFoundError:
+            item_dict['m3u_last_fetched_ts'] = None
         items_with_files.append(item_dict)
 
     # Determine if SSDP discovery can be safely enabled
@@ -62,21 +70,25 @@ async def index(request: Request, db: Session = Depends(get_db), error: str = No
     
     # Build an environment summary to display in the header (reflective of .env)
     def build_env_pairs():
-        # Only show BaseURL, TunerCount, FriendlyName
         pairs = []
-        # Get from env or fallback
         tuner_count = os.getenv("HDHR_TUNER_COUNT", "2")
         friendly_name = os.getenv("HDHR_FRIENDLY_NAME", "IPTV HDHomeRun")
-        pairs.append(("BaseURL", base_url))
-        pairs.append(("TunerCount", tuner_count))
-        pairs.append(("FriendlyName", friendly_name))
+        xi_user = os.getenv("IPTV_USERNAME", "iptv")
+        xi_pass = os.getenv("IPTV_PASSWORD", "iptv")
+        pairs.append(("HDHomeRun URL", base_url))
+        pairs.append(("Tuners", tuner_count))
         pairs.append(("EPG XML", f"{base_url}/epg.xml"))
+        pairs.append(("Xtream Server", base_url))
+        pairs.append(("Xtream User", xi_user))
+        pairs.append(("Xtream Pass", xi_pass))
         return pairs
     
     env_pairs = build_env_pairs()
     friendly_name = os.getenv("HDHR_FRIENDLY_NAME", "IPTV Manager")
 
     allow_full_m3u_download = os.getenv("ALLOW_FULL_M3U_DOWNLOAD", "1").strip() == "1"
+    iptv_username = os.getenv("IPTV_USERNAME", "iptv")
+    iptv_password = os.getenv("IPTV_PASSWORD", "iptv")
 
     context = {
         "request": request,
@@ -90,6 +102,8 @@ async def index(request: Request, db: Session = Depends(get_db), error: str = No
         "env_pairs": env_pairs,
         "friendly_name": friendly_name,
         "allow_full_m3u_download": allow_full_m3u_download,
+        "iptv_username": iptv_username,
+        "iptv_password": iptv_password,
     }
 
     # Render template to measure rendering time (helps diagnose hangs)
@@ -122,6 +136,7 @@ async def handle_form(
     new_languages: str = Form(None),
     new_includes: str = Form(None),
     new_excludes: str = Form(None),
+    new_xtream_includes: str = Form(None),
     db: Session = Depends(get_db)
 ):
     #logger.info(f"Received form data: add={add}, edit={edit}, delete={delete}, name='{name}', server_url='{server_url}', username='{username}', user_pass='{user_pass}', languages='{languages}', includes='{includes}', excludes='{excludes}', guide_ids='{guide_ids}', item_id={item_id}, new_name='{new_name}', new_server_url='{new_server_url}', new_username='{new_username}', new_user_pass='{new_user_pass}', new_languages='{new_languages}', new_includes='{new_includes}', new_excludes='{new_excludes}', new_guide_ids='{new_guide_ids}'")
@@ -139,6 +154,8 @@ async def handle_form(
         new_includes = ','.join([inc.strip() for inc in new_includes.split('\n') if inc.strip()])
     if new_excludes and '\n' in new_excludes:
         new_excludes = ','.join([ex.strip() for ex in new_excludes.split('\n') if ex.strip()])
+    if new_xtream_includes and '\n' in new_xtream_includes:
+        new_xtream_includes = ','.join([x.strip() for x in new_xtream_includes.split('\n') if x.strip()])
     if add:
         logger.info(f"Processing add request with name: '{name}'")
         result = create_item(db, name, server_url, username, user_pass, languages, includes, excludes)
@@ -164,17 +181,18 @@ async def handle_form(
         if not item_id or not all([new_name, new_server_url, new_username, new_user_pass]):
             logger.warning(f"Missing item_id or fields for edit: item_id={item_id}")
             return RedirectResponse(url="/?error=Missing item ID or fields", status_code=303)
-        if not update_item(db, item_id, new_name, new_server_url, new_username, new_user_pass, new_languages, new_includes, new_excludes):
+        if not update_item(db, item_id, new_name, new_server_url, new_username, new_user_pass, new_languages, new_includes, new_excludes, new_xtream_includes):
             logger.warning(f"Item update failed for id {item_id}")
             return RedirectResponse(url="/?error=Item not found", status_code=303)
-        # On save, only delete the filtered M3U so "Fetch Filtered M3U" re-runs with new filters,
-        # but keep the full M3U so the button stays enabled without re-fetching.
-        for fname in [f"filtered_playlist_{item_id}.m3u"]:
+        # Only invalidate filtered playlist if filter-relevant fields changed.
+        # Changing name/URL/credentials/refresh schedule does not affect filtering.
+        filter_fields_changed = any([new_includes, new_excludes, new_languages, new_xtream_includes])
+        for fname in ([f"filtered_playlist_{item_id}.m3u"] if filter_fields_changed else []):
             fpath = os.path.join("/app/m3u_files", fname)
             try:
                 if os.path.exists(fpath):
                     os.remove(fpath)
-                    logger.info(f"Removed {fname} after save to reset filtered fetch state")
+                    logger.info(f"Removed {fname} after filter field change")
             except Exception as e:
                 logger.warning(f"Could not remove {fname}: {e}")
     elif delete:
@@ -202,217 +220,171 @@ async def handle_form(
     
     return RedirectResponse(url="/", status_code=303)
 
+def _do_fetch_m3u(item_id: int, db: Session) -> tuple:
+    """Fetch and save the full M3U for item_id. Returns (success, message, total_lines)."""
+    item = db.query(Item).filter(Item.id == item_id).first()
+    if not item:
+        return False, f"Item {item_id} not found", 0
+
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Referer": item.server_url.rstrip('/'),
+        "Accept-Encoding": "gzip, deflate",
+        "Connection": "keep-alive"
+    }
+
+    base_url = f"{item.server_url.rstrip('/')}/player_api.php"
+    auth_url = f"{base_url}?username={urllib.parse.quote(item.username)}&password={urllib.parse.quote(item.user_pass)}"
+    logger.info(f"Attempting Xtream API auth: {auth_url}")
+
+    m3u_content = None
+    num_records = 0
+    source = "Xtream API"
+    try:
+        response = requests.get(auth_url, headers=headers, timeout=30)
+        response.raise_for_status()
+        user_data = response.json()
+        logger.info(f"Xtream API auth response: {json.dumps(user_data, indent=2)[:500]}")
+
+        if user_data.get('user_info', {}).get('auth', 0) != 1:
+            logger.warning(f"Invalid Xtream Codes credentials for item {item_id}")
+            raise ValueError("Invalid credentials")
+
+        logger.info(f"Authenticated with Xtream Codes for user {item.username}")
+
+        live_streams = requests.get(f"{auth_url}&action=get_live_streams", headers=headers, timeout=30).json()
+        vod_streams = requests.get(f"{auth_url}&action=get_vod_streams", headers=headers, timeout=30).json()
+        series = requests.get(f"{auth_url}&action=get_series", headers=headers, timeout=30).json()
+
+        num_records = len(live_streams) + len(vod_streams) + len(series)
+        logger.info(f"Fetched {len(live_streams)} live, {len(vod_streams)} VOD, {len(series)} series")
+
+        m3u_content = "#EXTM3U\n"
+        for stream in live_streams:
+            sid = stream.get('stream_id')
+            name = stream.get('name', 'Unknown')
+            url = f"{item.server_url.rstrip('/')}/live/{item.username}/{item.user_pass}/{sid}.ts"
+            m3u_content += f"#EXTINF:-1 tvg-id=\"{sid}\" tvg-name=\"{name}\" tvg-logo=\"{stream.get('stream_icon', '')}\" group-title=\"{stream.get('category_name', 'Live')}\", {name}\n{url}\n"
+        for stream in vod_streams:
+            sid = stream.get('stream_id')
+            name = stream.get('name', 'Unknown')
+            url = f"{item.server_url.rstrip('/')}/movie/{item.username}/{item.user_pass}/{sid}.mp4"
+            m3u_content += f"#EXTINF:-1 tvg-id=\"{sid}\" tvg-name=\"{name}\" tvg-logo=\"{stream.get('stream_icon', '')}\" group-title=\"{stream.get('category_name', 'VOD')}\", {name}\n{url}\n"
+        for serie in series:
+            sid = serie.get('series_id')
+            name = serie.get('name', 'Unknown')
+            url = f"{item.server_url.rstrip('/')}/series/{item.username}/{item.user_pass}/{sid}.m3u8"
+            m3u_content += f"#EXTINF:-1 tvg-id=\"{sid}\" tvg-name=\"{name}\" tvg-logo=\"{serie.get('cover', '')}\" group-title=\"Series\", {name}\n{url}\n"
+
+    except (requests.exceptions.RequestException, ValueError, json.JSONDecodeError) as e:
+        logger.warning(f"Xtream API failed for item {item_id}: {e}, falling back to M3U URL")
+        source = "M3U URL"
+        m3u_url = f"{item.server_url.rstrip('/')}/get.php?username={urllib.parse.quote(item.username)}&password={urllib.parse.quote(item.user_pass)}&type=m3u_plus&output=ts"
+        for attempt in range(3):
+            try:
+                response = requests.get(m3u_url, headers=headers, timeout=30)
+                response.raise_for_status()
+                m3u_content = response.text
+                break
+            except requests.exceptions.RequestException as e2:
+                if attempt == 2:
+                    return False, f"Failed to fetch M3U: {e2}", 0
+        if not m3u_content or not m3u_content.startswith("#EXTM3U"):
+            return False, "Invalid M3U content from provider", 0
+        num_records = len(re.findall(r'^#EXTINF', m3u_content, re.MULTILINE))
+
+    output_dir = "/app/m3u_files"
+    os.makedirs(output_dir, exist_ok=True)
+    m3u_file_path = os.path.join(output_dir, f"xtream_playlist_{item_id}.m3u")
+    with open(m3u_file_path, "w", encoding="utf-8") as f:
+        f.write(m3u_content)
+
+    total_lines = len(m3u_content.splitlines())
+    logger.info(f"Saved {source} playlist for item {item_id} ({num_records} records, {total_lines} lines)")
+
+    # Fetch EPG
+    epg_url = f"{item.server_url.rstrip('/')}/xmltv.php?username={urllib.parse.quote(item.username)}&password={urllib.parse.quote(item.user_pass)}"
+    try:
+        epg_resp = requests.get(epg_url, headers=headers, timeout=30)
+        epg_resp.raise_for_status()
+        with open(os.path.join(output_dir, f"epg_{item_id}.xml"), "w", encoding="utf-8") as f:
+            f.write(epg_resp.text)
+        logger.info(f"Saved EPG for item {item_id}")
+    except requests.exceptions.RequestException as e:
+        logger.warning(f"EPG fetch failed for item {item_id}: {e}")
+
+    return True, f"Saved {num_records} records ({total_lines} lines) from {source}", total_lines
+
+
+# ---------------------------------------------------------------------------
+# M3U auto-refresh scheduler
+# ---------------------------------------------------------------------------
+_scheduler_started = False
+
+def start_m3u_scheduler():
+    global _scheduler_started
+    if _scheduler_started:
+        return
+    _scheduler_started = True
+
+    def _run():
+        while True:
+            time.sleep(1800)  # check every 30 minutes
+            try:
+                from models import SessionLocal
+                db = SessionLocal()
+                try:
+                    items = db.query(Item).all()
+                    for item in items:
+                        interval_h = item.m3u_refresh_hours or 0
+                        if interval_h <= 0:
+                            continue
+                        playlist_path = f"/app/m3u_files/xtream_playlist_{item.id}.m3u"
+                        try:
+                            age_h = (time.time() - os.path.getmtime(playlist_path)) / 3600
+                        except FileNotFoundError:
+                            continue  # never fetched — skip until user does it manually first
+                        if age_h >= interval_h:
+                            logger.info(f"Scheduler: refreshing M3U for item {item.id} (age={age_h:.1f}h >= interval={interval_h}h)")
+                            ok, msg, _ = _do_fetch_m3u(item.id, db)
+                            logger.info(f"Scheduler: item {item.id} fetch {'ok' if ok else 'failed'}: {msg}")
+                            if ok:
+                                _refresh_epg(True)
+                finally:
+                    db.close()
+            except Exception as e:
+                logger.error(f"M3U scheduler error: {e}")
+
+    t = threading.Thread(target=_run, name="m3u-scheduler", daemon=True)
+    t.start()
+    logger.info("M3U auto-refresh scheduler started (checks every 30 min)")
+
+
+@router.post("/set_refresh_interval")
+async def set_refresh_interval(item_id: int = Form(...), m3u_refresh_hours: int = Form(0), db: Session = Depends(get_db)):
+    item = db.query(Item).filter(Item.id == item_id).first()
+    if not item:
+        return JSONResponse({"ok": False, "error": "Item not found"}, status_code=404)
+    item.m3u_refresh_hours = m3u_refresh_hours
+    db.commit()
+    db.refresh(item)
+    logger.info(f"Set m3u_refresh_hours={item.m3u_refresh_hours} for item {item_id}")
+    return JSONResponse({"ok": True, "m3u_refresh_hours": item.m3u_refresh_hours})
+
+
 @router.post("/generate_m3u", response_class=RedirectResponse)
 async def generate_m3u(background_tasks: BackgroundTasks, item_id: int = Form(...), db: Session = Depends(get_db)):
     try:
-        item = db.query(Item).filter(Item.id == item_id).first()
-        if not item:
-            logger.warning(f"Item with id {item_id} not found for M3U generation")
-            return RedirectResponse(url="/?error=Item not found", status_code=303)
-        
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36",
-            "Accept": "application/json, text/plain, */*",
-            "Referer": item.server_url.rstrip('/'),
-            "Accept-Encoding": "gzip, deflate",
-            "Connection": "keep-alive"
-        }
-        
-        base_url = f"{item.server_url.rstrip('/')}/player_api.php"
-        auth_url = f"{base_url}?username={urllib.parse.quote(item.username)}&password={urllib.parse.quote(item.user_pass)}"
-        logger.info(f"Attempting Xtream API auth: {auth_url}")
-        
-        m3u_content = None
-        num_records = 0
-        source = "Xtream API"
-        try:
-            response = requests.get(auth_url, headers=headers, timeout=30)
-            response.raise_for_status()
-            user_data = response.json()
-            logger.info(f"Xtream API auth response: {json.dumps(user_data, indent=2)[:500]}")
-            
-            if user_data.get('user_info', {}).get('auth', 0) != 1:
-                logger.warning(f"Invalid Xtream Codes credentials for item {item_id}")
-                raise ValueError("Invalid credentials")
-            
-            logger.info(f"Authenticated with Xtream Codes for user {item.username}")
-            
-            live_streams_url = f"{auth_url}&action=get_live_streams"
-            live_streams_response = requests.get(live_streams_url, headers=headers, timeout=30)
-            live_streams_response.raise_for_status()
-            live_streams = live_streams_response.json()
-            
-            vod_streams_url = f"{auth_url}&action=get_vod_streams"
-            vod_streams_response = requests.get(vod_streams_url, headers=headers, timeout=30)
-            vod_streams_response.raise_for_status()
-            vod_streams = vod_streams_response.json()
-            
-            series_url = f"{auth_url}&action=get_series"
-            series_response = requests.get(series_url, headers=headers, timeout=30)
-            series_response.raise_for_status()
-            series = series_response.json()
-            
-            num_records = len(live_streams) + len(vod_streams) + len(series)
-            logger.info(f"Fetched {len(live_streams)} live streams, {len(vod_streams)} VOD streams, {len(series)} series (total: {num_records})")
-            
-            m3u_content = "#EXTM3U\n"
-            for stream in live_streams:
-                stream_id = stream.get('stream_id')
-                name = stream.get('name', 'Unknown')
-                stream_url = f"{item.server_url.rstrip('/')}/live/{item.username}/{item.user_pass}/{stream_id}.ts"
-                m3u_content += f"#EXTINF:-1 tvg-id=\"{stream.get('stream_id', '')}\" tvg-name=\"{name}\" tvg-logo=\"{stream.get('stream_icon', '')}\" group-title=\"{stream.get('category_name', 'Live')}\", {name}\n{stream_url}\n"
-            
-            for stream in vod_streams:
-                stream_id = stream.get('stream_id')
-                name = stream.get('name', 'Unknown')
-                stream_url = f"{item.server_url.rstrip('/')}/movie/{item.username}/{item.user_pass}/{stream_id}.mp4"
-                m3u_content += f"#EXTINF:-1 tvg-id=\"{stream.get('stream_id', '')}\" tvg-name=\"{name}\" tvg-logo=\"{stream.get('stream_icon', '')}\" group-title=\"{stream.get('category_name', 'VOD')}\", {name}\n{stream_url}\n"
-            
-            for serie in series:
-                series_id = serie.get('series_id')
-                name = serie.get('name', 'Unknown')
-                stream_url = f"{item.server_url.rstrip('/')}/series/{item.username}/{item.user_pass}/{series_id}.m3u8"
-                m3u_content += f"#EXTINF:-1 tvg-id=\"{series_id}\" tvg-name=\"{name}\" tvg-logo=\"{serie.get('cover', '')}\" group-title=\"Series\", {name}\n{stream_url}\n"
-        
-        except (requests.exceptions.RequestException, ValueError, json.JSONDecodeError) as e:
-            logger.warning(f"Xtream API failed for item {item_id}: {str(e)}, falling back to M3U URL")
-            source = "M3U URL"
-            
-            m3u_url = f"{item.server_url.rstrip('/')}/get.php?username={urllib.parse.quote(item.username)}&password={urllib.parse.quote(item.user_pass)}&type=m3u_plus&output=ts"
-            logger.info(f"Attempting M3U fetch from: {m3u_url}")
-            
-            for attempt in range(3):
-                try:
-                    response = requests.get(m3u_url, headers=headers, timeout=30)
-                    response.raise_for_status()
-                    m3u_content = response.text
-                    logger.info(f"M3U response status: {response.status_code}, headers: {response.headers}")
-                    logger.debug(f"M3U response content (first 200 chars): {m3u_content[:200]}")
-                    break
-                except requests.exceptions.RequestException as e:
-                    logger.warning(f"Attempt {attempt + 1} failed for {m3u_url}: {str(e)}")
-                    if attempt == 2:
-                        logger.error(f"Failed to fetch M3U for item {item_id}: {str(e)}, response text: {getattr(e.response, 'text', 'No response text')[:500]}")
-                        return RedirectResponse(url=f"/?error=Failed to fetch M3U: {str(e)}", status_code=303)
-            
-            if not m3u_content.startswith("#EXTM3U"):
-                logger.warning(f"Invalid M3U content received for item {item_id}: {m3u_content[:100]}")
-                return RedirectResponse(url="/?error=Invalid M3U content from provider", status_code=303)
-            
-            num_records = len(re.findall(r'^#EXTINF', m3u_content, re.MULTILINE))
-        
-        output_dir = "/app/m3u_files"
-        os.makedirs(output_dir, exist_ok=True)
-        m3u_file_path = os.path.join(output_dir, f"xtream_playlist_{item_id}.m3u")
-        with open(m3u_file_path, "w", encoding="utf-8") as f:
-            f.write(m3u_content)
-        
-        total_lines = len(m3u_content.splitlines())
-        logger.info(f"Generated and saved {source} playlist for item {item_id} ({num_records} records, {total_lines} lines) at {m3u_file_path}")
-
-        # Filter the M3U file based on languages/includes/excludes
-        languages = [lang.strip() for lang in (item.languages or "").split(",") if lang.strip()]
-        includes = [inc.strip() for inc in (item.includes or "").split(",") if inc.strip()]
-        excludes = [exc.strip() for exc in (item.excludes or "").split(",") if exc.strip()]
-
-        logger.info("Starting M3U filtering process...")
-        logger.info(f"Filter settings - Languages: {languages}, Includes: {includes}, Excludes: {excludes}")
-        
-        if includes or excludes or languages:
-            has_wildcard_exclude = "*" in excludes
-            logger.info(f"Filtering M3U with languages={languages}, includes={includes}, excludes={excludes}, wildcard_exclude={has_wildcard_exclude}")
-            
-            filtered_content = "#EXTM3U\n"
-            lines = m3u_content.splitlines()
-            num_filtered = 0
-            i = 1 if lines and lines[0].strip() == "#EXTM3U" else 0
-            
-            while i < len(lines):
-                if lines[i].startswith("#EXTINF"):
-                    if i + 1 < len(lines) and not lines[i + 1].startswith("#"):
-                        extinf = lines[i]
-                        url = lines[i + 1]
-                        
-                        # Parse EXTINF attributes and channel name
-                        if "," in extinf:
-                            _, channel_name = extinf.split(",", 1)
-                            channel_name = channel_name.strip()
-                            
-                            # Start with channel included
-                            include = True
-                            
-                            # Handle wildcard exclude with includes
-                            if has_wildcard_exclude:
-                                # If we have wildcard exclude, start with excluded
-                                include = False
-                                # Only include if it exactly matches an include
-                                if includes:
-                                    include = any(inc.lower() == channel_name.lower() for inc in includes)
-                                    if include:
-                                        logger.debug(f"Wildcard override - exact match: '{channel_name}'")
-                            # Handle normal filtering
-                            elif includes:
-                                # If we have includes, only keep exact matches
-                                include = any(inc.lower() == channel_name.lower() for inc in includes)
-                                if include:
-                                    logger.debug(f"Include match: '{channel_name}'")
-                            elif excludes:
-                                # Only apply excludes if no includes specified
-                                include = not any(exc.lower() in channel_name.lower() for exc in excludes)
-                            
-                            if include:
-                                filtered_content += f"{extinf}\n{url}\n"
-                                num_filtered += 1
-                                logger.info(f"Kept channel: {channel_name}")
-                            else:
-                                logger.debug(f"Filtered out: {channel_name}")
-                    i += 2
-                else:
-                    i += 1
-            
-            # Save filtered M3U
-            filtered_path = os.path.join(output_dir, f"filtered_playlist_{item_id}.m3u")
-            logger.info(f"Attempting to save filtered M3U to: {filtered_path}")
-            try:
-                with open(filtered_path, "w", encoding="utf-8") as f:
-                    f.write(filtered_content)
-                logger.info(f"Successfully saved filtered playlist with {num_filtered} channels (reduced from {num_records})")
-                
-                # Verify the file exists and has content
-                if os.path.exists(filtered_path):
-                    file_size = os.path.getsize(filtered_path)
-                    logger.info(f"Verified filtered file exists: {filtered_path} (size: {file_size} bytes)")
-                else:
-                    logger.error(f"Failed to verify filtered file at: {filtered_path}")
-                    
-                num_records = num_filtered
-            except Exception as e:
-                logger.error(f"Failed to save filtered M3U: {str(e)}")
-        
-        epg_error = None
-        epg_url = f"{item.server_url.rstrip('/')}/xmltv.php?username={urllib.parse.quote(item.username)}&password={urllib.parse.quote(item.user_pass)}"
-        try:
-            epg_response = requests.get(epg_url, headers=headers, timeout=30)
-            epg_response.raise_for_status()
-            epg_file_path = os.path.join(output_dir, f"epg_{item_id}.xml")
-            with open(epg_file_path, "w", encoding="utf-8") as f:
-                f.write(epg_response.text)
-            logger.info(f"Saved EPG for item {item_id} at {epg_file_path}")
-        except requests.exceptions.RequestException as e:
-            epg_error = f"Failed to fetch EPG: {str(e)}"
-            logger.warning(epg_error)
-        
-        redirect_url = f"/?success=Saved {num_records} records ({total_lines} lines) to M3U file from {source}"
-        if epg_error:
-            redirect_url += f"&error={urllib.parse.quote(epg_error)}"
-
+        ok, msg, _ = _do_fetch_m3u(item_id, db)
+        if not ok:
+            return RedirectResponse(url=f"/?error={urllib.parse.quote(msg)}", status_code=303)
         background_tasks.add_task(_refresh_epg, True)
         logger.info("EPG rebuild queued in background after M3U save")
-        return RedirectResponse(url=redirect_url, status_code=303)
-    
+        return RedirectResponse(url=f"/?success={urllib.parse.quote(msg)}", status_code=303)
     except Exception as e:
-        logger.error(f"Failed to generate M3U for item {item_id}: {str(e)}")
-        return RedirectResponse(url=f"/?error=Failed to save M3U file: {str(e)}", status_code=303)
+        logger.error(f"Failed to generate M3U for item {item_id}: {e}")
+        return RedirectResponse(url=f"/?error=Failed to save M3U file: {urllib.parse.quote(str(e))}", status_code=303)
 
 @router.post("/generate_filtered_m3u", response_class=RedirectResponse)
 async def generate_filtered_m3u(background_tasks: BackgroundTasks, item_id: int = Form(...), db: Session = Depends(get_db)):

@@ -36,10 +36,24 @@ class Item(Base):
     languages = Column(String(200), nullable=True)
     includes = Column(String(200), nullable=True)
     excludes = Column(String(200), nullable=True)
+    xtream_includes = Column(String(10000), nullable=True)
+    m3u_refresh_hours = Column(Integer, nullable=True, default=0)
     epg_channels = Column(String(1000), nullable=True)
 
 def init_db():
     Base.metadata.create_all(bind=engine)
+    # Migrate existing databases that predate new columns
+    with engine.connect() as conn:
+        from sqlalchemy import text, inspect
+        existing = [col["name"] for col in inspect(engine).get_columns("items")]
+        if "xtream_includes" not in existing:
+            conn.execute(text("ALTER TABLE items ADD COLUMN xtream_includes VARCHAR(10000)"))
+            conn.commit()
+            logger.info("Migrated: added xtream_includes column")
+        if "m3u_refresh_hours" not in existing:
+            conn.execute(text("ALTER TABLE items ADD COLUMN m3u_refresh_hours INTEGER DEFAULT 0"))
+            conn.commit()
+            logger.info("Migrated: added m3u_refresh_hours column")
 
 def get_db():
     db = None

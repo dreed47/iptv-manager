@@ -1,8 +1,9 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from models import init_db
-from routes import router
+from routes import router, start_m3u_scheduler
 from hdhomerun_routes import router as hdhomerun_router
+from xtream_server_routes import router as xtream_server_router
 
 import logging
 import time
@@ -12,7 +13,7 @@ logger = logging.getLogger(__name__)
 
 def create_app():
     app = FastAPI(
-        title="IPTV Manager with HDHomeRun Emulation",
+        title="IPTV Manager — HDHomeRun Emulator & Xtream Proxy",
         # Disable docs to prevent OpenAPI spec generation delays
         docs_url=None,
         redoc_url=None
@@ -32,6 +33,8 @@ def create_app():
         logger.info("Starting application...")
         init_db()
         logger.info("Database initialized")
+        start_m3u_scheduler()
+        logger.info("M3U scheduler started")
     
     @app.middleware("http")
     async def log_request_time(request: Request, call_next):
@@ -52,6 +55,7 @@ def create_app():
 
     app.include_router(router)
     app.include_router(hdhomerun_router)
+    app.include_router(xtream_server_router)
     logger.info("Application routes configured")
     
     return app

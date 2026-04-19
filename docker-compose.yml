@@ -18,6 +18,9 @@ services:
       - HDHR_DISABLE_SSDP=${HDHR_DISABLE_SSDP:-1}
       # Set to 0 to disable the Fetch M3U button in the UI
       - ALLOW_FULL_M3U_DOWNLOAD=${ALLOW_FULL_M3U_DOWNLOAD:-1}
+      # Credentials for downstream IPTV players (TiviMate, IPTV Smarters, VLC, etc.)
+      - IPTV_USERNAME=${IPTV_USERNAME:-iptv}
+      - IPTV_PASSWORD=${IPTV_PASSWORD:-iptv}
     ports:
       # Host port is configurable via .env (APP_PORT). Container listens on 5005.
       - "${APP_PORT:-5005}:5005"

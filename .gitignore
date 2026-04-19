@@ -6,3 +6,4 @@ data.db
 startup.log
 
 .env
+.claude/settings.local.json

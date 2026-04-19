@@ -31,6 +31,12 @@ def get_active_stream_count() -> int:
     """Return the number of proxy streams currently in progress."""
     return _active_stream_count
 
+
+def register_extra_channels(url_map: dict):
+    """Register source URLs for channels not in the filtered playlist (e.g. 24/7 channels)."""
+    global _channel_source_urls
+    _channel_source_urls.update(url_map)
+
 def get_advertised_base_url() -> str:
     """
     Returns the public BaseURL we want Plex to use when calling us.
