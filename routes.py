@@ -7,7 +7,7 @@ from models import get_db, Item
 from services import create_item, update_item, delete_item, get_all_items
 import logging
 import os
-from hdhomerun_routes import hdhomerun_emulator, get_active_stream_count
+from hdhomerun_routes import hdhomerun_emulator, get_active_stream_count, get_active_streams
 import urllib.parse
 import requests
 import json
@@ -857,7 +857,19 @@ async def api_health(
 
     # Skip the test if a proxy stream is already in progress
     if active > 0:
-        return {"status": "skipped", "reason": "stream_active", "active_streams": active}
+        sessions = get_active_streams()
+        now = time.time()
+        sessions_out = [
+            {
+                "channel": s["channel"],
+                "client_ip": s["client_ip"],
+                "user_agent": s["user_agent"],
+                "elapsed_s": round(now - s["started_at"]),
+                "bytes_sent": s["bytes_sent"],
+            }
+            for s in sessions
+        ]
+        return {"status": "skipped", "reason": "stream_active", "active_streams": active, "sessions": sessions_out}
 
     # Resolve tvg_id: query param → env var → error
     tvg_id = tvg_id or os.getenv("HEALTH_CHECK_TVG_ID", "").strip()

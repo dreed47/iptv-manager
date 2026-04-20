@@ -2,13 +2,14 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Form, Request
 from fastapi.responses import JSONResponse, StreamingResponse, RedirectResponse, Response
 from sqlalchemy.orm import Session
 from models import get_db, Item
-from hdhomerun_routes import register_extra_channels
+from hdhomerun_routes import register_extra_channels, _active_streams, _SESSION_STALE_SECONDS
 import logging
 import os
 import re
 import fnmatch
 import time
 import threading
+import uuid
 import unicodedata
 import requests
 from dataclasses import dataclass, field
@@ -856,7 +857,7 @@ async def proxy_live(
     return RedirectResponse(url=f"/auto/v{guide_number}", status_code=307)
 
 
-def _proxy_finite_stream(source_url: str, request: Request, media_type: str):
+def _proxy_finite_stream(source_url: str, request: Request, media_type: str, stream_label: str = "VOD"):
     """Proxy a finite stream (VOD/series) with Range support for seeking."""
     chunk_size = int(os.getenv("STREAM_CHUNK_KB", "64")) * 1024
     proxy_headers = {
@@ -919,14 +920,32 @@ def _proxy_finite_stream(source_url: str, request: Request, media_type: str):
         f"content-range={forward_headers.get('Content-Range', 'none')}"
     )
 
+    client_ip = request.client.host if request.client else "unknown"
+    user_agent = request.headers.get("user-agent", "unknown")
+    session_id = str(uuid.uuid4())
+
     def generate():
+        _active_streams[session_id] = {
+            "session_id": session_id,
+            "channel": stream_label,
+            "client_ip": client_ip,
+            "user_agent": user_agent,
+            "started_at": time.time(),
+            "last_chunk_at": time.time(),
+            "bytes_sent": 0,
+        }
+        bytes_sent = 0
         try:
             for chunk in resp.iter_content(chunk_size=chunk_size):
                 if chunk:
+                    bytes_sent += len(chunk)
+                    _active_streams[session_id]["bytes_sent"] = bytes_sent
+                    _active_streams[session_id]["last_chunk_at"] = time.time()
                     yield chunk
         except Exception as exc:
             logger.error(f"Stream error mid-transfer for {source_url}: {exc}")
         finally:
+            _active_streams.pop(session_id, None)
             resp.close()
 
     return StreamingResponse(
@@ -967,7 +986,7 @@ async def proxy_vod(
         # First play: fetch correct extension from upstream, fall back to M3U URL on failure
         resolved_url = _fetch_vod_url(entry, db) or entry.url
 
-    result = _proxy_finite_stream(resolved_url, request, "video/mp4")
+    result = _proxy_finite_stream(resolved_url, request, "video/mp4", stream_label=f"VOD:{entry.name}")
 
     # If the resolved URL also fails (551 etc.), invalidate cache so next request retries
     if isinstance(result, JSONResponse) and result.status_code == 502:
@@ -999,7 +1018,7 @@ async def proxy_series(
         upstream_url = _episode_cache.get(stream_id)
     if upstream_url:
         logger.info(f"Series episode {stream_id} → {upstream_url}")
-        return _proxy_finite_stream(upstream_url, request, "video/mp4")
+        return _proxy_finite_stream(upstream_url, request, "video/mp4", stream_label=f"Series:{stream_id}")
 
     # Episode not in cache — get_series_info hasn't been called yet for this series
     logger.warning(f"Series episode {stream_id} not in episode cache (get_series_info not yet called?)")
@@ -1009,4 +1028,4 @@ async def proxy_series(
         logger.warning(f"Series stream {stream_id} not found in stream_map either")
         return JSONResponse({"error": f"Series stream {stream_id} not found"}, status_code=404)
 
-    return _proxy_finite_stream(entry.url, request, "application/vnd.apple.mpegurl")
+    return _proxy_finite_stream(entry.url, request, "application/vnd.apple.mpegurl", stream_label=f"Series:{entry.name}")

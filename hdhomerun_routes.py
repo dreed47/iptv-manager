@@ -8,6 +8,7 @@ import logging
 import re
 import os
 import time
+import uuid
 import requests
 import subprocess
 import json
@@ -23,13 +24,25 @@ hdhomerun_emulator = HDHomeRunEmulator()
 # Module-level cache: guide_number -> real source URL (populated by load_channel_lineup)
 _channel_source_urls: dict = {}
 
-# Active proxy stream counter — incremented when a stream starts, decremented when it ends
-_active_stream_count: int = 0
+# Active proxy streams — keyed by session UUID, value is session info dict
+_active_streams: dict[str, dict] = {}
+
+# Sessions with no chunk activity for longer than this are considered dead
+_SESSION_STALE_SECONDS = int(os.getenv("STREAM_SESSION_STALE_SECONDS", "30"))
+
+
+def _live_streams() -> list[dict]:
+    """Return sessions that have had recent activity (not stale)."""
+    cutoff = time.time() - _SESSION_STALE_SECONDS
+    return [s for s in _active_streams.values() if s["last_chunk_at"] >= cutoff]
 
 
 def get_active_stream_count() -> int:
-    """Return the number of proxy streams currently in progress."""
-    return _active_stream_count
+    return len(_live_streams())
+
+
+def get_active_streams() -> list[dict]:
+    return _live_streams()
 
 
 def register_extra_channels(url_map: dict):
@@ -263,15 +276,27 @@ async def stream_channel(channel_number: str, request: Request, db: Session = De
     retry_delay     = float(os.getenv("STREAM_RETRY_DELAY", "3"))    # seconds between reconnects
     read_timeout    = float(os.getenv("STREAM_READ_TIMEOUT","30"))   # seconds without data before reconnect
 
+    client_ip = request.client.host if request.client else "unknown"
+    user_agent = request.headers.get("user-agent", "unknown")
+    session_id = str(uuid.uuid4())
+
     def generate() -> Iterator[bytes]:
-        global _active_stream_count
+        global _active_streams
         bytes_sent = 0
         attempt = 0
         prebuf: list[bytes] = []
         prebuf_size = 0
         prebuffering = prebuffer_bytes > 0
         session = requests.Session()
-        _active_stream_count += 1
+        _active_streams[session_id] = {
+            "session_id": session_id,
+            "channel": channel_number,
+            "client_ip": client_ip,
+            "user_agent": user_agent,
+            "started_at": time.time(),
+            "last_chunk_at": time.time(),
+            "bytes_sent": 0,
+        }
         try:
             while attempt <= max_retries:
                 if attempt > 0:
@@ -318,6 +343,8 @@ async def stream_channel(channel_number: str, request: Request, db: Session = De
                                     prebuffering = False
                             else:
                                 bytes_sent += len(chunk)
+                                _active_streams[session_id]["bytes_sent"] = bytes_sent
+                                _active_streams[session_id]["last_chunk_at"] = time.time()
                                 yield chunk
 
                     # Upstream closed connection cleanly — flush any partial prebuffer then reconnect
@@ -354,7 +381,7 @@ async def stream_channel(channel_number: str, request: Request, db: Session = De
         except GeneratorExit:
             logger.info(f"Client disconnected for channel {channel_number} after {bytes_sent} bytes")
         finally:
-            _active_stream_count -= 1
+            _active_streams.pop(session_id, None)
             session.close()
             logger.info(f"Stream ended for channel {channel_number}, total bytes sent: {bytes_sent}")
 
