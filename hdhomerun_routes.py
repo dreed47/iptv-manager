@@ -284,6 +284,8 @@ async def stream_channel(channel_number: str, request: Request, db: Session = De
         global _active_streams
         bytes_sent = 0
         attempt = 0
+        effective_max_retries = max_retries  # local copy so we can extend it once
+        url_refreshed = False  # have we already tried refreshing the lineup URL?
         prebuf: list[bytes] = []
         prebuf_size = 0
         prebuffering = prebuffer_bytes > 0
@@ -297,11 +299,40 @@ async def stream_channel(channel_number: str, request: Request, db: Session = De
             "last_chunk_at": time.time(),
             "bytes_sent": 0,
         }
+        # Use a mutable container so inner reconnect logic can update the URL.
+        current_url = [source_url]
         try:
-            while attempt <= max_retries:
+            while attempt <= effective_max_retries:
                 if attempt > 0:
+                    # Re-read the URL on every reconnect — the lineup may have been refreshed
+                    # in the background (e.g. by a scheduled M3U fetch) with a new token.
+                    fresh = _channel_source_urls.get(channel_number)
+                    if fresh and fresh != current_url[0]:
+                        logger.info(
+                            f"Channel {channel_number}: URL changed since stream started, using refreshed URL"
+                        )
+                        current_url[0] = fresh
+
+                    # If all attempts are spent and we haven't tried a lineup reload yet, do it now.
+                    if attempt == effective_max_retries and not url_refreshed:
+                        logger.warning(
+                            f"Channel {channel_number}: all {effective_max_retries} reconnect attempts failed — "
+                            f"forcing lineup reload to refresh URL before final retry"
+                        )
+                        try:
+                            from models import SessionLocal
+                            with SessionLocal() as db_refresh:
+                                load_channel_lineup(db_refresh)
+                            fresh = _channel_source_urls.get(channel_number)
+                            if fresh:
+                                current_url[0] = fresh
+                            url_refreshed = True
+                            effective_max_retries += 1  # grant one extra attempt with the new URL
+                        except Exception as reload_exc:
+                            logger.error(f"Lineup reload failed: {reload_exc}")
+
                     logger.warning(
-                        f"Reconnect attempt {attempt}/{max_retries} for channel {channel_number} "
+                        f"Reconnect attempt {attempt}/{effective_max_retries} for channel {channel_number} "
                         f"after {bytes_sent} bytes — waiting {retry_delay}s..."
                     )
                     time.sleep(retry_delay)
@@ -315,7 +346,7 @@ async def stream_channel(channel_number: str, request: Request, db: Session = De
                         f"(attempt={attempt} chunk={chunk_size//1024}KB prebuffer={prebuffer_kb}KB read_timeout={read_timeout}s)"
                     )
                     with session.get(
-                        source_url,
+                        current_url[0],
                         headers=proxy_headers,
                         stream=True,
                         timeout=(10, read_timeout),
@@ -376,7 +407,7 @@ async def stream_channel(channel_number: str, request: Request, db: Session = De
 
                 attempt += 1
 
-            logger.error(f"Max retries ({max_retries}) reached for channel {channel_number}, giving up")
+            logger.error(f"Max retries ({effective_max_retries}) reached for channel {channel_number}, giving up")
 
         except GeneratorExit:
             logger.info(f"Client disconnected for channel {channel_number} after {bytes_sent} bytes")
