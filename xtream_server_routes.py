@@ -3,6 +3,7 @@ from fastapi.responses import JSONResponse, StreamingResponse, RedirectResponse,
 from sqlalchemy.orm import Session
 from models import get_db, Item
 from hdhomerun_routes import register_extra_channels, _active_streams, _SESSION_STALE_SECONDS
+import asyncio
 import logging
 import os
 import re
@@ -78,7 +79,7 @@ class XtreamCache:
 
 
 _cache: Optional[XtreamCache] = None
-_cache_lock = threading.Lock()
+_cache_lock = asyncio.Lock()  # async lock — never blocks the event loop
 
 
 # ---------------------------------------------------------------------------
@@ -429,14 +430,16 @@ def _build_cache(items: list, fingerprint: tuple) -> XtreamCache:
     )
 
 
-def get_xtream_cache(db: Session) -> XtreamCache:
+async def get_xtream_cache(db: Session) -> XtreamCache:
     global _cache
     items = db.query(Item).all()
     fingerprint = _compute_fingerprint(items)
-    with _cache_lock:
+    async with _cache_lock:
         if _cache and _cache.fingerprint == fingerprint:
             return _cache
-        _cache = _build_cache(items, fingerprint)
+        # Run the CPU/IO-bound build in a thread pool so the event loop stays free.
+        new_cache = await asyncio.to_thread(_build_cache, items, fingerprint)
+        _cache = new_cache
         if _cache.extra_channel_urls:
             register_extra_channels(_cache.extra_channel_urls)
         return _cache
@@ -686,7 +689,7 @@ async def _handle_player_api(
         return _unauthorized()
 
     base_url = _get_base_url()
-    cache = get_xtream_cache(db)
+    cache = await get_xtream_cache(db)
 
     if action is None:
         return JSONResponse(_auth_response(base_url))
@@ -789,7 +792,7 @@ async def get_m3u_xtream(
     if not verify_credentials(username, password):
         return Response("Unauthorized", status_code=401)
     base_url = _get_base_url()
-    cache = get_xtream_cache(db)
+    cache = await get_xtream_cache(db)
     return StreamingResponse(
         _m3u_generator(cache, base_url, username, password),
         media_type="application/x-mpegurl",
@@ -808,7 +811,7 @@ async def get_m3u_simple(
     u = username or IPTV_USERNAME
     p = password or IPTV_PASSWORD
     base_url = _get_base_url()
-    cache = get_xtream_cache(db)
+    cache = await get_xtream_cache(db)
     return StreamingResponse(
         _m3u_generator(cache, base_url, u, p),
         media_type="application/x-mpegurl",
@@ -849,7 +852,7 @@ async def proxy_live(
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid stream ID")
 
-    cache = get_xtream_cache(db)
+    cache = await get_xtream_cache(db)
     guide_number = cache.live_id_to_guide.get(stream_id)
     if not guide_number:
         raise HTTPException(status_code=404, detail=f"Live stream {stream_id} not found")
@@ -973,7 +976,7 @@ async def proxy_vod(
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid stream ID")
 
-    cache = get_xtream_cache(db)
+    cache = await get_xtream_cache(db)
     entry = cache.stream_map.get(stream_id)
     if not entry or entry.stream_type != "movie":
         raise HTTPException(status_code=404, detail=f"VOD stream {stream_id} not found")
@@ -1022,7 +1025,7 @@ async def proxy_series(
 
     # Episode not in cache — get_series_info hasn't been called yet for this series
     logger.warning(f"Series episode {stream_id} not in episode cache (get_series_info not yet called?)")
-    cache = get_xtream_cache(db)
+    cache = await get_xtream_cache(db)
     entry = cache.stream_map.get(stream_id)
     if not entry or entry.stream_type != "series":
         logger.warning(f"Series stream {stream_id} not found in stream_map either")
