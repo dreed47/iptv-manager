@@ -241,10 +241,8 @@ def load_channel_lineup(db: Session = Depends(get_db)) -> list:
 
     logger.info(f"Total: Loaded {len(channels)} channels for HDHomeRun lineup from {len(items)} configuration(s)")
 
-    # Log the first few channels for debugging
     if channels:
-        logger.info("First channel example:")
-        logger.info(json.dumps(channels[0], indent=2))
+        logger.debug("First channel example: %s", json.dumps(channels[0], indent=2))
 
     return channels
 
@@ -517,14 +515,14 @@ async def hdhr_discover():
 @router.get("/lineup_status.json")
 async def hdhr_lineup_status(db: Session = Depends(get_db)):
     """Return scanning status"""
-    # Note: SSDP doesn't need to be running for HTTP endpoints to work
-    channels = load_channel_lineup(db)
+    if not _channel_source_urls:
+        load_channel_lineup(db)
     return {
         "ScanInProgress": 0,
         "ScanPossible": 1,
         "Source": "Cable",
         "SourceList": ["Cable"],
-        "Found": len(channels)
+        "Found": len(_channel_source_urls)
     }
 
 @router.get("/lineup.json")
