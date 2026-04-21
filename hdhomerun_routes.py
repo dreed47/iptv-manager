@@ -452,6 +452,13 @@ async def refresh_epg():
 @router.on_event("startup")
 async def startup_event():
     logger.info("HDHomeRun emulator lazy-start enabled (will start on first HDHR request)")
+    # Pre-populate channel lineup so lineup_status.json never needs a DB hit during Plex polling
+    try:
+        from models import SessionLocal
+        with SessionLocal() as db:
+            load_channel_lineup(db)
+    except Exception as exc:
+        logger.warning(f"Could not pre-load channel lineup at startup: {exc}")
 
 def ensure_emulator_started(force=False) -> bool:
     """Start the emulator thread if it's not already running.
@@ -513,10 +520,8 @@ async def hdhr_discover():
     }
 
 @router.get("/lineup_status.json")
-async def hdhr_lineup_status(db: Session = Depends(get_db)):
+async def hdhr_lineup_status():
     """Return scanning status"""
-    if not _channel_source_urls:
-        load_channel_lineup(db)
     return {
         "ScanInProgress": 0,
         "ScanPossible": 1,

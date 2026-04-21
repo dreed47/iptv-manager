@@ -56,20 +56,8 @@ def init_db():
             logger.info("Migrated: added m3u_refresh_hours column")
 
 def get_db():
-    db = None
+    db = SessionLocal()
     try:
-        db = SessionLocal()
-        # Test connection immediately using SQLAlchemy text()
-        from sqlalchemy import text
-        db.execute(text("SELECT 1"))
-        yield db
-    except Exception as e:
-        logger.error(f"Database connection error: {e}")
-        if db:
-            db.close()
-        # Return a new session if the first one failed
-        db = SessionLocal()
         yield db
     finally:
-        if db:
-            db.close()
+        db.close()
