@@ -21,6 +21,8 @@ services:
       # Credentials for downstream IPTV players (TiviMate, IPTV Smarters, VLC, etc.)
       - IPTV_USERNAME=${IPTV_USERNAME:-iptv}
       - IPTV_PASSWORD=${IPTV_PASSWORD:-iptv}
+      # Log timestamps timezone — set TZ in .env (e.g. America/New_York, America/Chicago, America/Los_Angeles)
+      - TZ=${TZ:-UTC}
     ports:
       # Host port is configurable via .env (APP_PORT). Container listens on 5005.
       - "${APP_PORT:-5005}:5005"

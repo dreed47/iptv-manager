@@ -1,13 +1,28 @@
-from fastapi import FastAPI
+import logging
+import time
+
+# Configure logging before any other imports so basicConfig calls in sub-modules become no-ops
+def _configure_logging():
+    fmt = logging.Formatter(
+        fmt="%(asctime)s  %(levelname)-8s  %(name)s: %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S %z",
+    )
+    fmt.converter = time.localtime  # respects TZ environment variable
+    handler = logging.StreamHandler()
+    handler.setFormatter(fmt)
+    root = logging.getLogger()
+    root.setLevel(logging.INFO)
+    root.handlers.clear()
+    root.addHandler(handler)
+
+_configure_logging()
+
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from models import init_db
 from routes import router, start_m3u_scheduler
 from hdhomerun_routes import router as hdhomerun_router
 from xtream_server_routes import router as xtream_server_router
-
-import logging
-import time
-from fastapi import Request
 
 logger = logging.getLogger(__name__)
 
