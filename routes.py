@@ -5,15 +5,17 @@ import time
 from sqlalchemy.orm import Session
 from models import get_db, Item
 from services import create_item, update_item, delete_item, get_all_items
+import config
 import logging
 import os
+import re
+import threading
+import unicodedata
+import xml.etree.ElementTree as ET
 from hdhomerun_routes import hdhomerun_emulator, get_active_stream_count, get_active_streams
 import urllib.parse
 import requests
 import json
-import re
-import threading
-import xml.etree.ElementTree as ET
 from epg_manager import get_epg as _refresh_epg
 
 # Configure logging
@@ -24,12 +26,7 @@ router = APIRouter()
 templates = Jinja2Templates(directory="templates")
 
 def get_base_url(request: Request) -> str:
-    """Get the base URL including protocol and host"""
-    # Use environment variables or fallback to the configured IP
-    host = os.getenv("HDHR_ADVERTISE_HOST", "192.168.86.254")
-    port = os.getenv("HDHR_ADVERTISE_PORT", "5005")
-    scheme = os.getenv("HDHR_SCHEME", "http")
-    return f"{scheme}://{host}:{port}"
+    return config.ADVERTISED_BASE_URL
 
 @router.get("/", response_class=HTMLResponse)
 async def index(request: Request, db: Session = Depends(get_db), error: str = None, success: str = None):
@@ -39,7 +36,7 @@ async def index(request: Request, db: Session = Depends(get_db), error: str = No
 
     # Do a single directory listing instead of checking files individually
     try:
-        existing_files = set(os.listdir("/app/m3u_files"))
+        existing_files = set(os.listdir(config.M3U_DIR))
     except Exception as e:
         logger.error(f"Error listing m3u_files directory: {e}")
         existing_files = set()
@@ -54,7 +51,7 @@ async def index(request: Request, db: Session = Depends(get_db), error: str = No
         item_dict['epg_url'] = f"{base_url}/epg.xml"
         item_dict['m3u_refresh_hours'] = int(item.m3u_refresh_hours or 0)
         # Last fetch time from file mtime
-        m3u_path = os.path.join("/app/m3u_files", f"xtream_playlist_{item.id}.m3u")
+        m3u_path = os.path.join(config.M3U_DIR, f"xtream_playlist_{item.id}.m3u")
         try:
             mtime = os.path.getmtime(m3u_path)
             item_dict['m3u_last_fetched_ts'] = int(mtime)
@@ -68,27 +65,18 @@ async def index(request: Request, db: Session = Depends(get_db), error: str = No
     ssdp_disabled_by_env = hdhomerun_emulator.is_env_disabled()
     can_enable_ssdp = not ssdp_disabled_by_env  # Can only enable if not disabled by env
     
-    # Build an environment summary to display in the header (reflective of .env)
-    def build_env_pairs():
-        pairs = []
-        tuner_count = os.getenv("HDHR_TUNER_COUNT", "2")
-        friendly_name = os.getenv("HDHR_FRIENDLY_NAME", "IPTV HDHomeRun")
-        xi_user = os.getenv("IPTV_USERNAME", "iptv")
-        xi_pass = os.getenv("IPTV_PASSWORD", "iptv")
-        pairs.append(("HDHomeRun URL", base_url))
-        pairs.append(("Tuners", tuner_count))
-        pairs.append(("EPG XML", f"{base_url}/epg.xml"))
-        pairs.append(("Xtream Server", base_url))
-        pairs.append(("Xtream User", xi_user))
-        pairs.append(("Xtream Pass", xi_pass))
-        return pairs
-    
-    env_pairs = build_env_pairs()
-    friendly_name = os.getenv("HDHR_FRIENDLY_NAME", "IPTV Manager")
-
-    allow_full_m3u_download = os.getenv("ALLOW_FULL_M3U_DOWNLOAD", "1").strip() == "1"
-    iptv_username = os.getenv("IPTV_USERNAME", "iptv")
-    iptv_password = os.getenv("IPTV_PASSWORD", "iptv")
+    env_pairs = [
+        ("HDHomeRun URL", base_url),
+        ("Tuners", str(config.HDHR_TUNER_COUNT)),
+        ("EPG XML", f"{base_url}/epg.xml"),
+        ("Xtream Server", base_url),
+        ("Xtream User", config.IPTV_USERNAME),
+        ("Xtream Pass", config.IPTV_PASSWORD),
+    ]
+    friendly_name      = config.HDHR_FRIENDLY_NAME
+    allow_full_m3u_download = config.ALLOW_FULL_M3U_DOWNLOAD
+    iptv_username      = config.IPTV_USERNAME
+    iptv_password      = config.IPTV_PASSWORD
 
     context = {
         "request": request,
@@ -107,10 +95,10 @@ async def index(request: Request, db: Session = Depends(get_db), error: str = No
     }
 
     # Render template to measure rendering time (helps diagnose hangs)
-    start = time.time()
+    start = time.perf_counter()
     template = templates.get_template("index.html")
     rendered = template.render(context)
-    render_duration = time.time() - start
+    render_duration = time.perf_counter() - start
     logger.info(f"Template render duration: {render_duration:.3f}s")
 
     return HTMLResponse(content=rendered)
@@ -169,7 +157,7 @@ async def handle_form(
             f"epg_{result.id}.xml",
             f"filtered_epg_{result.id}.xml",
         ]:
-            fpath = os.path.join("/app/m3u_files", fname)
+            fpath = os.path.join(config.M3U_DIR, fname)
             try:
                 if os.path.exists(fpath):
                     os.remove(fpath)
@@ -188,7 +176,7 @@ async def handle_form(
         # Changing name/URL/credentials/refresh schedule does not affect filtering.
         filter_fields_changed = any([new_includes, new_excludes, new_languages, new_xtream_includes])
         for fname in ([f"filtered_playlist_{item_id}.m3u"] if filter_fields_changed else []):
-            fpath = os.path.join("/app/m3u_files", fname)
+            fpath = os.path.join(config.M3U_DIR, fname)
             try:
                 if os.path.exists(fpath):
                     os.remove(fpath)
@@ -210,7 +198,7 @@ async def handle_form(
             f"epg_{item_id}.xml",
             f"filtered_epg_{item_id}.xml",
         ]:
-            fpath = os.path.join("/app/m3u_files", fname)
+            fpath = os.path.join(config.M3U_DIR, fname)
             try:
                 if os.path.exists(fpath):
                     os.remove(fpath)
@@ -236,7 +224,7 @@ def _do_fetch_m3u(item_id: int, db: Session) -> tuple:
 
     base_url = f"{item.server_url.rstrip('/')}/player_api.php"
     auth_url = f"{base_url}?username={urllib.parse.quote(item.username)}&password={urllib.parse.quote(item.user_pass)}"
-    logger.info(f"Attempting Xtream API auth: {auth_url}")
+    logger.info(f"Attempting Xtream API auth to {base_url}")
 
     m3u_content = None
     num_records = 0
@@ -294,11 +282,13 @@ def _do_fetch_m3u(item_id: int, db: Session) -> tuple:
             return False, "Invalid M3U content from provider", 0
         num_records = len(re.findall(r'^#EXTINF', m3u_content, re.MULTILINE))
 
-    output_dir = "/app/m3u_files"
+    output_dir = config.M3U_DIR
     os.makedirs(output_dir, exist_ok=True)
     m3u_file_path = os.path.join(output_dir, f"xtream_playlist_{item_id}.m3u")
-    with open(m3u_file_path, "w", encoding="utf-8") as f:
+    tmp_m3u = m3u_file_path + ".tmp"
+    with open(tmp_m3u, "w", encoding="utf-8") as f:
         f.write(m3u_content)
+    os.replace(tmp_m3u, m3u_file_path)
 
     total_lines = len(m3u_content.splitlines())
     logger.info(f"Saved {source} playlist for item {item_id} ({num_records} records, {total_lines} lines)")
@@ -308,8 +298,11 @@ def _do_fetch_m3u(item_id: int, db: Session) -> tuple:
     try:
         epg_resp = requests.get(epg_url, headers=headers, timeout=30)
         epg_resp.raise_for_status()
-        with open(os.path.join(output_dir, f"epg_{item_id}.xml"), "w", encoding="utf-8") as f:
+        epg_path = os.path.join(output_dir, f"epg_{item_id}.xml")
+        tmp_epg = epg_path + ".tmp"
+        with open(tmp_epg, "w", encoding="utf-8") as f:
             f.write(epg_resp.text)
+        os.replace(tmp_epg, epg_path)
         logger.info(f"Saved EPG for item {item_id}")
     except requests.exceptions.RequestException as e:
         logger.warning(f"EPG fetch failed for item {item_id}: {e}")
@@ -386,177 +379,174 @@ async def generate_m3u(background_tasks: BackgroundTasks, item_id: int = Form(..
         logger.error(f"Failed to generate M3U for item {item_id}: {e}")
         return RedirectResponse(url=f"/?error=Failed to save M3U file: {urllib.parse.quote(str(e))}", status_code=303)
 
+# ---------------------------------------------------------------------------
+# Filter helpers — extracted from generate_filtered_m3u for readability
+# ---------------------------------------------------------------------------
+
+def _normalize_channel(s: str) -> str:
+    s = s.lower().strip()
+    s = unicodedata.normalize('NFKD', s)
+    s = ''.join(c for c in s if not unicodedata.combining(c))
+    return ' '.join(s.split())
+
+
+def _strict_normalize(s: str) -> str:
+    return re.sub(r'[^a-z0-9]+', '', _normalize_channel(s))
+
+
+def _build_filter_config(item) -> tuple:
+    """Parse item filter fields into typed structures used by _apply_m3u_filter."""
+    languages = [l.strip().lower() for l in (item.languages or "").split(",") if l.strip()]
+
+    includes_map: dict[str, str | None] = {}
+    raw_includes: list[tuple] = []
+    for inc in (item.includes or "").split(","):
+        inc = inc.strip()
+        if not inc:
+            continue
+        if '|' in inc:
+            num, name = inc.split('|', 1)
+            raw_includes.append((num.strip(), name.strip()))
+            includes_map[_strict_normalize(name)] = num.strip()
+        else:
+            raw_includes.append((None, inc))
+            includes_map[_strict_normalize(inc)] = None
+
+    excludes = [ex.strip().lower() for ex in (item.excludes or "").split(",") if ex.strip()]
+    has_wildcard_exclude = "*" in excludes
+    return languages, includes_map, raw_includes, excludes, has_wildcard_exclude
+
+
+def _apply_m3u_filter(
+    lines: list[str],
+    languages: list[str],
+    includes_map: dict,
+    excludes: list[str],
+    has_wildcard_exclude: bool,
+) -> tuple[str, int, int]:
+    """Walk M3U lines and apply language/include/exclude rules.
+
+    Returns (filtered_content, kept_count, total_count).
+    """
+    input_record_count = sum(1 for ln in lines if ln.startswith("#EXTINF"))
+    parts = ["#EXTM3U\n"]
+    num_records = 0
+    i = 1 if (lines and lines[0].strip() == "#EXTM3U") else 0
+
+    while i < len(lines):
+        if not (lines[i].startswith("#EXTINF") and i + 1 < len(lines) and not lines[i + 1].startswith("#")):
+            i += 1
+            continue
+
+        extinf, url = lines[i], lines[i + 1]
+
+        # Parse attributes and display name
+        attributes: dict[str, str] = {}
+        channel_name = ""
+        if " " in extinf and "," in extinf:
+            attr_part, channel_name = extinf.split(",", 1)
+            for key, value in re.findall(r'(\S+?)="([^"]*)"', attr_part):
+                attributes[key.lower()] = value.lower()
+        else:
+            channel_name = extinf.split(",", 1)[1] if "," in extinf else ""
+        tvg_name = attributes.get('tvg-name', '')
+
+        # 1. Language filter
+        if languages:
+            channel_language = ""
+            if " - " in tvg_name:
+                channel_language = tvg_name.split(" - ")[0].strip().lower()
+            else:
+                tvg_lower = tvg_name.lower()
+                for lang in languages:
+                    if tvg_lower.startswith(lang + ":") or tvg_lower.startswith(lang + " "):
+                        channel_language = lang
+                        break
+            if channel_language and channel_language not in languages:
+                i += 2
+                continue
+
+        # 2. Exclude logic
+        search_text = _normalize_channel(f"{tvg_name} {channel_name}")
+        excluded = has_wildcard_exclude or any(
+            ex and _normalize_channel(ex) in search_text for ex in excludes
+        )
+
+        # 3. Include logic
+        included = False
+        chno_to_apply = None
+        if includes_map:
+            for cand in (_strict_normalize(channel_name), _strict_normalize(tvg_name)):
+                if cand in includes_map:
+                    included, chno_to_apply = True, includes_map[cand]
+                    break
+                for inc_key, num in includes_map.items():
+                    if cand in (inc_key + sfx for sfx in ("hd", "4k", "fhd", "uhd")):
+                        included, chno_to_apply = True, num
+                        break
+                if included:
+                    break
+
+        # 4. Emit or skip
+        if includes_map:
+            if included:
+                if chno_to_apply:
+                    extinf = re.sub(r'\s*tvg-chno="[^"]*"', '', extinf)
+                    idx = extinf.find(',')
+                    insert = f' tvg-chno="{chno_to_apply}"'
+                    extinf = (extinf[:idx] + insert + extinf[idx:]) if idx != -1 else (extinf + insert)
+                parts.append(f"{extinf}\n{url}\n")
+                num_records += 1
+        elif not excluded:
+            parts.append(f"{extinf}\n{url}\n")
+            num_records += 1
+
+        i += 2
+
+    return "".join(parts), num_records, input_record_count
+
+
 @router.post("/generate_filtered_m3u", response_class=RedirectResponse)
 async def generate_filtered_m3u(background_tasks: BackgroundTasks, item_id: int = Form(...), db: Session = Depends(get_db)):
-
     try:
         item = db.query(Item).filter(Item.id == item_id).first()
         if not item:
             logger.warning(f"Item with id {item_id} not found for filtered M3U generation")
             return RedirectResponse(url="/?error=Item not found", status_code=303)
 
-        m3u_path = os.path.join("/app/m3u_files", f"xtream_playlist_{item_id}.m3u")
+        m3u_path = os.path.join(config.M3U_DIR, f"xtream_playlist_{item_id}.m3u")
         if not os.path.exists(m3u_path):
             logger.warning(f"M3U file not found for item {item_id} at {m3u_path}")
             return RedirectResponse(url="/?error=M3U file not found, fetch M3U first", status_code=303)
 
         with open(m3u_path, "r", encoding="utf-8") as f:
-            m3u_content = f.read()
+            lines = f.read().splitlines()
 
-        languages = [lang.strip().lower() for lang in (item.languages or "").split(",") if lang.strip()]
-        # Normalization helper used for includes/excludes and matching
-        import unicodedata
-        def normalize(s):
-            s = s.lower().strip()
-            s = unicodedata.normalize('NFKD', s)
-            s = ''.join(c for c in s if not unicodedata.combining(c))
-            s = ' '.join(s.split())
-            return s
-        # Stricter normalization for includes exact matching: remove non-alphanumerics
-        def strict_normalize(s):
-            t = normalize(s)
-            return re.sub(r'[^a-z0-9]+', '', t)
-
-        # Build an includes map for exact name matching (robust normalization): normalized_name -> channel_number (or None)
-        includes_map = {}
-        raw_includes = []
-        for inc in (item.includes or "").split(","):
-            inc = inc.strip()
-            if not inc:
-                continue
-            if '|' in inc:
-                num, name = inc.split('|', 1)
-                raw_includes.append((num.strip(), name.strip()))
-                includes_map[strict_normalize(name)] = num.strip()
-            else:
-                raw_includes.append((None, inc.strip()))
-                includes_map[strict_normalize(inc)] = None
-        excludes = [ex.strip().lower() for ex in (item.excludes or "").split(",") if ex.strip()]
-        has_wildcard_exclude = "*" in excludes
-
+        languages, includes_map, raw_includes, excludes, has_wildcard = _build_filter_config(item)
         logger.info(
-            f"Filtering item {item_id} with languages={languages}, includes={raw_includes}, excludes={excludes}, wildcard_exclude={has_wildcard_exclude}"
+            f"Filtering item {item_id}: languages={languages} includes={raw_includes} "
+            f"excludes={excludes} wildcard={has_wildcard}"
         )
 
-        filtered_content = "#EXTM3U\n"
-        lines = m3u_content.splitlines()
-        # Count input records (#EXTINF entries) for reporting
-        input_record_count = sum(1 for ln in lines if ln.startswith("#EXTINF"))
-        num_records = 0
-        i = 0
-        if lines and lines[0].strip() == "#EXTM3U":
-            i = 1
-
-        while i < len(lines):
-            if lines[i].startswith("#EXTINF") and i + 1 < len(lines) and not lines[i + 1].startswith("#"):
-                extinf = lines[i]
-                url = lines[i + 1]
-
-                # Parse channel name and tvg-name
-                attributes = {}
-                channel_name = ""
-                if " " in extinf and "," in extinf:
-                    attr_part, channel_name = extinf.split(",", 1)
-                    attr_matches = re.findall(r'(\S+?)="([^"]*)"', attr_part)
-                    for key, value in attr_matches:
-                        attributes[key.lower()] = value.lower()
-                else:
-                    channel_name = extinf.split(",", 1)[1] if "," in extinf else ""
-                tvg_name = attributes.get('tvg-name', '')
-                channel_language = ""
-                if " - " in tvg_name:
-                    # Standard format: "EN - Channel Name"
-                    channel_language = tvg_name.split(" - ")[0].strip().lower()
-                elif languages:
-                    # No standard separator - check if any language appears at start of tvg_name
-                    tvg_lower = tvg_name.lower()
-                    for lang in languages:
-                        if tvg_lower.startswith(lang.lower() + ":") or tvg_lower.startswith(lang.lower() + " "):
-                            channel_language = lang.lower()
-                            break
-                    # If still no match, don't filter by language for this channel
-                    # (allow includes to work)
-
-                # 1. Language check (only if we found a valid language prefix)
-                if languages and channel_language and channel_language not in languages:
-                    i += 2
-                    continue
-
-                # 2. Exclude logic
-                search_text = normalize(f"{tvg_name} {channel_name}")
-                excluded = False
-                if has_wildcard_exclude:
-                    # Exclude all unless included
-                    excluded = True
-                else:
-                    for ex in excludes:
-                        if ex and normalize(ex) in search_text:
-                            excluded = True
-                            break
-
-                # 3. Include logic (allow-list when provided): exact match after normalization
-                included = False
-                chno_to_apply = None
-                if includes_map:
-                    # Compare against both provided channel_name and tvg_name for exact match (normalized)
-                    key_candidates = [strict_normalize(channel_name), strict_normalize(tvg_name)]
-                    for cand in key_candidates:
-                        if cand in includes_map:
-                            included = True
-                            chno_to_apply = includes_map[cand]
-                            break
-                        # Allow common suffix variants like 'HD'/'4K' without enabling substring matches
-                        for inc_key, num in includes_map.items():
-                            if cand == inc_key + "hd" or cand == inc_key + "4k" or cand == inc_key + "fhd" or cand == inc_key + "uhd":
-                                included = True
-                                chno_to_apply = num
-                                break
-                        if included:
-                            break
-
-                # Final decision
-                if includes_map:
-                    # With includes present, only keep if explicitly included (and not excluded unless included)
-                    if included:
-                        if chno_to_apply:
-                            extinf_new = re.sub(r'\s*tvg-chno="[^"]*"', '', extinf)
-                            idx = extinf_new.find(',')
-                            if idx != -1:
-                                extinf_new = extinf_new[:idx] + f' tvg-chno="{chno_to_apply}"' + extinf_new[idx:]
-                            else:
-                                extinf_new = extinf_new + f' tvg-chno="{chno_to_apply}"'
-                            filtered_content += f"{extinf_new}\n{url}\n"
-                        else:
-                            filtered_content += f"{extinf}\n{url}\n"
-                        num_records += 1
-                else:
-                    # No includes: keep anything not excluded and matching language rules
-                    if not excluded:
-                        filtered_content += f"{extinf}\n{url}\n"
-                        num_records += 1
-
-                i += 2
-            else:
-                i += 1
+        filtered_content, num_records, input_record_count = _apply_m3u_filter(
+            lines, languages, includes_map, excludes, has_wildcard
+        )
 
         if num_records == 0:
-            logger.warning(f"No records matched filter for item {item_id}: languages={item.languages}, includes={item.includes}, excludes={item.excludes}")
+            logger.warning(f"No records matched filter for item {item_id}")
             return RedirectResponse(url="/?error=No records matched the filter criteria.", status_code=303)
 
-        output_dir = "/app/m3u_files"
-        os.makedirs(output_dir, exist_ok=True)
-        filtered_file_path = os.path.join(output_dir, f"filtered_playlist_{item_id}.m3u")
-        with open(filtered_file_path, "w", encoding="utf-8") as f:
+        os.makedirs(config.M3U_DIR, exist_ok=True)
+        filtered_path = os.path.join(config.M3U_DIR, f"filtered_playlist_{item_id}.m3u")
+        tmp_path = filtered_path + ".tmp"
+        with open(tmp_path, "w", encoding="utf-8") as f:
             f.write(filtered_content)
+        os.replace(tmp_path, filtered_path)
 
         total_lines = len(filtered_content.splitlines())
-        # Log both input and output record counts
         logger.info(
-            f"Filtered M3U for item {item_id}: input records={input_record_count}, "
-            f"written records={num_records}, file lines={total_lines}, path={filtered_file_path}"
+            f"Filtered M3U for item {item_id}: input={input_record_count} kept={num_records} lines={total_lines}"
         )
-
-        # Redirect back to index with success message including counts
         success_msg = urllib.parse.quote(
             f"Filtered {num_records} of {input_record_count} records ({total_lines} lines)"
         )
@@ -574,7 +564,7 @@ async def download_m3u(item_id: int, db: Session = Depends(get_db)):
     if not item:
         raise HTTPException(status_code=404, detail="Item not found")
     
-    file_path = os.path.join("/app/m3u_files", f"xtream_playlist_{item_id}.m3u")
+    file_path = os.path.join(config.M3U_DIR, f"xtream_playlist_{item_id}.m3u")
     if not os.path.exists(file_path):
         raise HTTPException(status_code=404, detail="M3U file not found")
     
@@ -586,7 +576,7 @@ async def download_filtered_m3u(item_id: int, db: Session = Depends(get_db)):
     if not item:
         raise HTTPException(status_code=404, detail="Item not found")
     
-    file_path = os.path.join("/app/m3u_files", f"filtered_playlist_{item_id}.m3u")
+    file_path = os.path.join(config.M3U_DIR, f"filtered_playlist_{item_id}.m3u")
     if not os.path.exists(file_path):
         raise HTTPException(status_code=404, detail="Filtered M3U file not found")
     
@@ -598,7 +588,7 @@ async def stream_filtered_m3u(item_id: int, db: Session = Depends(get_db)):
     if not item:
         raise HTTPException(status_code=404, detail="Item not found")
     
-    file_path = os.path.join("/app/m3u_files", f"filtered_playlist_{item_id}.m3u")
+    file_path = os.path.join(config.M3U_DIR, f"filtered_playlist_{item_id}.m3u")
     if not os.path.exists(file_path):
         raise HTTPException(status_code=404, detail="Filtered M3U file not found")
     
@@ -624,9 +614,9 @@ async def stream_filtered_m3u(item_id: int, db: Session = Depends(get_db)):
 async def stream_player(request: Request, url: str = "", name: str = "Stream"):
     """Open a direct stream URL in the player page."""
     import urllib.parse as _up
-    stash_kb    = int(os.getenv("PLAYER_STASH_KB",    "1024"))
-    latency_max = float(os.getenv("PLAYER_LATENCY_MAX", "30.0"))
-    latency_min = float(os.getenv("PLAYER_LATENCY_MIN",  "5.0"))
+    stash_kb    = config.PLAYER_STASH_KB
+    latency_max = config.PLAYER_LATENCY_MAX
+    latency_min = config.PLAYER_LATENCY_MIN
     template = templates.get_template("player.html")
     rendered = template.render({
         "request": request,
@@ -652,7 +642,7 @@ async def m3u_browser(item_id: int, request: Request, db: Session = Depends(get_
     item = db.query(Item).filter(Item.id == item_id).first()
     if not item:
         raise HTTPException(status_code=404, detail="Item not found")
-    file_path = os.path.join("/app/m3u_files", f"xtream_playlist_{item_id}.m3u")
+    file_path = os.path.join(config.M3U_DIR, f"xtream_playlist_{item_id}.m3u")
     if not os.path.exists(file_path):
         raise HTTPException(status_code=404, detail="Full M3U not fetched yet — click Fetch M3U first")
     template = templates.get_template("m3u_browser.html")
@@ -677,7 +667,7 @@ async def m3u_browser_data(
     item = db.query(Item).filter(Item.id == item_id).first()
     if not item:
         raise HTTPException(status_code=404, detail="Item not found")
-    file_path = os.path.join("/app/m3u_files", f"xtream_playlist_{item_id}.m3u")
+    file_path = os.path.join(config.M3U_DIR, f"xtream_playlist_{item_id}.m3u")
     if not os.path.exists(file_path):
         raise HTTPException(status_code=404, detail="Full M3U not found")
 
@@ -685,7 +675,7 @@ async def m3u_browser_data(
     groups: set = set()
     prefixes: dict = {}
 
-    with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
+    with open(file_path, "r", encoding="utf-8", errors="replace") as f:
         lines = f.read().splitlines()
 
     i = 1 if (lines and lines[0].strip() == "#EXTM3U") else 0
@@ -872,7 +862,7 @@ async def api_health(
         return {"status": "skipped", "reason": "stream_active", "active_streams": active, "sessions": sessions_out}
 
     # Resolve tvg_id: query param → env var → error
-    tvg_id = tvg_id or os.getenv("HEALTH_CHECK_TVG_ID", "").strip()
+    tvg_id = tvg_id or config.HEALTH_CHECK_TVG_ID
     if not tvg_id:
         return JSONResponse(
             status_code=400,

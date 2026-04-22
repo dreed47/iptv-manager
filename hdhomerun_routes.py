@@ -4,9 +4,11 @@ from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
 from models import get_db, Item
 from hdhomerun_emulator import HDHomeRunEmulator
+import config
 import logging
 import re
 import os
+import threading
 import time
 import uuid
 import requests
@@ -23,18 +25,21 @@ hdhomerun_emulator = HDHomeRunEmulator()
 
 # Module-level cache: guide_number -> real source URL (populated by load_channel_lineup)
 _channel_source_urls: dict = {}
+_channel_source_urls_lock = threading.Lock()
 
 # Active proxy streams — keyed by session UUID, value is session info dict
 _active_streams: dict[str, dict] = {}
+_active_streams_lock = threading.Lock()
 
 # Sessions with no chunk activity for longer than this are considered dead
-_SESSION_STALE_SECONDS = int(os.getenv("STREAM_SESSION_STALE_SECONDS", "30"))
+_SESSION_STALE_SECONDS = config.STREAM_SESSION_STALE_SECONDS
 
 
 def _live_streams() -> list[dict]:
     """Return sessions that have had recent activity (not stale)."""
     cutoff = time.time() - _SESSION_STALE_SECONDS
-    return [s for s in _active_streams.values() if s["last_chunk_at"] >= cutoff]
+    with _active_streams_lock:
+        return [s for s in _active_streams.values() if s["last_chunk_at"] >= cutoff]
 
 
 def get_active_stream_count() -> int:
@@ -47,23 +52,11 @@ def get_active_streams() -> list[dict]:
 
 def register_extra_channels(url_map: dict):
     """Register source URLs for channels not in the filtered playlist (e.g. 24/7 channels)."""
-    global _channel_source_urls
-    _channel_source_urls.update(url_map)
+    with _channel_source_urls_lock:
+        _channel_source_urls.update(url_map)
 
 def get_advertised_base_url() -> str:
-    """
-    Returns the public BaseURL we want Plex to use when calling us.
-    Prefer environment variables; fall back to emulator-detected host IP.
-    """
-    host = (
-        os.getenv("HDHR_ADVERTISE_HOST")
-        or os.getenv("PUBLIC_HOST")
-        or "127.0.0.1"  # Safe default, will be updated when emulator starts
-    )
-    scheme = os.getenv("HDHR_SCHEME") or "http"
-    # Prefer explicit advertised port; otherwise fall back to APP_PORT if provided
-    port = os.getenv("HDHR_ADVERTISE_PORT") or os.getenv("APP_PORT") or "5005"
-    return f"{scheme}://{host}:{port}"
+    return config.ADVERTISED_BASE_URL
 
 def load_channel_lineup(db: Session = Depends(get_db)) -> list:
     """Load and merge channels from all filtered M3U files with de-duplication and explicit numbering preference"""
@@ -102,7 +95,7 @@ def load_channel_lineup(db: Session = Depends(get_db)) -> list:
     channels_by_name = {}
 
     for item in items:
-        filtered_path = os.path.join("/app/m3u_files", f"filtered_playlist_{item.id}.m3u")
+        filtered_path = os.path.join(config.M3U_DIR, f"filtered_playlist_{item.id}.m3u")
         if not os.path.exists(filtered_path):
             logger.warning(f"Filtered M3U not found for config '{item.name}' (ID {item.id})")
             continue
@@ -227,12 +220,10 @@ def load_channel_lineup(db: Session = Depends(get_db)) -> list:
     channels = list(channels_by_name.values())
 
     # Update module-level source URL cache before stripping internal fields
+    new_urls = {ch["GuideNumber"]: ch["_SourceURL"] for ch in channels if "_SourceURL" in ch}
     global _channel_source_urls
-    _channel_source_urls = {
-        ch["GuideNumber"]: ch["_SourceURL"]
-        for ch in channels
-        if "_SourceURL" in ch
-    }
+    with _channel_source_urls_lock:
+        _channel_source_urls = new_urls
 
     # Remove internal flags
     for ch in channels:
@@ -249,10 +240,12 @@ def load_channel_lineup(db: Session = Depends(get_db)) -> list:
 @router.get("/auto/v{channel_number:path}")
 async def stream_channel(channel_number: str, request: Request, db: Session = Depends(get_db)):
     """Stream proxy for HDHomeRun channel requests from Plex."""
-    source_url = _channel_source_urls.get(channel_number)
+    with _channel_source_urls_lock:
+        source_url = _channel_source_urls.get(channel_number)
     if not source_url:
         load_channel_lineup(db)
-        source_url = _channel_source_urls.get(channel_number)
+        with _channel_source_urls_lock:
+            source_url = _channel_source_urls.get(channel_number)
 
     if not source_url:
         raise HTTPException(status_code=404, detail=f"Channel {channel_number} not found")
@@ -266,20 +259,18 @@ async def stream_channel(channel_number: str, request: Request, db: Session = De
         "Connection": "keep-alive",
     }
 
-    # Tuning knobs — all overridable via environment variables
-    chunk_size      = int(os.getenv("STREAM_CHUNK_KB",      "64"))  * 1024
-    prebuffer_kb    = int(os.getenv("STREAM_PREBUFFER_KB",  "512"))
+    chunk_size      = config.STREAM_CHUNK_KB * 1024
+    prebuffer_kb    = config.STREAM_PREBUFFER_KB
     prebuffer_bytes = prebuffer_kb * 1024
-    max_retries     = int(os.getenv("STREAM_MAX_RETRIES",   "5"))
-    retry_delay     = float(os.getenv("STREAM_RETRY_DELAY", "3"))    # seconds between reconnects
-    read_timeout    = float(os.getenv("STREAM_READ_TIMEOUT","30"))   # seconds without data before reconnect
+    max_retries     = config.STREAM_MAX_RETRIES
+    retry_delay     = config.STREAM_RETRY_DELAY
+    read_timeout    = config.STREAM_READ_TIMEOUT
 
     client_ip = request.client.host if request.client else "unknown"
     user_agent = request.headers.get("user-agent", "unknown")
     session_id = str(uuid.uuid4())
 
     def generate() -> Iterator[bytes]:
-        global _active_streams
         bytes_sent = 0
         attempt = 0
         effective_max_retries = max_retries  # local copy so we can extend it once
@@ -288,15 +279,16 @@ async def stream_channel(channel_number: str, request: Request, db: Session = De
         prebuf_size = 0
         prebuffering = prebuffer_bytes > 0
         session = requests.Session()
-        _active_streams[session_id] = {
-            "session_id": session_id,
-            "channel": channel_number,
-            "client_ip": client_ip,
-            "user_agent": user_agent,
-            "started_at": time.time(),
-            "last_chunk_at": time.time(),
-            "bytes_sent": 0,
-        }
+        with _active_streams_lock:
+            _active_streams[session_id] = {
+                "session_id": session_id,
+                "channel": channel_number,
+                "client_ip": client_ip,
+                "user_agent": user_agent,
+                "started_at": time.time(),
+                "last_chunk_at": time.time(),
+                "bytes_sent": 0,
+            }
         # Use a mutable container so inner reconnect logic can update the URL.
         current_url = [source_url]
         bytes_at_last_connect = 0  # track how much was sent when the last connection opened
@@ -305,7 +297,8 @@ async def stream_channel(channel_number: str, request: Request, db: Session = De
                 if attempt > 0:
                     # Re-read the URL on every reconnect — the lineup may have been refreshed
                     # in the background (e.g. by a scheduled M3U fetch) with a new token.
-                    fresh = _channel_source_urls.get(channel_number)
+                    with _channel_source_urls_lock:
+                        fresh = _channel_source_urls.get(channel_number)
                     if fresh and fresh != current_url[0]:
                         logger.info(
                             f"Channel {channel_number}: URL changed since stream started, using refreshed URL"
@@ -322,7 +315,8 @@ async def stream_channel(channel_number: str, request: Request, db: Session = De
                             from models import SessionLocal
                             with SessionLocal() as db_refresh:
                                 load_channel_lineup(db_refresh)
-                            fresh = _channel_source_urls.get(channel_number)
+                            with _channel_source_urls_lock:
+                                fresh = _channel_source_urls.get(channel_number)
                             if fresh:
                                 current_url[0] = fresh
                             url_refreshed = True
@@ -419,7 +413,8 @@ async def stream_channel(channel_number: str, request: Request, db: Session = De
         except GeneratorExit:
             logger.info(f"Client disconnected for channel {channel_number} after {bytes_sent} bytes")
         finally:
-            _active_streams.pop(session_id, None)
+            with _active_streams_lock:
+                _active_streams.pop(session_id, None)
             session.close()
             logger.info(f"Stream ended for channel {channel_number}, total bytes sent: {bytes_sent}")
 
@@ -536,7 +531,7 @@ async def hdhr_lineup_status():
         "ScanPossible": 1,
         "Source": "Cable",
         "SourceList": ["Cable"],
-        "Found": len(_channel_source_urls)
+        "Found": len(_channel_source_urls)  # GIL-safe scalar read
     }
 
 @router.get("/lineup.json")
@@ -557,9 +552,12 @@ async def channel_browser(request: Request):
 async def player_page(channel_number: str, request: Request, name: str = None, db: Session = Depends(get_db)):
     """Full-page video player for a single channel using mpegts.js"""
     # Ensure channel source URLs are populated
-    if not _channel_source_urls:
+    with _channel_source_urls_lock:
+        source_url = _channel_source_urls.get(channel_number)
+    if not source_url:
         load_channel_lineup(db)
-    source_url = _channel_source_urls.get(channel_number)
+        with _channel_source_urls_lock:
+            source_url = _channel_source_urls.get(channel_number)
     if not source_url:
         raise HTTPException(status_code=404, detail=f"Channel {channel_number} not found")
 
@@ -569,10 +567,9 @@ async def player_page(channel_number: str, request: Request, name: str = None, d
     base = str(request.base_url).rstrip("/")
     stream_url = f"{base}/auto/v{channel_number}"
 
-    # Pass client-side buffer config from env to the template
-    stash_kb   = int(os.getenv("PLAYER_STASH_KB",   "1024"))  # mpegts.js stash buffer size
-    latency_max = float(os.getenv("PLAYER_LATENCY_MAX", "30.0"))  # max live buffer latency seconds
-    latency_min = float(os.getenv("PLAYER_LATENCY_MIN",  "5.0"))  # min live buffer remain seconds
+    stash_kb    = config.PLAYER_STASH_KB
+    latency_max = config.PLAYER_LATENCY_MAX
+    latency_min = config.PLAYER_LATENCY_MIN
 
     template = templates.get_template("player.html")
     rendered = template.render({

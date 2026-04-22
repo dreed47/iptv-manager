@@ -17,12 +17,13 @@ def _configure_logging():
 
 _configure_logging()
 
+import asyncio
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from models import init_db
+from models import init_db, SessionLocal
 from routes import router, start_m3u_scheduler
 from hdhomerun_routes import router as hdhomerun_router
-from xtream_server_routes import router as xtream_server_router
+from xtream_server_routes import router as xtream_server_router, get_xtream_cache
 
 logger = logging.getLogger(__name__)
 
@@ -42,14 +43,24 @@ def create_app():
     )
     
     # Initialize database in a background task to avoid blocking startup
+    async def _warm_xtream_cache():
+        try:
+            with SessionLocal() as db:
+                await get_xtream_cache(db)
+            logger.info("Xtream cache pre-warm complete")
+        except Exception as exc:
+            logger.warning(f"Xtream cache pre-warm failed: {exc}")
+
     @app.on_event("startup")
     async def startup_event():
-        # Perform quick startup
         logger.info("Starting application...")
         init_db()
         logger.info("Database initialized")
         start_m3u_scheduler()
         logger.info("M3U scheduler started")
+        # Warm the Xtream cache in the background so the first stream request
+        # doesn't block for ~28s while 180K+ VOD/series entries are indexed.
+        asyncio.create_task(_warm_xtream_cache())
     
     @app.middleware("http")
     async def log_request_time(request: Request, call_next):

@@ -4,6 +4,8 @@ from sqlalchemy.orm import Session
 from models import get_db, Item
 from hdhomerun_routes import register_extra_channels, _active_streams, _SESSION_STALE_SECONDS
 import asyncio
+import config
+import hashlib
 import logging
 import os
 import re
@@ -19,32 +21,19 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-# ---------------------------------------------------------------------------
-# Downstream credentials — what IPTV apps use to connect TO this manager.
-# These are NOT your upstream provider credentials (those live in the DB).
-# ---------------------------------------------------------------------------
-IPTV_USERNAME = os.getenv("IPTV_USERNAME", "iptv")
-IPTV_PASSWORD = os.getenv("IPTV_PASSWORD", "iptv")
-
-M3U_DIR = "/app/m3u_files"
+M3U_DIR = config.M3U_DIR
 
 
 def verify_credentials(username: str, password: str) -> bool:
-    return username == IPTV_USERNAME and password == IPTV_PASSWORD
+    return username == config.IPTV_USERNAME and password == config.IPTV_PASSWORD
 
 
 def _unauthorized() -> JSONResponse:
     return JSONResponse({"user_info": {"auth": 0}}, status_code=401)
 
 
-# ---------------------------------------------------------------------------
-# Base URL helper (mirrors hdhomerun_routes.get_advertised_base_url)
-# ---------------------------------------------------------------------------
 def _get_base_url() -> str:
-    host = os.getenv("HDHR_ADVERTISE_HOST") or os.getenv("PUBLIC_HOST") or "127.0.0.1"
-    scheme = os.getenv("HDHR_SCHEME") or "http"
-    port = os.getenv("HDHR_ADVERTISE_PORT") or os.getenv("APP_PORT") or "5005"
-    return f"{scheme}://{host}:{port}"
+    return config.ADVERTISED_BASE_URL
 
 
 # ---------------------------------------------------------------------------
@@ -92,7 +81,7 @@ def _make_id(item_id: int, tvg_id_str: str, type_offset: int) -> int:
     try:
         return base + int(tvg_id_str)
     except (ValueError, TypeError):
-        return base + (abs(hash(tvg_id_str)) % 9_000_000)
+        return base + (int(hashlib.md5(tvg_id_str.encode()).hexdigest(), 16) % 9_000_000)
 
 
 def _live_id(item_id: int, tvg_id: str) -> int:
@@ -119,6 +108,8 @@ _episode_cache_lock = threading.Lock()
 # vod stream_id -> correct upstream URL (populated lazily on first play via get_vod_info)
 _vod_url_cache: dict = {}
 _vod_url_cache_lock = threading.Lock()
+
+_CACHE_MAX = 10_000  # max entries per cache before evicting oldest half
 
 _UPSTREAM_HEADERS = {
     "User-Agent": (
@@ -594,6 +585,9 @@ def _fetch_vod_url(entry: StreamEntry, db: Session) -> Optional[str]:
     ext = (data.get("movie_data") or {}).get("container_extension") or "mp4"
     url = f"{base}/movie/{item.username}/{item.user_pass}/{entry.tvg_id}.{ext}"
     with _vod_url_cache_lock:
+        if len(_vod_url_cache) >= _CACHE_MAX:
+            for k in list(_vod_url_cache)[: _CACHE_MAX // 2]:
+                del _vod_url_cache[k]
         _vod_url_cache[entry.stream_id] = url
     logger.info(f"VOD {entry.stream_id} resolved extension: .{ext} → {url}")
     return url
@@ -639,6 +633,9 @@ def _fetch_series_info(entry: StreamEntry, db: Session) -> dict:
                 f"{base}/series/{item.username}/{item.user_pass}/{upstream_ep_id}.{ext}"
             )
             with _episode_cache_lock:
+                if len(_episode_cache) >= _CACHE_MAX:
+                    for k in list(_episode_cache)[: _CACHE_MAX // 2]:
+                        del _episode_cache[k]
                 _episode_cache[local_id] = upstream_url
             ep_out = dict(ep)
             ep_out["id"] = str(local_id)
@@ -724,7 +721,7 @@ async def _handle_player_api(
             entry = None
         if not entry or entry.stream_type != "series":
             return JSONResponse({"info": {}, "episodes": {}})
-        return JSONResponse(_fetch_series_info(entry, db))
+        return JSONResponse(await asyncio.to_thread(_fetch_series_info, entry, db))
 
     return JSONResponse({"error": "Unknown action"}, status_code=400)
 
@@ -862,7 +859,7 @@ async def proxy_live(
 
 def _proxy_finite_stream(source_url: str, request: Request, media_type: str, stream_label: str = "VOD"):
     """Proxy a finite stream (VOD/series) with Range support for seeking."""
-    chunk_size = int(os.getenv("STREAM_CHUNK_KB", "64")) * 1024
+    chunk_size = config.STREAM_CHUNK_KB * 1024
     proxy_headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
         "Accept": "*/*",
@@ -992,7 +989,7 @@ async def proxy_vod(
 
     if resolved_url is None:
         # First play: fetch correct extension from upstream, fall back to M3U URL on failure
-        resolved_url = _fetch_vod_url(entry, db) or entry.url
+        resolved_url = await asyncio.to_thread(_fetch_vod_url, entry, db) or entry.url
 
     result = _proxy_finite_stream(resolved_url, request, "video/mp4", stream_label=f"VOD:{entry.name}")
 

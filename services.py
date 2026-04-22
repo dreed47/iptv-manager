@@ -62,7 +62,7 @@ def delete_item(db: Session, item_id: int):
 def get_all_items(db: Session):
     try:
         items = db.query(Item).all()
-        logger.info(f"Retrieved {len(items)} items from database")
+        logger.debug(f"Retrieved {len(items)} items from database")
         return items
     except Exception as e:
         logger.error(f"Failed to retrieve items: {str(e)}")

@@ -6,6 +6,7 @@ import select
 import struct
 import os
 import hashlib
+import config
 
 logger = logging.getLogger(__name__)
 
@@ -13,17 +14,13 @@ class HDHomeRunEmulator:
     def __init__(self, http_port=5005, config_items=None):
         self.http_port = http_port
         self.device_id = self._generate_device_id(config_items)
-        # Model number configurable via environment variable
-        self.model = os.getenv("HDHR_MODEL", "HDHR3-US")
-        # Friendly name configurable via environment variable
-        self.friendly_name = os.getenv("HDHR_FRIENDLY_NAME", "IPTV HDHomeRun")
-        # Tuner count configurable via environment variable (default 2)
-        self.tuner_count = int(os.getenv("HDHR_TUNER_COUNT", "2"))
+        self.model = config.HDHR_MODEL
+        self.friendly_name = config.HDHR_FRIENDLY_NAME
+        self.tuner_count = config.HDHR_TUNER_COUNT
         self.running = False
         self.thread = None
         self._stop_event = threading.Event()
-        # Check environment variable for default state, but allow runtime override
-        self._env_disabled = os.getenv("HDHR_DISABLE_SSDP", "0") == "1"
+        self._env_disabled = config.HDHR_DISABLE_SSDP
         self.ssdp_disabled = self._env_disabled
     
     def _generate_device_id(self, ip_port_tuple=None):

@@ -21,31 +21,20 @@ Configuration via environment variables:
 
 import os
 import re
+import tempfile
 import time
 import logging
 import unicodedata
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone, timedelta
 
+import config
 import requests
 
 logger = logging.getLogger(__name__)
 
-EPG_CACHE_PATH = "/app/m3u_files/generated_epg.xml"
-EPG_CACHE_MAX_AGE = int(os.getenv("EPG_CACHE_HOURS", "12")) * 3600
-
-# Default source URLs — user can override with EPG_XML_SOURCES env var.
-# epg.pw provides a free, AI-generated US channel guide updated weekly.
-_DEFAULT_SOURCES = ",".join([
-    "https://epg.pw/xmltv/epg_US.xml",
-])
-
-
-def get_epg_source_urls() -> list[str]:
-    raw = os.getenv("EPG_XML_SOURCES", "").strip()
-    if raw:
-        return [s.strip() for s in raw.split(",") if s.strip()]
-    return [s for s in _DEFAULT_SOURCES.split(",") if s.strip()]
+EPG_CACHE_PATH = config.M3U_DIR + "/generated_epg.xml"
+EPG_CACHE_MAX_AGE = config.EPG_CACHE_MAX_AGE
 
 
 # ---------------------------------------------------------------------------
@@ -117,7 +106,7 @@ def get_channels_from_m3u() -> list[dict]:
     """
     channels: list[dict] = []
     seen_ids: set[str] = set()
-    m3u_dir = "/app/m3u_files"
+    m3u_dir = config.M3U_DIR
 
     for filename in sorted(os.listdir(m3u_dir)):
         if not (filename.startswith("filtered_playlist_") and filename.endswith(".m3u")):
@@ -172,13 +161,21 @@ def get_channels_from_m3u() -> list[dict]:
 def _fetch_epg_source(url: str):
     """
     Fetch and parse an XMLTV URL.
+    Streams the download to a temp file to avoid holding both the raw bytes and
+    the parsed XML tree in RAM simultaneously (large feeds can be 100MB+).
     Returns (channel_elements, programme_elements) or (None, None) on failure.
     """
+    tmp_path = None
     try:
         logger.info(f"EPG: fetching {url}")
-        resp = requests.get(url, timeout=90, headers={'Accept-Encoding': 'gzip, deflate'})
+        resp = requests.get(url, timeout=90, stream=True, headers={'Accept-Encoding': 'gzip, deflate'})
         resp.raise_for_status()
-        root = ET.fromstring(resp.content)
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.xml') as tmp:
+            tmp_path = tmp.name
+            for chunk in resp.iter_content(chunk_size=65536):
+                if chunk:
+                    tmp.write(chunk)
+        root = ET.parse(tmp_path).getroot()
         channels = root.findall('channel')
         programmes = root.findall('programme')
         logger.info(f"EPG:   got {len(channels)} channels, {len(programmes)} programmes from {url}")
@@ -186,6 +183,12 @@ def _fetch_epg_source(url: str):
     except Exception as exc:
         logger.warning(f"EPG: failed to fetch {url}: {exc}")
         return None, None
+    finally:
+        if tmp_path:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
 
 
 # ---------------------------------------------------------------------------
@@ -425,15 +428,17 @@ def build_and_cache_epg() -> str:
         return '<?xml version="1.0" encoding="UTF-8"?>\n<tv></tv>'
 
     sources_data = []
-    for url in get_epg_source_urls():
+    for url in config.EPG_XML_SOURCES:
         chs, progs = _fetch_epg_source(url)
         sources_data.append((chs, progs))
 
     xml_content = build_epg_xml(our_channels, sources_data)
 
     os.makedirs(os.path.dirname(EPG_CACHE_PATH), exist_ok=True)
-    with open(EPG_CACHE_PATH, 'w', encoding='utf-8') as f:
+    tmp_cache = EPG_CACHE_PATH + ".tmp"
+    with open(tmp_cache, 'w', encoding='utf-8') as f:
         f.write(xml_content)
+    os.replace(tmp_cache, EPG_CACHE_PATH)
     logger.info(f"EPG cached at {EPG_CACHE_PATH} ({len(xml_content) // 1024} KB)")
     return xml_content
 
