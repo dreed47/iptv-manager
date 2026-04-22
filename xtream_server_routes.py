@@ -505,8 +505,8 @@ def _auth_response(base_url: str) -> dict:
 
     return {
         "user_info": {
-            "username": IPTV_USERNAME,
-            "password": IPTV_PASSWORD,
+            "username": config.IPTV_USERNAME,
+            "password": config.IPTV_PASSWORD,
             "message": "",
             "auth": 1,
             "status": "Active",
@@ -805,8 +805,8 @@ async def get_m3u_simple(
 ):
     if username and password and not verify_credentials(username, password):
         return Response("Unauthorized", status_code=401)
-    u = username or IPTV_USERNAME
-    p = password or IPTV_PASSWORD
+    u = username or config.IPTV_USERNAME
+    p = password or config.IPTV_PASSWORD
     base_url = _get_base_url()
     cache = await get_xtream_cache(db)
     return StreamingResponse(
