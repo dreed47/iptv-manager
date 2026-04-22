@@ -906,12 +906,17 @@ def _proxy_finite_stream(source_url: str, request: Request, media_type: str, str
         logger.warning(f"Upstream connection failed for {source_url}: {exc}")
         return JSONResponse({"error": f"Upstream connection failed: {exc}"}, status_code=502)
 
-    # Forward headers the client needs to seek and buffer correctly
+    # Forward headers the client needs to seek and buffer correctly.
+    # Content-Length is intentionally NOT forwarded: if the upstream drops mid-transfer
+    # (IncompleteRead) we will have committed a byte count we can't fulfil, causing h11
+    # to raise LocalProtocolError.  Omitting it uses chunked transfer encoding instead,
+    # which ends cleanly when the upstream connection closes.
+    # Content-Range still carries the total file size so players can seek.
     forward_headers = {
         "Cache-Control": "no-cache",
         "Accept-Ranges": "bytes",
     }
-    for hdr in ("Content-Range", "Content-Length", "Content-Type"):
+    for hdr in ("Content-Range", "Content-Type"):
         val = resp.headers.get(hdr)
         if val:
             forward_headers[hdr] = val
@@ -919,7 +924,7 @@ def _proxy_finite_stream(source_url: str, request: Request, media_type: str, str
     logger.info(
         f"Proxying {source_url} → HTTP {resp.status_code} "
         f"content-type={forward_headers.get('Content-Type', 'unknown')} "
-        f"content-length={forward_headers.get('Content-Length', 'unknown')} "
+        f"upstream-length={resp.headers.get('Content-Length', 'unknown')} "
         f"content-range={forward_headers.get('Content-Range', 'none')}"
     )
 
