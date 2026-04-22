@@ -12,8 +12,11 @@ A web-based tool for managing, filtering, and serving IPTV playlists and EPG dat
 - **EPG / Guide Data** — Fetches and name-matches guide data automatically; generates a standards-compliant XMLTV file with channel numbers. Unmatched channels receive placeholder "No Guide Data" entries so they remain streamable. EPG rebuilds automatically after each filter save.
 - **Channel Number Preservation** — `tvg-chno` values from your provider are passed through to the HDHomeRun lineup and EPG so Plex shows the correct channel numbers.
 - **HDHomeRun Emulation** — Appears as an HDHomeRun tuner on your network; Plex, Jellyfin, and Emby discover it automatically or via manual IP entry.
+- **Generic IPTV App Proxy (Xtream Codes)** — Acts as a full Xtream Codes API server so TiviMate, IPTV Smarters, VLC, and other IPTV apps can connect directly. Serves live channels, VOD, and series through a single proxy. Set `IPTV_USERNAME` / `IPTV_PASSWORD` in `.env` and point your app at `http://<host>:<port>`.
+- **In-Browser Channel Player** — `/channels` lists your filtered lineup with a built-in video player; click any row to watch in the browser via mpegts.js, or open in VLC/IINA.
 - **Stream Tester** — Test credentials and channel IDs directly from the browser before committing them to your config.
 - **Health Check Endpoint** — `GET /api/health` returns stream reachability as JSON; integrates with Uptime Kuma (JSON Query monitor) and Home Assistant (REST sensor). Skips the test automatically when a live stream is active to avoid interruptions.
+- **Scheduled M3U Refresh** — Set a refresh interval (in hours) per config so playlists stay current without manual re-fetching.
 - **Docker** — Single `docker-compose.yml` works on macOS and Linux with no changes.
 
 ## Quick Start
@@ -39,6 +42,7 @@ See [DEPLOYMENT.md](DEPLOYMENT.md) for full setup, media server integration, EPG
 5. **View filtered lineup** — Click **Filtered Channel Viewer** to confirm the result.
 6. **Connect your media server** — Point Plex/Jellyfin/Emby DVR at `http://<your-ip>:5005`; it discovers the device as an HDHomeRun tuner.
 7. **Add the EPG** — In your media server's DVR settings, enter the EPG URL `http://<your-ip>:5005/epg.xml` so the guide populates automatically. See [EPG Options](#epg--guide-data) below for alternatives.
+8. **Connect IPTV apps (optional)** — In TiviMate, IPTV Smarters, or any Xtream Codes–compatible app, enter `http://<your-ip>:5005` as the server with the `IPTV_USERNAME` / `IPTV_PASSWORD` from your `.env`. See [DEPLOYMENT.md](DEPLOYMENT.md) for details.
 
 ## Filtering Logic
 
@@ -83,16 +87,17 @@ Channel numbers flow through the entire stack so what you see in your IPTV app m
 
 | File/Dir | Purpose |
 |---|---|
-| `main.py` | FastAPI app entry point |
-| `routes.py` | Web and API routes |
-| `hdhomerun_routes.py` | HDHomeRun emulation endpoints |
+| `main.py` | FastAPI app entry point and HTTP request logging middleware |
+| `routes.py` | Web UI, M3U fetch/filter, health check API routes |
+| `hdhomerun_routes.py` | HDHomeRun emulation, stream proxy, channel browser |
+| `xtream_server_routes.py` | Xtream Codes API proxy for TiviMate, IPTV Smarters, VLC, etc. |
 | `models.py` | SQLite database models |
 | `services.py` | Business logic / CRUD |
 | `epg_manager.py` | EPG fetching, name-matching, and XMLTV generation |
 | `templates/index.html` | Main web UI |
-| `templates/channels.html` | Channel browser UI |
-| `templates/m3u_browser.html` | Full M3U browser UI |
-| `templates/player.html` | In-browser stream player |
+| `templates/channels.html` | Filtered channel browser (click to play in browser) |
+| `templates/m3u_browser.html` | Full raw M3U browser UI |
+| `templates/player.html` | In-browser mpegts.js stream player |
 | `templates/stream_test.html` | Stream connection tester and health check config |
 | `m3u_files/` | Downloaded playlists, filtered playlists, and cached EPG |
 | `data/` | SQLite database |

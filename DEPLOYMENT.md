@@ -20,25 +20,33 @@ Open the web UI at `http://localhost:5005`.
 
 ## Environment Variables
 
-| Variable                  | Default          | Description |
-|---------------------------|------------------|-------------|
-| `APP_PORT`                | `5005`           | Host port Docker binds to. Change if running multiple instances. |
-| `CONTAINER_NAME`          | `iptv-app`       | Docker container name. Change when running multiple instances to avoid name conflicts. |
-| `HDHR_ADVERTISE_HOST`     | `127.0.0.1`      | IP address your media server uses to reach this app. Use your LAN IP if they run on separate machines. |
-| `HDHR_SCHEME`             | `http`           | Protocol (`http` or `https`). |
-| `HDHR_MODEL`              | `HDHR3-US`       | HDHomeRun model string reported to media servers. |
-| `HDHR_FRIENDLY_NAME`      | `IPTV HDHomeRun` | Device name shown in Plex/Jellyfin/Emby. Useful when running multiple instances. |
-| `HDHR_TUNER_COUNT`        | `2`              | Concurrent streams the media server may request. Raise for more simultaneous recordings. |
-| `HDHR_DISABLE_SSDP`       | `1`              | `1` = SSDP disabled (default, works everywhere). `0` = SSDP enabled (Linux only, enables auto-discovery). |
-| `EPG_XML_SOURCES`         | *(see below)*    | Comma-separated XMLTV URL(s) to fetch guide data from. Defaults to `https://epg.pw/xmltv/epg_US.xml`. |
-| `EPG_CACHE_HOURS`         | `12`             | How long to cache the downloaded EPG before re-fetching. |
-| `ALLOW_FULL_M3U_DOWNLOAD` | `1`              | Set to `0` to disable the **Fetch M3U** button in the UI. Useful on shared or production deployments where you want to prevent accidental re-fetches or hitting provider rate limits. |
-| `STREAM_CHUNK_KB`         | `64`             | Size in KB of each chunk read from the upstream source. Larger values (128, 256) reduce overhead; too large may increase latency. |
-| `STREAM_PREBUFFER_KB`     | `512`            | KB to buffer server-side before sending to the client. Increase (e.g. 1024, 2048) if streams stutter at startup. Set to `0` to disable. |
-| `STREAM_MAX_RETRIES`      | `5`              | How many times the proxy reconnects to the upstream source if the stream drops or goes stale. Set to `0` to disable auto-reconnect. |
-| `STREAM_RETRY_DELAY`      | `3`              | Seconds to wait between reconnect attempts. |
-| `STREAM_READ_TIMEOUT`     | `30`             | Seconds without incoming data before the proxy considers the stream stale and reconnects. Lower values (e.g. `15`) catch silent hangs faster. |
-| `HEALTH_CHECK_TVG_ID`     | *(none)*         | Channel TVG-ID used by `GET /api/health` for Uptime Kuma / Home Assistant probes. Pick a reliable, low-priority channel. See [Monitoring](#monitoring). |
+| Variable                     | Default            | Description |
+|------------------------------|--------------------|-------------|
+| `APP_PORT`                   | `5005`             | Host port Docker binds to. Change if running multiple instances. |
+| `CONTAINER_NAME`             | `iptv-app`         | Docker container name. Change when running multiple instances to avoid name conflicts. |
+| `RESTART_POLICY`             | `unless-stopped`   | Docker restart policy. Set to `no` to prevent auto-restart (e.g. during maintenance). Valid values: `no`, `always`, `unless-stopped`, `on-failure`. |
+| `TZ`                         | `UTC`              | Container timezone used for log timestamps. Set to your local tz database name, e.g. `America/New_York`, `America/Chicago`, `Europe/London`. |
+| `HDHR_ADVERTISE_HOST`        | `127.0.0.1`        | IP address your media server uses to reach this app. Use your LAN IP if they run on separate machines. |
+| `HDHR_SCHEME`                | `http`             | Protocol (`http` or `https`). |
+| `HDHR_MODEL`                 | `HDHR3-US`         | HDHomeRun model string reported to media servers. |
+| `HDHR_FRIENDLY_NAME`         | `IPTV HDHomeRun`   | Device name shown in Plex/Jellyfin/Emby. Useful when running multiple instances. |
+| `HDHR_TUNER_COUNT`           | `2`                | Concurrent streams the media server may request. Raise for more simultaneous recordings. |
+| `HDHR_DISABLE_SSDP`          | `1`                | `1` = SSDP disabled (default, works everywhere). `0` = SSDP enabled (Linux only, enables auto-discovery). |
+| `IPTV_USERNAME`              | `iptv`             | Username IPTV apps use to connect **to this app** (not your upstream provider). Used by TiviMate, IPTV Smarters, VLC, etc. |
+| `IPTV_PASSWORD`              | `iptv`             | Password IPTV apps use to connect **to this app** (not your upstream provider). |
+| `EPG_XML_SOURCES`            | *(see below)*      | Comma-separated XMLTV URL(s) to fetch guide data from. Defaults to `https://epg.pw/xmltv/epg_US.xml`. |
+| `EPG_CACHE_HOURS`            | `12`               | How long to cache the downloaded EPG before re-fetching. |
+| `ALLOW_FULL_M3U_DOWNLOAD`    | `1`                | Set to `0` to disable the **Fetch M3U** button in the UI. Useful on shared/production deployments to prevent accidental re-fetches. |
+| `STREAM_CHUNK_KB`            | `64`               | Size in KB of each chunk read from the upstream source. Larger values (128, 256) reduce overhead; too large may increase latency. |
+| `STREAM_PREBUFFER_KB`        | `512`              | KB to buffer server-side before sending to the client. Increase (e.g. 1024, 2048) if streams stutter at startup. Set to `0` to disable. |
+| `STREAM_MAX_RETRIES`         | `5`                | How many times the proxy reconnects if the stream drops. Set to `0` to disable auto-reconnect. |
+| `STREAM_RETRY_DELAY`         | `3`                | Seconds to wait between reconnect attempts. |
+| `STREAM_READ_TIMEOUT`        | `30`               | Seconds without incoming data before the proxy considers the stream stale and reconnects. Lower values (e.g. `15`) catch silent hangs faster. |
+| `STREAM_SESSION_STALE_SECONDS` | `30`             | Seconds since the last received chunk before a session is considered dead. Used by the health check to avoid false "stream active" reports after a client disconnects. |
+| `PLAYER_STASH_KB`            | `1024`             | mpegts.js client-side stash buffer in KB for the in-browser player. Larger values absorb more upstream jitter. |
+| `PLAYER_LATENCY_MAX`         | `30`               | Max live buffer latency in seconds before the browser player skips ahead (in-browser player only). |
+| `PLAYER_LATENCY_MIN`         | `5`                | Minimum buffer to keep in seconds (in-browser player only). |
+| `HEALTH_CHECK_TVG_ID`        | *(none)*           | Channel TVG-ID used by `GET /api/health` for Uptime Kuma / Home Assistant probes. Pick a reliable, low-priority channel. See [Monitoring](#monitoring). |
 
 ---
 
@@ -113,7 +121,7 @@ The `GuideNumber` that Plex sees (and that the `/auto/v<number>` stream URL uses
 
 1. **Provider-supplied** (`tvg-chno` in the M3U `#EXTINF` line) — used directly as `GuideNumber`. These are treated as "explicit" and win any conflict.
 2. **Auto-assigned** — Channels without a `tvg-chno` get the next available sequential integer (1, 2, 3…), skipping any numbers already claimed by explicit entries.
-3. **Single configuration** — One IPTV configuration is supported. The filtered playlist is built from that single source.
+3. **Multiple configurations** — When more than one IPTV config is active, channels are merged and de-duplicated across all configs. Explicit-numbered entries win conflicts; otherwise the first occurrence is kept.
 
 ### Channel Numbers in the EPG
 
@@ -126,6 +134,60 @@ The generated `/epg.xml` carries channel numbers in two places:
 - If your provider supplies `tvg-chno` values, those numbers will match what appears in your filtered playlist, the lineup, and the guide — no manual mapping needed.
 - Channel numbers cannot be overridden via the includes list; they come from the `tvg-chno` attribute in your provider's M3U. Channels without a `tvg-chno` receive auto-assigned sequential numbers.
 - Channel numbers in the HDHomeRun lineup also appear in the stream URL: `http://<host>:5005/auto/v<GuideNumber>` — this is what Plex calls when playing a channel.
+
+---
+
+## Generic IPTV App Proxy (Xtream Codes)
+
+In addition to HDHomeRun emulation for Plex/Jellyfin/Emby, the app acts as a full **Xtream Codes API server** so generic IPTV players (TiviMate, IPTV Smarters Pro, GSE Smart IPTV, VLC, etc.) can connect directly and browse live channels, VOD, and series.
+
+### Connecting an IPTV App
+
+In your IPTV app's "Add Playlist / Add Source" screen, choose **Xtream Codes** and enter:
+
+| Field    | Value |
+|----------|-------|
+| Server   | `http://<HDHR_ADVERTISE_HOST>:<APP_PORT>` |
+| Username | value of `IPTV_USERNAME` in `.env` (default: `iptv`) |
+| Password | value of `IPTV_PASSWORD` in `.env` (default: `iptv`) |
+
+> **Note:** `IPTV_USERNAME` and `IPTV_PASSWORD` are the credentials your IPTV app uses to connect **to this app** — they are not your upstream provider credentials. The upstream credentials are stored per-config in the web UI.
+
+Alternatively, some apps accept an M3U URL directly:
+
+```text
+http://<host>:<port>/get.php?username=iptv&password=iptv&type=m3u_plus
+```
+
+or a simple playlist URL (no auth required if credentials are default):
+
+```text
+http://<host>:<port>/iptv/playlist.m3u
+```
+
+### What the IPTV App Sees
+
+- **Live channels** — your filtered lineup, proxied through `/live/…`
+- **VOD (movies)** — all movie entries from your provider's full playlist
+- **Series** — all series entries with full season/episode metadata fetched from your provider
+
+### Extra Channels for IPTV Apps Only (`xtream_includes`)
+
+The **Xtream Extra Channels** field in each config's edit form lets you include additional live channels that appear in the IPTV app but are **not** added to your HDHomeRun/Plex lineup. This is useful for channels you want accessible in TiviMate but don't want cluttering your Plex guide.
+
+Enter comma-separated name patterns (wildcards supported):
+
+```text
+*ESPN*, *HBO*, *Showtime*
+```
+
+---
+
+## Scheduled M3U Refresh
+
+Each config has an **Auto-refresh interval** field (in hours). When set to a non-zero value, the app automatically re-fetches and re-filters the playlist on that schedule — useful when your provider issues new stream URLs or tokens periodically.
+
+Set it to `0` (or leave blank) to disable automatic refreshes and fetch manually via the **Fetch M3U** button.
 
 ---
 
