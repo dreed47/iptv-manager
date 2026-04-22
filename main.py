@@ -21,9 +21,11 @@ import asyncio
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from models import init_db, SessionLocal
-from routes import router, start_m3u_scheduler
+from routes import router
 from hdhomerun_routes import router as hdhomerun_router
 from xtream_server_routes import router as xtream_server_router, get_xtream_cache
+from health_routes import router as health_router
+from m3u_service import start_m3u_scheduler
 
 logger = logging.getLogger(__name__)
 
@@ -64,7 +66,7 @@ def create_app():
     
     @app.middleware("http")
     async def log_request_time(request: Request, call_next):
-        start = time.time()
+        start = time.perf_counter()
         path = request.url.path
         # Only log non-static requests to reduce noise
         if not path.startswith(("/static/", "/favicon.ico")):
@@ -73,7 +75,7 @@ def create_app():
             response = await call_next(request)
             return response
         finally:
-            duration = time.time() - start
+            duration = time.perf_counter() - start
             if not path.startswith(("/static/", "/favicon.ico")):
                 logger.info(f"<-- END   {request.method} {path}  duration={duration:.3f}s")
 
@@ -82,6 +84,7 @@ def create_app():
     app.include_router(router)
     app.include_router(hdhomerun_router)
     app.include_router(xtream_server_router)
+    app.include_router(health_router)
     logger.info("Application routes configured")
     
     return app

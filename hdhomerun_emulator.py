@@ -113,10 +113,10 @@ HDHomerun-Features: base
             sock.settimeout(5.0)
             
             try:
-                t0 = time.time()
+                t0 = time.perf_counter()
                 logger.info("Attempting to bind to SSDP port 1900 (may take a few seconds on macOS)...")
                 sock.bind(('0.0.0.0', 1900))
-                t1 = time.time()
+                t1 = time.perf_counter()
                 logger.info(f"SSDP socket.bind completed in {t1 - t0:.3f}s")
             except socket.timeout:
                 logger.error(f"SSDP bind timed out after 5 seconds - HDHomeRun discovery will not work")
@@ -131,9 +131,9 @@ HDHomerun-Features: base
 
             mreq = struct.pack("4sl", socket.inet_aton("239.255.255.250"), socket.INADDR_ANY)
             try:
-                t0 = time.time()
+                t0 = time.perf_counter()
                 sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
-                t1 = time.time()
+                t1 = time.perf_counter()
                 logger.info(f"SSDP setsockopt ADD_MEMBERSHIP completed in {t1 - t0:.3f}s")
             except Exception as e:
                 logger.error(f"SSDP setsockopt ADD_MEMBERSHIP failed: {e}")
