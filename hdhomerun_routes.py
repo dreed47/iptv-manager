@@ -299,6 +299,7 @@ async def stream_channel(channel_number: str, request: Request, db: Session = De
         }
         # Use a mutable container so inner reconnect logic can update the URL.
         current_url = [source_url]
+        bytes_at_last_connect = 0  # track how much was sent when the last connection opened
         try:
             while attempt <= effective_max_retries:
                 if attempt > 0:
@@ -339,6 +340,7 @@ async def stream_channel(channel_number: str, request: Request, db: Session = De
                         prebuffering = False
 
                 try:
+                    bytes_at_last_connect = bytes_sent
                     logger.info(
                         f"Connecting upstream for channel {channel_number} "
                         f"(attempt={attempt} chunk={chunk_size//1024}KB prebuffer={prebuffer_kb}KB read_timeout={read_timeout}s)"
@@ -383,6 +385,13 @@ async def stream_channel(channel_number: str, request: Request, db: Session = De
                             yield c
                         prebuf = []
                         prebuffering = False
+                    # If this connection delivered substantial data, it was healthy — reset the
+                    # retry budget so routine upstream drops don't exhaust it over a long session.
+                    delivered = bytes_sent - bytes_at_last_connect
+                    if delivered >= 10 * 1024 * 1024:  # 10 MB threshold
+                        attempt = 0
+                        effective_max_retries = max_retries
+                        url_refreshed = False
                     logger.warning(
                         f"Upstream closed stream for channel {channel_number} "
                         f"after {bytes_sent} bytes; reconnecting..."
