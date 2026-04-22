@@ -32,7 +32,7 @@ services:
     volumes:
       - ./m3u_files:/app/m3u_files
       - ./data:/app/data
-    restart: unless-stopped
+    restart: ${RESTART_POLICY:-unless-stopped}
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:5005/"]
       interval: 30s
