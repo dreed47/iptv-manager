@@ -9,7 +9,7 @@ import config
 import logging
 import os
 import re
-from hdhomerun_routes import hdhomerun_emulator
+from hdhomerun_routes import hdhomerun_emulator, get_active_streams
 import urllib.parse
 import json
 from epg_manager import get_epg as _refresh_epg
@@ -58,6 +58,7 @@ async def settings_page(request: Request, db: Session = Depends(get_db), error: 
         "item": item,
         "friendly_name": config.HDHR_FRIENDLY_NAME,
         "active_page": "settings",
+        "allow_full_m3u_download": config.ALLOW_FULL_M3U_DOWNLOAD,
         "error": error,
         "success": success,
     })
@@ -72,13 +73,16 @@ async def handle_settings_form(
     server_url: str = Form(...),
     username: str = Form(...),
     user_pass: str = Form(...),
+    m3u_refresh_hours: int = Form(0),
     db: Session = Depends(get_db),
 ):
     existing = db.query(Item).first()
     if existing:
-        result = update_item(db, existing.id, name, server_url, username, user_pass, None, None, None)
+        result = update_item(db, existing.id, name, server_url, username, user_pass, None, None, None, m3u_refresh_hours)
     else:
         result = create_item(db, name, server_url, username, user_pass, None, None, None)
+        if result:
+            update_item(db, result.id, None, None, None, None, None, None, None, m3u_refresh_hours)
     if not result:
         return RedirectResponse(url="/settings?error=Failed to save provider", status_code=303)
     return RedirectResponse(url="/settings?success=Provider saved successfully", status_code=303)
@@ -122,6 +126,27 @@ async def test_connection(request: Request, db: Session = Depends(get_db)):
         return JSONResponse({"ok": False, "error": f"{type(e).__name__}: {e}"})
 
 
+@router.get("/api/active_streams", response_class=JSONResponse)
+async def api_active_streams():
+    import math
+    streams = get_active_streams()
+    out = []
+    now = time.time()
+    for s in streams:
+        elapsed = int(now - s.get("started_at", now))
+        hours, rem = divmod(elapsed, 3600)
+        mins, secs = divmod(rem, 60)
+        duration = f"{hours}h {mins}m" if hours else f"{mins}m {secs}s"
+        mb = s.get("bytes_sent", 0) / (1024 * 1024)
+        out.append({
+            "channel": s.get("channel", "?"),
+            "client_ip": s.get("client_ip", "?"),
+            "duration": duration,
+            "mb_sent": round(mb, 1),
+        })
+    return JSONResponse({"streams": out})
+
+
 @router.post("/set_refresh_interval")
 async def set_refresh_interval(item_id: int = Form(...), m3u_refresh_hours: int = Form(0), db: Session = Depends(get_db)):
     item = db.query(Item).filter(Item.id == item_id).first()
@@ -139,13 +164,13 @@ async def generate_m3u(background_tasks: BackgroundTasks, item_id: int = Form(..
     try:
         ok, msg, _ = do_fetch_m3u(item_id, db)
         if not ok:
-            return RedirectResponse(url=f"/hdhomerun?error={urllib.parse.quote(msg)}", status_code=303)
+            return RedirectResponse(url=f"/settings?error={urllib.parse.quote(msg)}", status_code=303)
         background_tasks.add_task(_refresh_epg, True)
         logger.info("EPG rebuild queued in background after M3U save")
-        return RedirectResponse(url=f"/hdhomerun?success={urllib.parse.quote(msg)}", status_code=303)
+        return RedirectResponse(url=f"/settings?success={urllib.parse.quote(msg)}", status_code=303)
     except Exception as e:
         logger.error(f"Failed to generate M3U for item {item_id}: {e}")
-        return RedirectResponse(url=f"/hdhomerun?error=Failed to save M3U file: {urllib.parse.quote(str(e))}", status_code=303)
+        return RedirectResponse(url=f"/settings?error=Failed to fetch M3U: {urllib.parse.quote(str(e))}", status_code=303)
 
 @router.post("/generate_filtered_m3u", response_class=RedirectResponse)
 async def generate_filtered_m3u(background_tasks: BackgroundTasks, item_id: int = Form(...), db: Session = Depends(get_db)):

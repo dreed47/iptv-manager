@@ -9,6 +9,12 @@
 {% if success %}<div class="flash flash-success">✓ {{ success }}</div>{% endif %}
 {% if error %}<div class="flash flash-error">✗ {{ error }}</div>{% endif %}
 
+{% if item %}
+<form id="form-fetch-m3u" method="POST" action="/generate_m3u" style="display:none;">
+  <input type="hidden" name="item_id" value="{{ item.id }}" />
+</form>
+{% endif %}
+
 <div class="card">
   {% if item %}
   <div class="card-title">{{ item.name }}</div>
@@ -51,11 +57,40 @@
       </div>
     </div>
 
+    {% if item %}
+    <div class="form-group">
+      <label class="form-label">
+        Auto-refresh M3U
+        {% if item.m3u_last_fetched_ts %}
+        <span style="text-transform:none; font-weight:400; letter-spacing:0;" data-ts="{{ item.m3u_last_fetched_ts }}">
+          — Last fetch: <span class="last-fetch-time">…</span>
+        </span>
+        {% endif %}
+      </label>
+      {% set rh = item.m3u_refresh_hours | int %}
+      <select name="m3u_refresh_hours" class="form-select">
+        <option value="0"   {% if rh == 0   %}selected{% endif %}>Disabled</option>
+        <option value="6"   {% if rh == 6   %}selected{% endif %}>Every 6 hours</option>
+        <option value="12"  {% if rh == 12  %}selected{% endif %}>Every 12 hours</option>
+        <option value="24"  {% if rh == 24  %}selected{% endif %}>Every 24 hours</option>
+        <option value="48"  {% if rh == 48  %}selected{% endif %}>Every 48 hours</option>
+        <option value="168" {% if rh == 168 %}selected{% endif %}>Every week</option>
+      </select>
+    </div>
+    {% endif %}
+
     <div class="flex flex-center flex-wrap gap-12">
       <button type="submit" class="btn btn-primary">
         💾 {% if item %}Save Changes{% else %}Add Provider{% endif %}
       </button>
       {% if item %}
+      {% if allow_full_m3u_download %}
+      <button type="button" onclick="submitForm(this, 'form-fetch-m3u', 'Fetching M3U…')" class="btn btn-warning">
+        Fetch M3U
+      </button>
+      {% else %}
+      <button type="button" disabled class="btn btn-secondary" title="Fetch M3U is disabled">Fetch M3U</button>
+      {% endif %}
       <button type="button" id="testBtn" onclick="testConnection()" class="btn btn-success">
         🔌 Test Connection
       </button>
@@ -104,6 +139,17 @@
         btn.textContent = '🔌 Test Connection';
       });
   }
+
+  document.addEventListener('DOMContentLoaded', function() {
+    document.querySelectorAll('[data-ts]').forEach(function(el) {
+      var ts = parseInt(el.getAttribute('data-ts'), 10);
+      if (!ts) return;
+      var d = new Date(ts * 1000);
+      el.querySelector('.last-fetch-time').textContent = d.toLocaleString(undefined, {
+        month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit'
+      });
+    });
+  });
 
   function toggleCredentials() {
     var panel = document.getElementById('credPanel');

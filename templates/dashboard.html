@@ -46,6 +46,17 @@
   </div>
 </div>
 
+<!-- Active Streams -->
+<div class="card" id="streams-card">
+  <div class="flex-between mb-12">
+    <div class="card-title" style="margin-bottom: 0;">Active Streams</div>
+    <span id="streams-status" class="badge badge-neutral">Checking…</span>
+  </div>
+  <div id="streams-body">
+    <p class="text-muted text-sm" style="font-style: italic;">Loading…</p>
+  </div>
+</div>
+
 <div class="grid-2">
   <div class="card" style="margin-bottom: 0;">
     <div class="card-title">Quick Actions</div>
@@ -73,7 +84,7 @@
     {% if item %}
     <div style="background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 12px 14px;">
       <div class="mb-8" style="font-weight: 600; font-size: 13px;">{{ item.name }}</div>
-      <div class="flex flex-wrap gap-16">
+      <div class="flex flex-wrap gap-16 mb-8">
         <span class="status-item">
           <span class="status-dot {{ 'dot-on' if item.has_m3u else 'dot-off' }}"></span>M3U
         </span>
@@ -84,6 +95,13 @@
           <span class="status-dot {{ 'dot-on' if item.has_epg else 'dot-off' }}"></span>EPG
         </span>
       </div>
+      {% if item.m3u_last_fetched_ts %}
+      <div class="text-sm text-muted" data-ts="{{ item.m3u_last_fetched_ts }}">
+        Last fetch: <span class="last-fetch-time">…</span>
+      </div>
+      {% else %}
+      <div class="text-sm text-muted">M3U not yet fetched</div>
+      {% endif %}
     </div>
     {% else %}
     <p class="text-muted text-sm" style="font-style: italic;">No provider configured yet.</p>
@@ -91,4 +109,51 @@
     {% endif %}
   </div>
 </div>
+<script>
+  document.addEventListener('DOMContentLoaded', function() {
+    document.querySelectorAll('[data-ts]').forEach(function(el) {
+      var ts = parseInt(el.getAttribute('data-ts'), 10);
+      if (!ts) return;
+      var d = new Date(ts * 1000);
+      el.querySelector('.last-fetch-time').textContent = d.toLocaleString(undefined, {
+        month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit'
+      });
+    });
+  });
+
+  function updateStreams() {
+    fetch('/api/active_streams')
+      .then(function(r) { return r.json(); })
+      .then(function(data) {
+        var badge = document.getElementById('streams-status');
+        var body = document.getElementById('streams-body');
+        var streams = data.streams || [];
+
+        if (streams.length === 0) {
+          badge.textContent = 'Idle';
+          badge.className = 'badge badge-neutral';
+          body.innerHTML = '<p class="text-muted text-sm" style="font-style:italic;">No active streams.</p>';
+        } else {
+          badge.textContent = streams.length === 1 ? '1 Active' : streams.length + ' Active';
+          badge.className = 'badge badge-success';
+          var rows = streams.map(function(s) {
+            return '<div style="display:grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap:8px; padding:10px 12px; background:var(--bg); border:1px solid var(--border); border-radius:6px; font-size:13px;">'
+              + '<div><div class="form-label" style="margin-bottom:2px;">Channel</div><span style="font-weight:600;">' + s.channel + '</span></div>'
+              + '<div><div class="form-label" style="margin-bottom:2px;">Client</div><span class="text-mono">' + s.client_ip + '</span></div>'
+              + '<div><div class="form-label" style="margin-bottom:2px;">Duration</div>' + s.duration + '</div>'
+              + '<div><div class="form-label" style="margin-bottom:2px;">Sent</div>' + s.mb_sent + ' MB</div>'
+              + '</div>';
+          });
+          body.innerHTML = '<div class="flex flex-col gap-8">' + rows.join('') + '</div>';
+        }
+      })
+      .catch(function() {
+        document.getElementById('streams-status').textContent = 'Error';
+        document.getElementById('streams-status').className = 'badge badge-danger';
+      });
+  }
+
+  updateStreams();
+  setInterval(updateStreams, 10000);
+</script>
 {% endblock %}
