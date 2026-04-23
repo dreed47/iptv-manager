@@ -9,23 +9,23 @@
 {% if success %}<div class="flash flash-success">✓ {{ success }}</div>{% endif %}
 {% if error %}<div class="flash flash-error">✗ {{ error }}</div>{% endif %}
 
-<!-- Extra Channels -->
+<!-- Live Channel Filters -->
 {% if item %}
 <div class="card">
   <form method="POST" action="/xtream">
     <input type="hidden" name="item_id" value="{{ item.id }}" />
-    <div class="card-title">Xtream Extra Channels</div>
+    <div class="card-title">Live Channel Filters</div>
     <div class="form-group">
       <label class="form-label">
-        Extra Channels
-        <span style="text-transform: none; font-weight: 400; letter-spacing: 0;">(IPTV apps only)</span>
+        Live Channels
+        <span style="text-transform: none; font-weight: 400; letter-spacing: 0;">(IPTV apps only — TiviMate, Smarters, etc.)</span>
       </label>
       <textarea name="new_xtream_includes" class="form-textarea"
         placeholder="One per line&#10;*MASH*&#10;*NFL*&#10;*Pirates*&#10;24/7: CNN"
         maxlength="10000">{{ (item.xtream_includes or '') | replace(',', '\n') }}</textarea>
-      <div class="form-help">Wildcards OK (e.g. *NFL*). Adds matching channels to TiviMate/Xtream apps only — Plex never sees these.</div>
+      <div class="form-help">Wildcards OK (e.g. *NFL*). Filters which live channels appear in TiviMate/IPTV apps — does not affect VOD or series. Plex/Jellyfin/Emby use the HDHomeRun channel filters instead.</div>
     </div>
-    <button type="submit" name="save_xtream_filters" value="save_xtream_filters" class="btn btn-primary">Save Extra Channels</button>
+    <button type="submit" name="save_xtream_filters" value="save_xtream_filters" class="btn btn-primary">Save Live Channel Filters</button>
   </form>
 </div>
 {% else %}

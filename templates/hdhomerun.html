@@ -3,17 +3,11 @@
 {% block content %}
 <div class="page-header">
   <h1>HDHomeRun Emulator</h1>
-  <p>Plex/Jellyfin/Emby integration with channel filtering</p>
+  <p>Plex/Jellyfin/Emby integration — exposes your filtered channel list as a network tuner</p>
 </div>
 
 {% if success %}<div class="flash flash-success">✓ {{ success }}</div>{% endif %}
 {% if error %}<div class="flash flash-error">✗ {{ error }}</div>{% endif %}
-
-{% if item %}
-<form id="form-filtered-m3u" method="POST" action="/generate_filtered_m3u" style="display:none;">
-  <input type="hidden" name="item_id" value="{{ item.id }}" />
-</form>
-{% endif %}
 
 <!-- Discovery -->
 <div class="card">
@@ -46,7 +40,20 @@
       </p>
     </div>
     {% endif %}
-    <p class="text-sm text-muted">When enabled, Plex/Jellyfin/Emby will automatically discover this device as an HDHomeRun tuner.</p>
+
+    <div class="info-box" style="background: var(--bg); border-color: var(--border);">
+      <p class="text-sm mb-4" style="font-weight: 600;">Manual setup (Plex, Jellyfin, Emby)</p>
+      <p class="text-sm text-muted mb-8">Use this address if auto-discovery doesn't work or is disabled:</p>
+      <div class="flex-center gap-8">
+        <div class="mono-box" style="flex: 1;">{{ base_url }}</div>
+        <button onclick="copyToClipboard('{{ base_url }}', this)" class="btn btn-success btn-sm">Copy</button>
+      </div>
+      <p class="text-sm text-muted mt-8">In Plex → Settings → Live TV &amp; DVR → Set Up Plex DVR → enter address manually.<br>
+        In Jellyfin/Emby → Live TV → Add Tuner Device → HDHomeRun → enter address manually.
+      </p>
+    </div>
+
+    <p class="text-sm text-muted mt-12">When enabled, Plex/Jellyfin/Emby will automatically discover this device as an HDHomeRun tuner on your local network.</p>
   </div>
 </div>
 
@@ -55,29 +62,29 @@
 <div class="card">
   <form method="POST" action="/hdhomerun">
     <input type="hidden" name="item_id" value="{{ item.id }}" />
-    <div class="card-title">Channel Configuration</div>
+    <div class="card-title">Channel Filters</div>
+
+    <div class="info-box mb-12">
+      <p class="text-sm">These filters control which channels are exposed to <strong>Plex, Jellyfin, and Emby</strong> via the HDHomeRun tuner. Only channels listed here will appear in your DVR guide and be available for recording. Xtream apps (TiviMate etc.) use separate filters on the Xtream page.</p>
+    </div>
 
     <div class="form-group">
       <label class="form-label">
-        HDHomeRun Includes
+        Channel List
         <span style="text-transform: none; font-weight: 400; letter-spacing: 0;">(Plex/Jellyfin/Emby only)</span>
       </label>
       <textarea name="new_includes" class="form-textarea"
         placeholder="One per line&#10;100|ESPN&#10;200|HBO&#10;300|Sports"
         maxlength="10000">{{ item.includes | replace(',', '\n') if item.includes else '' }}</textarea>
-      <div class="form-help">Format: number|channel name (e.g. 100|ESPN). Only these channels are sent to Plex/Jellyfin/Emby.</div>
+      <div class="form-help">Format: number|channel name (e.g. 100|ESPN). Only channels listed here are sent to Plex/Jellyfin/Emby. Saving automatically regenerates your filtered playlist.</div>
     </div>
 
     <hr class="divider">
     <div class="flex flex-wrap gap-8">
-      <button type="submit" name="save_filters" value="save_filters" class="btn btn-primary">Save Filters</button>
-
-      <button type="button" onclick="submitForm(this, 'form-filtered-m3u', 'Generating…')"
-        {% if not item.has_m3u %}disabled title="Fetch M3U first"{% endif %}
-        class="btn {{ 'btn-success' if item.has_m3u else 'btn-secondary' }}">Generate Filtered</button>
+      <button type="submit" name="save_filters" value="save_filters" class="btn btn-primary">Save &amp; Apply Filters</button>
 
       {% if item.has_filtered %}
-      <a href="/channels" target="_blank" class="btn btn-outline">Channel Viewer</a>
+      <a href="/channels" target="_blank" class="btn btn-outline">View Plex Lineup</a>
       {% endif %}
     </div>
   </form>

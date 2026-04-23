@@ -78,7 +78,7 @@ async def handle_settings_form(
 ):
     existing = db.query(Item).first()
     if existing:
-        result = update_item(db, existing.id, name, server_url, username, user_pass, None, None, None, m3u_refresh_hours)
+        result = update_item(db, existing.id, name, server_url, username, user_pass, None, None, None, m3u_refresh_hours=m3u_refresh_hours)
     else:
         result = create_item(db, name, server_url, username, user_pass, None, None, None)
         if result:
@@ -145,6 +145,27 @@ async def api_active_streams():
             "mb_sent": round(mb, 1),
         })
     return JSONResponse({"streams": out})
+
+
+@router.get("/api/logs", response_class=JSONResponse)
+async def api_logs(level: str = "", since: float = 0):
+    from main import get_log_buffer
+    entries = get_log_buffer()
+    if level:
+        lvl = level.upper()
+        entries = [e for e in entries if e["level"] == lvl]
+    if since:
+        entries = [e for e in entries if e["ts"] >= since]
+    return JSONResponse({"logs": entries})
+
+
+@router.get("/tools/logs", response_class=HTMLResponse)
+async def logs_page(request: Request):
+    start = time.perf_counter()
+    template = templates.get_template("logs.html")
+    rendered = template.render({"request": request, "active_page": "tools"})
+    logger.info(f"Template render duration: {time.perf_counter() - start:.3f}s")
+    return HTMLResponse(content=rendered)
 
 
 @router.post("/set_refresh_interval")
@@ -449,6 +470,7 @@ async def hdhomerun_page(request: Request, db: Session = Depends(get_db), error:
 @router.post("/hdhomerun", response_class=RedirectResponse)
 async def handle_hdhomerun_form(
     request: Request,
+    background_tasks: BackgroundTasks,
     save_filters: str = Form(None),
     item_id: int = Form(None),
     new_includes: str = Form(None),
@@ -461,7 +483,49 @@ async def handle_hdhomerun_form(
         result = update_item(db, item_id, None, None, None, None, None, new_includes, None, m3u_refresh_hours)
         if not result:
             return RedirectResponse(url="/hdhomerun?error=Failed to save filters", status_code=303)
-        return RedirectResponse(url="/hdhomerun?success=Filters saved successfully", status_code=303)
+
+        m3u_path = os.path.join(config.M3U_DIR, f"xtream_playlist_{item_id}.m3u")
+        if not os.path.exists(m3u_path):
+            return RedirectResponse(
+                url="/hdhomerun?success=Filters saved — fetch M3U first to generate filtered playlist",
+                status_code=303,
+            )
+
+        try:
+            item = db.query(Item).filter(Item.id == item_id).first()
+            with open(m3u_path, "r", encoding="utf-8", errors="replace") as f:
+                lines = f.read().splitlines()
+
+            languages, includes_map, raw_includes, excludes, has_wildcard = build_filter_config(item)
+            filtered_content, num_records, input_record_count = apply_m3u_filter(
+                lines, languages, includes_map, excludes, has_wildcard
+            )
+
+            if num_records == 0:
+                return RedirectResponse(
+                    url="/hdhomerun?error=Filters saved but no channels matched — check your filter list",
+                    status_code=303,
+                )
+
+            os.makedirs(config.M3U_DIR, exist_ok=True)
+            filtered_path = os.path.join(config.M3U_DIR, f"filtered_playlist_{item_id}.m3u")
+            tmp_path = filtered_path + ".tmp"
+            with open(tmp_path, "w", encoding="utf-8") as f:
+                f.write(filtered_content)
+            os.replace(tmp_path, filtered_path)
+
+            background_tasks.add_task(_refresh_epg, True)
+            success_msg = urllib.parse.quote(
+                f"Filters saved — {num_records} of {input_record_count} channels matched"
+            )
+            return RedirectResponse(url=f"/hdhomerun?success={success_msg}", status_code=303)
+        except Exception as e:
+            logger.error(f"Failed to generate filtered M3U after save: {e}")
+            return RedirectResponse(
+                url=f"/hdhomerun?error=Filters saved but filtering failed: {urllib.parse.quote(str(e))}",
+                status_code=303,
+            )
+
     return RedirectResponse(url="/hdhomerun", status_code=303)
 
 

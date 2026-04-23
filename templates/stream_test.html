@@ -375,9 +375,13 @@
     </div>
     <div class="health-body">
       <p class="health-desc">
-        Use this endpoint with <strong>Uptime Kuma</strong> or <strong>Home Assistant</strong> to monitor
-        stream availability. The endpoint skips the test automatically if a proxy stream is already active,
-        so it won't interrupt live viewing.
+        Use this endpoint with any HTTP monitoring tool — <strong>Uptime Kuma, Grafana, Prometheus, Home Assistant,</strong>
+        or a simple cron script — to monitor stream availability. The endpoint skips the live stream test
+        automatically when a proxy stream is already active, so it won't interrupt viewing.
+        <br><br>
+        <strong>Note:</strong> Each check opens a brief connection to your IPTV provider. Set your polling
+        interval to <strong>60 seconds or longer</strong> to avoid triggering provider rate limits or
+        flooding the app with unnecessary requests.
       </p>
 
       <div class="health-field">
@@ -404,15 +408,16 @@
 
       <div class="integrations">
         <div class="integration-block">
-          <h3>Uptime Kuma</h3>
+          <h3>Uptime Kuma / Grafana</h3>
           <pre>Monitor type: HTTP(S) — JSON Query
 URL: <span id="uk-url"></span>
 JSON Query: $.status
 Expected value: ok
+Interval: 60s or longer
 
-Note: "skipped" returns HTTP 200
-so it won't trigger an alert while
-a stream is active.</pre>
+"skipped" returns HTTP 200 and won't
+trigger an alert while a stream is
+active.</pre>
         </div>
         <div class="integration-block">
           <h3>Home Assistant</h3>

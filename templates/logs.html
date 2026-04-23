@@ -1,0 +1,137 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="page-header">
+  <h1>Log Viewer</h1>
+  <p>Recent application logs — last 2000 entries, in-memory only (clears on restart)</p>
+</div>
+
+<div class="card" style="margin-bottom: 0;">
+  <div class="flex-between mb-12" style="flex-wrap: wrap; gap: 8px;">
+    <div class="flex flex-center gap-8" style="flex-wrap: wrap;">
+      <select id="levelFilter" class="form-select" style="width: auto;" onchange="applyFilters()">
+        <option value="">All levels</option>
+        <option value="ERROR">ERROR</option>
+        <option value="WARNING">WARNING</option>
+        <option value="INFO">INFO</option>
+        <option value="DEBUG">DEBUG</option>
+      </select>
+      <select id="timeFilter" class="form-select" style="width: auto;" onchange="applyFilters()">
+        <option value="0">All time</option>
+        <option value="3600">Last hour</option>
+        <option value="1800">Last 30 min</option>
+        <option value="600">Last 10 min</option>
+      </select>
+      <input type="text" id="searchFilter" class="form-input" style="width: 220px;" placeholder="Search…" oninput="applyFilters()" />
+    </div>
+    <div class="flex flex-center gap-8">
+      <span id="countLabel" class="text-sm text-muted"></span>
+      <button class="btn btn-outline btn-sm" onclick="loadLogs()">Refresh</button>
+      <button class="btn btn-secondary btn-sm" onclick="toggleAutoRefresh()" id="autoBtn">Auto-refresh: Off</button>
+    </div>
+  </div>
+
+  <div id="log-container" style="font-family: ui-monospace, 'SF Mono', monospace; font-size: 12px; line-height: 1.6; max-height: 70vh; overflow-y: auto; background: #0f172a; border-radius: 6px; padding: 12px 14px;">
+    <div style="color: #64748b; font-style: italic;">Loading…</div>
+  </div>
+</div>
+
+<script>
+  var _allLogs = [];
+  var _autoTimer = null;
+
+  var LEVEL_COLORS = {
+    'ERROR':   '#f87171',
+    'WARNING': '#fbbf24',
+    'INFO':    '#94a3b8',
+    'DEBUG':   '#64748b',
+  };
+
+  function escHtml(s) {
+    return (s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  }
+
+  function formatTs(ts) {
+    var d = new Date(ts * 1000);
+    var pad = function(n) { return String(n).padStart(2, '0'); };
+    return d.getFullYear() + '-' + pad(d.getMonth()+1) + '-' + pad(d.getDate())
+      + ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds());
+  }
+
+  function applyFilters() {
+    var level = document.getElementById('levelFilter').value;
+    var ageSecs = parseInt(document.getElementById('timeFilter').value, 10) || 0;
+    var search = document.getElementById('searchFilter').value.toLowerCase();
+    var now = Date.now() / 1000;
+
+    var filtered = _allLogs.filter(function(e) {
+      if (level && e.level !== level) return false;
+      if (ageSecs && (now - e.ts) > ageSecs) return false;
+      if (search && e.msg.toLowerCase().indexOf(search) === -1) return false;
+      return true;
+    });
+
+    renderLogs(filtered);
+  }
+
+  function renderLogs(logs) {
+    var container = document.getElementById('log-container');
+    document.getElementById('countLabel').textContent = logs.length + ' entries';
+
+    if (logs.length === 0) {
+      container.innerHTML = '<div style="color:#64748b;font-style:italic;">No log entries match the current filters.</div>';
+      return;
+    }
+
+    var html = logs.map(function(e) {
+      var color = LEVEL_COLORS[e.level] || '#94a3b8';
+      return '<div style="margin-bottom:2px;">'
+        + '<span style="color:#64748b;">' + escHtml(formatTs(e.ts)) + '</span>  '
+        + '<span style="color:' + color + ';font-weight:700;min-width:7ch;display:inline-block;">' + escHtml(e.level) + '</span>  '
+        + '<span style="color:#e2e8f0;">' + escHtml(e.msg) + '</span>'
+        + '</div>';
+    }).join('');
+
+    container.innerHTML = html;
+    container.scrollTop = container.scrollHeight;
+  }
+
+  function loadLogs() {
+    var level = document.getElementById('levelFilter').value;
+    var ageSecs = parseInt(document.getElementById('timeFilter').value, 10) || 0;
+    var since = ageSecs ? (Date.now() / 1000 - ageSecs) : 0;
+
+    var url = '/api/logs';
+    var params = [];
+    if (since) params.push('since=' + since);
+    if (params.length) url += '?' + params.join('&');
+
+    fetch(url)
+      .then(function(r) { return r.json(); })
+      .then(function(data) {
+        _allLogs = data.logs || [];
+        applyFilters();
+      })
+      .catch(function(e) {
+        document.getElementById('log-container').innerHTML =
+          '<div style="color:#f87171;">Failed to load logs: ' + escHtml(e.message) + '</div>';
+      });
+  }
+
+  function toggleAutoRefresh() {
+    var btn = document.getElementById('autoBtn');
+    if (_autoTimer) {
+      clearInterval(_autoTimer);
+      _autoTimer = null;
+      btn.textContent = 'Auto-refresh: Off';
+      btn.className = 'btn btn-secondary btn-sm';
+    } else {
+      _autoTimer = setInterval(loadLogs, 5000);
+      btn.textContent = 'Auto-refresh: On (5s)';
+      btn.className = 'btn btn-success btn-sm';
+    }
+  }
+
+  loadLogs();
+</script>
+{% endblock %}

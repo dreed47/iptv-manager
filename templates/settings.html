@@ -91,6 +91,9 @@
       {% else %}
       <button type="button" disabled class="btn btn-secondary" title="Fetch M3U is disabled">Fetch M3U</button>
       {% endif %}
+      {% if item.has_m3u %}
+      <a href="/m3u_browser/{{ item.id }}" target="_blank" class="btn btn-outline">Browse Full M3U</a>
+      {% endif %}
       <button type="button" id="testBtn" onclick="testConnection()" class="btn btn-success">
         🔌 Test Connection
       </button>

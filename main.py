@@ -1,5 +1,25 @@
 import logging
 import time
+import collections
+import threading
+
+_LOG_BUFFER_LOCK = threading.Lock()
+_LOG_BUFFER: collections.deque = collections.deque(maxlen=2000)
+
+class _BufferHandler(logging.Handler):
+    def emit(self, record: logging.LogRecord) -> None:
+        entry = {
+            "ts": record.created,
+            "level": record.levelname,
+            "name": record.name,
+            "msg": self.format(record),
+        }
+        with _LOG_BUFFER_LOCK:
+            _LOG_BUFFER.append(entry)
+
+def get_log_buffer():
+    with _LOG_BUFFER_LOCK:
+        return list(_LOG_BUFFER)
 
 # Configure logging before any other imports so basicConfig calls in sub-modules become no-ops
 def _configure_logging():
@@ -8,12 +28,18 @@ def _configure_logging():
         datefmt="%Y-%m-%d %H:%M:%S %z",
     )
     fmt.converter = time.localtime  # respects TZ environment variable
-    handler = logging.StreamHandler()
-    handler.setFormatter(fmt)
+    stream_handler = logging.StreamHandler()
+    stream_handler.setFormatter(fmt)
+    buf_handler = _BufferHandler()
+    buf_handler.setFormatter(logging.Formatter(
+        fmt="%(asctime)s  %(levelname)-8s  %(name)s: %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S %z",
+    ))
     root = logging.getLogger()
     root.setLevel(logging.INFO)
     root.handlers.clear()
-    root.addHandler(handler)
+    root.addHandler(stream_handler)
+    root.addHandler(buf_handler)
 
 _configure_logging()
 

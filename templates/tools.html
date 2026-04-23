@@ -12,7 +12,7 @@
 <!-- Stream Tester -->
 <div class="card">
   <div class="card-title">Stream Tester</div>
-  <p class="text-muted text-sm mb-12">Test if a channel plays correctly. Useful for verifying stream URLs and troubleshooting playback issues.</p>
+  <p class="text-muted text-sm mb-12">Test if a channel plays correctly and verify stream URLs. Also includes a <strong>health check endpoint</strong> you can monitor with Uptime Kuma, Grafana, or any HTTP monitoring tool.</p>
   <a href="/stream_test" target="_blank" class="btn btn-warning">Open Stream Tester</a>
 </div>
 
@@ -51,6 +51,13 @@
     No provider configured. <a href="/settings" style="color: var(--primary);">Configure provider →</a>
   </p>
   {% endif %}
+</div>
+
+<!-- Log Viewer -->
+<div class="card">
+  <div class="card-title">Log Viewer</div>
+  <p class="text-muted text-sm mb-12">Browse recent application logs. Useful for diagnosing stream errors, EPG issues, and filter problems.</p>
+  <a href="/tools/logs" target="_blank" class="btn btn-outline">Open Log Viewer</a>
 </div>
 
 <!-- Setup Guides -->
