@@ -65,6 +65,7 @@ class XtreamCache:
     stream_map: dict            # stream_id (int) -> StreamEntry (all types)
     live_id_to_guide: dict      # live stream_id (int) -> guide_number (str)
     extra_channel_urls: dict    # guide_number (str) -> source_url for 24/7 channels
+    extra_channel_names: dict   # guide_number (str) -> display name for 24/7 channels
 
 
 _cache: Optional[XtreamCache] = None
@@ -336,6 +337,7 @@ def _build_cache(items: list, fingerprint: tuple) -> XtreamCache:
             return fnmatch.fnmatch(stripped_d, stripped_p)
 
     extra_channel_urls: dict = {}
+    extra_channel_names: dict = {}
     for item in items:
         raw_xi = getattr(item, 'xtream_includes', None) or ""
         patterns = [p.strip() for p in raw_xi.split(",") if p.strip()]
@@ -378,6 +380,7 @@ def _build_cache(items: list, fingerprint: tuple) -> XtreamCache:
             channels_by_name[norm_name] = (entry, False)
             used_guide_numbers.add(guide_num)
             extra_channel_urls[guide_num] = e["url"]
+            extra_channel_names[guide_num] = display
         logger.info(f"Xtream extra: item={item.id} patterns={patterns} scanned={scanned} skipped_dedup={skipped_dedup} matched={matched_count}")
 
     # Build live_streams from the filtered channels dedup map
@@ -418,6 +421,7 @@ def _build_cache(items: list, fingerprint: tuple) -> XtreamCache:
         stream_map=stream_map,
         live_id_to_guide=live_id_to_guide,
         extra_channel_urls=extra_channel_urls,
+        extra_channel_names=extra_channel_names,
     )
 
 
@@ -432,7 +436,7 @@ async def get_xtream_cache(db: Session) -> XtreamCache:
         new_cache = await asyncio.to_thread(_build_cache, items, fingerprint)
         _cache = new_cache
         if _cache.extra_channel_urls:
-            register_extra_channels(_cache.extra_channel_urls)
+            register_extra_channels(_cache.extra_channel_urls, _cache.extra_channel_names)
         return _cache
 
 

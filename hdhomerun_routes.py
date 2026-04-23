@@ -51,10 +51,12 @@ def get_active_streams() -> list[dict]:
     return _live_streams()
 
 
-def register_extra_channels(url_map: dict):
-    """Register source URLs for channels not in the filtered playlist (e.g. 24/7 channels)."""
+def register_extra_channels(url_map: dict, name_map: dict | None = None):
+    """Register source URLs (and optionally display names) for extra channels."""
     with _channel_source_urls_lock:
         _channel_source_urls.update(url_map)
+        if name_map:
+            _channel_names.update(name_map)
 
 def get_advertised_base_url() -> str:
     return config.ADVERTISED_BASE_URL
