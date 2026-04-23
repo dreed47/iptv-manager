@@ -406,6 +406,28 @@ async def stream_channel(channel_number: str, request: Request, db: Session = De
                         f"Stream error for channel {channel_number} after {bytes_sent} bytes "
                         f"(attempt {attempt}/{max_retries}): {exc}"
                     )
+                    # 407 means the stream token expired — reload immediately for a fresh URL
+                    is_auth_error = (
+                        isinstance(exc, requests.exceptions.HTTPError)
+                        and exc.response is not None
+                        and exc.response.status_code in (401, 403, 407)
+                    )
+                    if is_auth_error and not url_refreshed:
+                        logger.warning(
+                            f"Channel {channel_number}: auth error ({exc.response.status_code}) — "
+                            f"forcing immediate lineup reload for fresh URL"
+                        )
+                        try:
+                            from models import SessionLocal
+                            with SessionLocal() as db_refresh:
+                                load_channel_lineup(db_refresh)
+                            with _channel_source_urls_lock:
+                                fresh = _channel_source_urls.get(channel_number)
+                            if fresh:
+                                current_url[0] = fresh
+                            url_refreshed = True
+                        except Exception as reload_exc:
+                            logger.error(f"Lineup reload failed: {reload_exc}")
                     # Flush any partial prebuffer before retrying
                     if prebuf:
                         for c in prebuf:
