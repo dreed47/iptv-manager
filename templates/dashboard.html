@@ -1,0 +1,94 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="page-header">
+  <h1>Dashboard</h1>
+  <p>IPTV Manager — HDHomeRun Emulator for Plex/Jellyfin/Emby &amp; Xtream Codes proxy for IPTV apps</p>
+</div>
+
+{% if success %}<div class="flash flash-success">✓ {{ success }}</div>{% endif %}
+{% if error %}<div class="flash flash-error">✗ {{ error }}</div>{% endif %}
+
+<div class="grid-3 mb-16">
+  <div class="card" style="margin-bottom: 0;">
+    <div class="stat-label">IPTV Provider</div>
+    {% if item %}
+    <div class="stat-value" style="font-size: 16px; color: var(--primary);">{{ item.name }}</div>
+    <div class="stat-sub text-mono">{{ item.server_url }}</div>
+    {% if item.provider_status or item.provider_exp_date %}
+    <div class="flex flex-center gap-8 mt-8">
+      {% if item.provider_status %}
+      <span class="badge {{ 'badge-success' if item.provider_status|lower == 'active' else 'badge-danger' }}">{{ item.provider_status }}</span>
+      {% endif %}
+      {% if item.provider_exp_date %}
+      <span class="text-sm text-muted">Expires {{ item.provider_exp_date }}</span>
+      {% endif %}
+    </div>
+    {% endif %}
+    {% else %}
+    <div class="stat-value" style="font-size: 15px; color: var(--danger);">Not configured</div>
+    <a href="/settings" class="text-sm mt-8" style="color: var(--primary); display: inline-block;">Configure provider →</a>
+    {% endif %}
+  </div>
+
+  <div class="card" style="margin-bottom: 0;">
+    <div class="stat-label">HDHomeRun</div>
+    <div class="stat-value" style="color: {{ 'var(--success)' if hdhr_running else '#94a3b8' }};">
+      {{ 'Active' if hdhr_running else 'Inactive' }}
+    </div>
+    <div class="stat-sub">Discovery service</div>
+  </div>
+
+  <div class="card" style="margin-bottom: 0;">
+    <div class="stat-label">Xtream Proxy</div>
+    <div class="stat-value" style="color: var(--primary);">Ready</div>
+    <div class="stat-sub">Server running</div>
+  </div>
+</div>
+
+<div class="grid-2">
+  <div class="card" style="margin-bottom: 0;">
+    <div class="card-title">Quick Actions</div>
+    <div class="flex flex-wrap gap-8">
+      {% if can_enable_ssdp %}
+        {% if not hdhr_running %}
+        <form method="POST" action="/hdhr/enable">
+          <button type="submit" class="btn btn-primary">Enable HDHomeRun Discovery</button>
+        </form>
+        {% else %}
+        <form method="POST" action="/hdhr/disable">
+          <button type="submit" class="btn btn-secondary">Disable HDHomeRun Discovery</button>
+        </form>
+        {% endif %}
+      {% endif %}
+      {% if item and item.has_filtered %}
+      <a href="/channels" target="_blank" class="btn btn-outline">View Channel Guide</a>
+      {% endif %}
+      <a href="/stream_test" target="_blank" class="btn btn-warning">Test Stream</a>
+    </div>
+  </div>
+
+  <div class="card" style="margin-bottom: 0;">
+    <div class="card-title">Provider Status</div>
+    {% if item %}
+    <div style="background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 12px 14px;">
+      <div class="mb-8" style="font-weight: 600; font-size: 13px;">{{ item.name }}</div>
+      <div class="flex flex-wrap gap-16">
+        <span class="status-item">
+          <span class="status-dot {{ 'dot-on' if item.has_m3u else 'dot-off' }}"></span>M3U
+        </span>
+        <span class="status-item">
+          <span class="status-dot {{ 'dot-on' if item.has_filtered else 'dot-off' }}"></span>Filtered
+        </span>
+        <span class="status-item">
+          <span class="status-dot {{ 'dot-on' if item.has_epg else 'dot-off' }}"></span>EPG
+        </span>
+      </div>
+    </div>
+    {% else %}
+    <p class="text-muted text-sm" style="font-style: italic;">No provider configured yet.</p>
+    <a href="/settings" class="btn btn-primary mt-12">Configure Provider</a>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}

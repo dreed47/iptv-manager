@@ -1,0 +1,87 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="page-header">
+  <h1>Tools</h1>
+  <p>Testing and utility tools for IPTV management</p>
+</div>
+
+{% if success %}<div class="flash flash-success">✓ {{ success }}</div>{% endif %}
+{% if error %}<div class="flash flash-error">✗ {{ error }}</div>{% endif %}
+
+<!-- Stream Tester -->
+<div class="card">
+  <div class="card-title">Stream Tester</div>
+  <p class="text-muted text-sm mb-12">Test if a channel plays correctly. Useful for verifying stream URLs and troubleshooting playback issues.</p>
+  <a href="/stream_test" target="_blank" class="btn btn-warning">Open Stream Tester</a>
+</div>
+
+<!-- M3U Browser -->
+<div class="card">
+  <div class="card-title">M3U Browser</div>
+  <p class="text-muted text-sm mb-12">Browse and search your M3U playlist to find channel names for creating filters.</p>
+  {% if item and item.has_m3u %}
+  <a href="/m3u_browser/{{ item.id }}" target="_blank" class="btn btn-primary">Browse Full M3U</a>
+  {% else %}
+  <button disabled class="btn btn-secondary" title="Fetch M3U first">Browse Full M3U</button>
+  {% endif %}
+</div>
+
+<!-- Downloads -->
+<div class="card">
+  <div class="card-title">Downloads</div>
+  <p class="text-muted text-sm mb-12">Download M3U playlists and EPG data for manual use or backup.</p>
+  {% if item %}
+  <div class="flex flex-wrap gap-8">
+    {% if item.has_m3u %}
+    <a href="/download_m3u/{{ item.id }}" download class="btn btn-success">Full M3U</a>
+    {% endif %}
+    {% if item.has_filtered %}
+    <a href="/download_filtered_m3u/{{ item.id }}" download class="btn btn-primary">Filtered M3U</a>
+    {% endif %}
+    {% if item.has_epg %}
+    <a href="/epg.xml" download class="btn btn-outline">EPG XML</a>
+    {% endif %}
+    {% if not item.has_m3u and not item.has_filtered and not item.has_epg %}
+    <p class="text-muted text-sm" style="font-style: italic;">No files available yet — fetch M3U first.</p>
+    {% endif %}
+  </div>
+  {% else %}
+  <p class="text-muted text-sm" style="font-style: italic;">
+    No provider configured. <a href="/settings" style="color: var(--primary);">Configure provider →</a>
+  </p>
+  {% endif %}
+</div>
+
+<!-- Setup Guides -->
+<div class="card">
+  <div class="card-title">Setup Guides</div>
+  <div class="grid-auto">
+    <a href="https://support.plex.tv/articles/225877347-live-tv-dvr/" target="_blank" rel="noopener" class="btn btn-outline" style="justify-content: flex-start;">📺 Plex Live TV &amp; DVR</a>
+    <a href="https://jellyfin.org/docs/general/server/live-tv/setup-guide" target="_blank" rel="noopener" class="btn btn-outline" style="justify-content: flex-start;">🪼 Jellyfin Live TV</a>
+    <a href="https://support.emby.media/support/solutions/articles/44001160415-live-tv-setup" target="_blank" rel="noopener" class="btn btn-outline" style="justify-content: flex-start;">🎬 Emby Live TV</a>
+    <a href="https://github.com/dreed47/iptv-manager" target="_blank" rel="noopener" class="btn btn-outline" style="justify-content: flex-start;">📖 IPTV Manager on GitHub</a>
+  </div>
+</div>
+
+<!-- System Information -->
+<div class="card">
+  <div class="card-title">System Information</div>
+  <div class="grid-3">
+    <div>
+      <div class="form-label mb-8">Base URL</div>
+      <div class="mono-box">{{ base_url }}</div>
+    </div>
+    <div>
+      <div class="form-label mb-8">HDHomeRun Discovery</div>
+      <span class="badge {{ 'badge-success' if hdhr_running else 'badge-neutral' }}">
+        {{ 'Enabled' if hdhr_running else 'Disabled' }}
+      </span>
+    </div>
+    <div>
+      <div class="form-label mb-8">Xtream Proxy</div>
+      <span class="badge badge-success">Active</span>
+    </div>
+  </div>
+</div>
+{% endblock %}

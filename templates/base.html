@@ -1,0 +1,487 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>{{ friendly_name }}{% if page_title %} — {{ page_title }}{% endif %}</title>
+  <style>
+    :root {
+      --primary:        #2563eb;
+      --primary-hover:  #1d4ed8;
+      --success:        #16a34a;
+      --success-hover:  #15803d;
+      --danger:         #dc2626;
+      --danger-hover:   #b91c1c;
+      --warning:        #d97706;
+      --warning-hover:  #b45309;
+      --text:           #1e293b;
+      --text-muted:     #64748b;
+      --border:         #e2e8f0;
+      --surface:        #ffffff;
+      --bg:             #f1f5f9;
+      --sidebar-bg:     #0f172a;
+      --radius:         8px;
+      --shadow:         0 1px 3px rgba(0,0,0,0.07), 0 1px 2px rgba(0,0,0,0.04);
+    }
+
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      font-size: 14px;
+      line-height: 1.5;
+      color: var(--text);
+      background: var(--bg);
+      display: flex;
+      min-height: 100vh;
+    }
+
+    /* ── Sidebar ─────────────────────────────────── */
+    .sidebar {
+      width: 220px;
+      background: var(--sidebar-bg);
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      flex-shrink: 0;
+      transition: width 0.25s ease;
+      position: relative;
+      overflow: hidden;
+    }
+    .sidebar.collapsed { width: 52px; }
+
+    .sidebar-brand {
+      padding: 18px 16px 14px;
+      border-bottom: 1px solid rgba(255,255,255,0.06);
+      white-space: nowrap;
+      overflow: hidden;
+    }
+    .sidebar-brand h2 {
+      font-size: 15px;
+      font-weight: 700;
+      color: #f8fafc;
+      letter-spacing: -0.2px;
+    }
+    .sidebar-brand p {
+      font-size: 11px;
+      color: #475569;
+      margin-top: 2px;
+    }
+    .sidebar.collapsed .sidebar-brand p { display: none; }
+    .sidebar.collapsed .sidebar-brand h2 .brand-text { display: none; }
+
+    .sidebar-toggle {
+      position: absolute;
+      top: 16px;
+      right: -11px;
+      width: 22px;
+      height: 22px;
+      background: #1e293b;
+      border: 1px solid #334155;
+      border-radius: 50%;
+      color: #94a3b8;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 10px;
+      z-index: 10;
+      transition: background 0.15s, color 0.15s;
+    }
+    .sidebar-toggle:hover { background: #334155; color: #f1f5f9; }
+
+    .nav-section { padding: 10px 0; flex: 1; }
+
+    .nav-label {
+      padding: 0 16px 6px;
+      font-size: 10px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.8px;
+      color: #334155;
+      white-space: nowrap;
+      overflow: hidden;
+    }
+    .sidebar.collapsed .nav-label { opacity: 0; }
+
+    .nav-item {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 9px 16px;
+      color: #94a3b8;
+      text-decoration: none;
+      font-size: 13px;
+      font-weight: 500;
+      border-left: 3px solid transparent;
+      white-space: nowrap;
+      overflow: hidden;
+      transition: background 0.15s, color 0.15s, border-color 0.15s;
+    }
+    .nav-item:hover { background: rgba(255,255,255,0.05); color: #e2e8f0; }
+    .nav-item.active {
+      background: rgba(37,99,235,0.12);
+      border-left-color: var(--primary);
+      color: #93c5fd;
+      font-weight: 600;
+    }
+    .nav-icon { font-size: 15px; flex-shrink: 0; width: 20px; text-align: center; }
+    .sidebar.collapsed .nav-text { display: none; }
+    .sidebar.collapsed .nav-item { padding: 9px 0; justify-content: center; border-left: none; }
+    .sidebar.collapsed .nav-item.active { background: rgba(37,99,235,0.15); }
+
+    /* ── Main content ─────────────────────────────── */
+    .main-content {
+      flex: 1;
+      padding: 24px;
+      overflow-y: auto;
+      min-width: 0;
+    }
+
+    .page-header {
+      margin-bottom: 20px;
+      padding-bottom: 14px;
+      border-bottom: 1px solid var(--border);
+    }
+    .page-header h1 {
+      font-size: 21px;
+      font-weight: 700;
+      color: var(--text);
+      letter-spacing: -0.3px;
+    }
+    .page-header p {
+      font-size: 13px;
+      color: var(--text-muted);
+      margin-top: 3px;
+    }
+
+    /* ── Cards ───────────────────────────────────── */
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 20px;
+      box-shadow: var(--shadow);
+      margin-bottom: 16px;
+    }
+    .card-title {
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--text);
+      margin-bottom: 14px;
+    }
+    .card-title.collapsible {
+      cursor: pointer;
+      user-select: none;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 0;
+    }
+    .card-title.collapsible.open { margin-bottom: 14px; }
+    .chevron { font-size: 10px; color: var(--text-muted); }
+
+    /* ── Buttons ─────────────────────────────────── */
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 8px 14px;
+      font-size: 13px;
+      font-weight: 600;
+      border: none;
+      border-radius: 6px;
+      cursor: pointer;
+      text-decoration: none;
+      font-family: inherit;
+      white-space: nowrap;
+      transition: background 0.15s, opacity 0.15s;
+    }
+    .btn:disabled { opacity: 0.45; cursor: not-allowed; }
+    .btn-primary  { background: var(--primary);  color: #fff; }
+    .btn-primary:hover:not(:disabled)  { background: var(--primary-hover); }
+    .btn-success  { background: var(--success);  color: #fff; }
+    .btn-success:hover:not(:disabled)  { background: var(--success-hover); }
+    .btn-warning  { background: var(--warning);  color: #fff; }
+    .btn-warning:hover:not(:disabled)  { background: var(--warning-hover); }
+    .btn-danger   { background: var(--danger);   color: #fff; }
+    .btn-danger:hover:not(:disabled)   { background: var(--danger-hover); }
+    .btn-secondary { background: #94a3b8; color: #fff; }
+    .btn-secondary:hover:not(:disabled) { background: #7b93a8; }
+    .btn-outline {
+      background: transparent;
+      border: 1px solid var(--border);
+      color: var(--text);
+    }
+    .btn-outline:hover:not(:disabled) { background: var(--bg); }
+    .btn-sm { padding: 5px 10px; font-size: 12px; }
+
+    /* ── Forms ───────────────────────────────────── */
+    .form-group { margin-bottom: 16px; }
+    .form-label {
+      display: block;
+      font-size: 11px;
+      font-weight: 700;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      margin-bottom: 5px;
+    }
+    .form-input, .form-select, .form-textarea {
+      width: 100%;
+      padding: 8px 10px;
+      font-size: 13px;
+      font-family: inherit;
+      color: var(--text);
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      transition: border-color 0.15s, box-shadow 0.15s;
+    }
+    .form-input:focus, .form-select:focus, .form-textarea:focus {
+      outline: none;
+      border-color: var(--primary);
+      box-shadow: 0 0 0 3px rgba(37,99,235,0.1);
+    }
+    .form-textarea {
+      resize: vertical;
+      min-height: 110px;
+      font-family: 'SFMono-Regular', Consolas, monospace;
+      font-size: 12px;
+      line-height: 1.6;
+    }
+    .form-select { width: auto; cursor: pointer; }
+    .form-help { font-size: 12px; color: var(--text-muted); margin-top: 4px; }
+
+    /* ── Badges ──────────────────────────────────── */
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      padding: 2px 8px;
+      font-size: 11px;
+      font-weight: 700;
+      border-radius: 10px;
+      letter-spacing: 0.1px;
+    }
+    .badge-success { background: #dcfce7; color: #15803d; }
+    .badge-danger  { background: #fee2e2; color: #dc2626; }
+    .badge-warning { background: #fef3c7; color: #b45309; }
+    .badge-neutral { background: #f1f5f9; color: #64748b; }
+
+    /* ── Status dots ─────────────────────────────── */
+    .status-item {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      font-size: 12px;
+      font-weight: 500;
+      color: var(--text-muted);
+    }
+    .status-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
+    .dot-on  { background: var(--success); }
+    .dot-off { background: #cbd5e1; }
+
+    /* ── Mono box ────────────────────────────────── */
+    .mono-box {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 8px 12px;
+      font-family: 'SFMono-Regular', Consolas, monospace;
+      font-size: 12px;
+      color: var(--text);
+      word-break: break-all;
+    }
+
+    /* ── Flash messages ──────────────────────────── */
+    .flash {
+      position: relative;
+      overflow: hidden;
+      padding: 10px 36px 10px 14px;
+      border-radius: 6px;
+      margin-bottom: 16px;
+      font-size: 13px;
+      font-weight: 500;
+    }
+    .flash-success { background: #f0fdf4; color: #15803d; border: 1px solid #bbf7d0; }
+    .flash-error   { background: #fef2f2; color: #dc2626; border: 1px solid #fecaca; }
+    .flash-close {
+      position: absolute; top: 50%; right: 10px;
+      transform: translateY(-50%);
+      background: none; border: none;
+      font-size: 18px; line-height: 1;
+      cursor: pointer; opacity: 0.4; color: inherit; padding: 0;
+    }
+    .flash-close:hover { opacity: 0.7; }
+    .flash-bar {
+      position: absolute; bottom: 0; left: 0;
+      height: 2px; width: 100%;
+      background: currentColor; opacity: 0.3;
+      transition: width 5s linear;
+    }
+
+    /* ── Info box ────────────────────────────────── */
+    .info-box {
+      background: #fffbeb;
+      border: 1px solid #fde68a;
+      border-left: 3px solid var(--warning);
+      border-radius: 6px;
+      padding: 12px 14px;
+      font-size: 13px;
+      color: #78350f;
+    }
+
+    /* ── Table ───────────────────────────────────── */
+    .table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    .table th, .table td { padding: 9px 12px; border: 1px solid var(--border); text-align: left; vertical-align: middle; }
+    .table th { background: var(--bg); font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.4px; color: var(--text-muted); width: 130px; }
+
+    /* ── Stat cards ──────────────────────────────── */
+    .stat-label { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text-muted); margin-bottom: 6px; }
+    .stat-value { font-size: 20px; font-weight: 700; color: var(--text); line-height: 1.2; }
+    .stat-sub   { font-size: 12px; color: var(--text-muted); margin-top: 4px; }
+
+    /* ── Layout helpers ──────────────────────────── */
+    .flex         { display: flex; }
+    .flex-center  { display: flex; align-items: center; }
+    .flex-between { display: flex; align-items: center; justify-content: space-between; }
+    .flex-wrap    { flex-wrap: wrap; }
+    .flex-col     { flex-direction: column; }
+    .gap-6  { gap: 6px; }
+    .gap-8  { gap: 8px; }
+    .gap-12 { gap: 12px; }
+    .gap-16 { gap: 16px; }
+    .grid-2    { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+    .grid-3    { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+    .grid-auto { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px; }
+    .divider   { border: none; border-top: 1px solid var(--border); margin: 16px 0; }
+    .text-muted { color: var(--text-muted); }
+    .text-sm    { font-size: 12px; }
+    .text-mono  { font-family: 'SFMono-Regular', Consolas, monospace; font-size: 12px; }
+    .mt-4  { margin-top: 4px; }
+    .mt-8  { margin-top: 8px; }
+    .mt-12 { margin-top: 12px; }
+    .mb-4  { margin-bottom: 4px; }
+    .mb-8  { margin-bottom: 8px; }
+    .mb-12 { margin-bottom: 12px; }
+    .mb-16 { margin-bottom: 16px; }
+
+    /* ── Responsive ──────────────────────────────── */
+    @media (max-width: 768px) {
+      body { flex-direction: column; }
+      .sidebar { width: 100% !important; min-height: auto; }
+      .sidebar-toggle { display: none; }
+      .main-content { padding: 16px; }
+      .grid-2, .grid-3 { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <nav class="sidebar" id="sidebar">
+    <div class="sidebar-brand">
+      <h2>🎬 <span class="brand-text">IPTV Manager</span></h2>
+      <p>HDHomeRun + Xtream Proxy</p>
+    </div>
+
+    <button class="sidebar-toggle" onclick="toggleSidebar()" id="sidebarToggle">◀</button>
+
+    <div class="nav-section">
+      <div class="nav-label">Navigation</div>
+      <a href="/" class="nav-item {{ 'active' if active_page == 'dashboard' else '' }}">
+        <span class="nav-icon">🏠</span><span class="nav-text">Dashboard</span>
+      </a>
+      <a href="/settings" class="nav-item {{ 'active' if active_page == 'settings' else '' }}">
+        <span class="nav-icon">📡</span><span class="nav-text">IPTV Provider</span>
+      </a>
+      <a href="/hdhomerun" class="nav-item {{ 'active' if active_page == 'hdhomerun' else '' }}">
+        <span class="nav-icon">📺</span><span class="nav-text">HDHomeRun</span>
+      </a>
+      <a href="/xtream" class="nav-item {{ 'active' if active_page == 'xtream' else '' }}">
+        <span class="nav-icon">📱</span><span class="nav-text">Xtream Proxy</span>
+      </a>
+      <a href="/tools" class="nav-item {{ 'active' if active_page == 'tools' else '' }}">
+        <span class="nav-icon">🛠️</span><span class="nav-text">Tools</span>
+      </a>
+    </div>
+  </nav>
+
+  <div class="main-content">
+    {% block content %}{% endblock %}
+  </div>
+
+  <script>
+    function initFlashMessages() {
+      document.querySelectorAll('.flash').forEach(function(el) {
+        var close = document.createElement('button');
+        close.className = 'flash-close';
+        close.innerHTML = '&times;';
+        close.onclick = function() {
+          el.style.transition = 'opacity 0.3s';
+          el.style.opacity = '0';
+          setTimeout(function() { el.remove(); }, 300);
+        };
+        el.appendChild(close);
+        var bar = document.createElement('div');
+        bar.className = 'flash-bar';
+        el.appendChild(bar);
+        requestAnimationFrame(function() {
+          requestAnimationFrame(function() { bar.style.width = '0'; });
+        });
+        setTimeout(function() {
+          el.style.transition = 'opacity 0.4s';
+          el.style.opacity = '0';
+          setTimeout(function() { el.remove(); }, 400);
+        }, 5500);
+      });
+    }
+
+    function setLoading(btn, text) {
+      btn.disabled = true;
+      btn.style.opacity = '0.7';
+      btn.innerHTML = '⏳ ' + (text || 'Working…');
+    }
+
+    function submitForm(btn, formId, loadingText) {
+      setLoading(btn, loadingText || 'Working…');
+      document.getElementById(formId).submit();
+    }
+
+    function copyToClipboard(text, btn) {
+      navigator.clipboard.writeText(text).then(function() {
+        if (btn) {
+          var orig = btn.textContent;
+          btn.textContent = 'Copied!';
+          setTimeout(function() { btn.textContent = orig; }, 2000);
+        }
+      });
+    }
+
+    document.addEventListener('DOMContentLoaded', function() {
+      initFlashMessages();
+      document.querySelectorAll('button[type="submit"]').forEach(function(btn) {
+        btn.addEventListener('click', function() {
+          if (!btn.disabled) {
+            var label = btn.textContent.trim().replace(/^[^\w\s]+\s*/, '');
+            setTimeout(function() { setLoading(btn, label + '…'); }, 0);
+          }
+        });
+      });
+    });
+
+    function toggleSidebar() {
+      var sidebar = document.getElementById('sidebar');
+      var toggle = document.getElementById('sidebarToggle');
+      if (sidebar.classList.contains('collapsed')) {
+        sidebar.classList.remove('collapsed');
+        toggle.innerHTML = '◀';
+      } else {
+        sidebar.classList.add('collapsed');
+        toggle.innerHTML = '▶';
+      }
+    }
+
+    if (window.innerWidth <= 768) {
+      document.getElementById('sidebar').classList.add('collapsed');
+    }
+  </script>
+</body>
+</html>

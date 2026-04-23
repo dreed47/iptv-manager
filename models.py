@@ -39,6 +39,8 @@ class Item(Base):
     xtream_includes = Column(String(10000), nullable=True)
     m3u_refresh_hours = Column(Integer, nullable=True, default=0)
     epg_channels = Column(String(1000), nullable=True)
+    provider_status = Column(String(50), nullable=True)
+    provider_exp_date = Column(String(50), nullable=True)
 
 def init_db():
     Base.metadata.create_all(bind=engine)
@@ -54,6 +56,14 @@ def init_db():
             conn.execute(text("ALTER TABLE items ADD COLUMN m3u_refresh_hours INTEGER DEFAULT 0"))
             conn.commit()
             logger.info("Migrated: added m3u_refresh_hours column")
+        if "provider_status" not in existing:
+            conn.execute(text("ALTER TABLE items ADD COLUMN provider_status VARCHAR(50)"))
+            conn.commit()
+            logger.info("Migrated: added provider_status column")
+        if "provider_exp_date" not in existing:
+            conn.execute(text("ALTER TABLE items ADD COLUMN provider_exp_date VARCHAR(50)"))
+            conn.commit()
+            logger.info("Migrated: added provider_exp_date column")
 
 def get_db():
     db = SessionLocal()

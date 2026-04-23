@@ -1,0 +1,117 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="page-header">
+  <h1>Xtream IPTV Proxy</h1>
+  <p>Xtream Codes API emulation for IPTV apps (TiviMate, IPTV Smarters, etc.)</p>
+</div>
+
+{% if success %}<div class="flash flash-success">✓ {{ success }}</div>{% endif %}
+{% if error %}<div class="flash flash-error">✗ {{ error }}</div>{% endif %}
+
+<!-- Extra Channels -->
+{% if item %}
+<div class="card">
+  <form method="POST" action="/xtream">
+    <input type="hidden" name="item_id" value="{{ item.id }}" />
+    <div class="card-title">Xtream Extra Channels</div>
+    <div class="form-group">
+      <label class="form-label">
+        Extra Channels
+        <span style="text-transform: none; font-weight: 400; letter-spacing: 0;">(IPTV apps only)</span>
+      </label>
+      <textarea name="new_xtream_includes" class="form-textarea"
+        placeholder="One per line&#10;*MASH*&#10;*NFL*&#10;*Pirates*&#10;24/7: CNN"
+        maxlength="10000">{{ (item.xtream_includes or '') | replace(',', '\n') }}</textarea>
+      <div class="form-help">Wildcards OK (e.g. *NFL*). Adds matching channels to TiviMate/Xtream apps only — Plex never sees these.</div>
+    </div>
+    <button type="submit" name="save_xtream_filters" value="save_xtream_filters" class="btn btn-primary">Save Extra Channels</button>
+  </form>
+</div>
+{% else %}
+<div class="card" style="text-align: center; padding: 36px;">
+  <p class="text-muted mb-12">No IPTV provider configured yet.</p>
+  <a href="/settings" class="btn btn-primary">Configure Provider</a>
+</div>
+{% endif %}
+
+<!-- Proxy Credentials -->
+<div class="card">
+  <div class="card-title">Proxy Credentials</div>
+  <p class="text-muted text-sm mb-12">These credentials are used by IPTV apps to connect to this Xtream proxy server.</p>
+  <form method="POST" action="/xtream">
+    <div class="grid-2" style="max-width: 420px;">
+      <div class="form-group">
+        <label class="form-label">Username</label>
+        <input type="text" name="iptv_username" value="{{ iptv_username }}" class="form-input" required />
+      </div>
+      <div class="form-group">
+        <label class="form-label">Password</label>
+        <input type="password" name="iptv_password" value="{{ iptv_password }}" class="form-input" required />
+      </div>
+    </div>
+    <button type="submit" name="save_credentials" value="save_credentials" class="btn btn-primary">Save Credentials</button>
+  </form>
+</div>
+
+<!-- Server Information -->
+<div class="card">
+  <div class="card-title">Server Information</div>
+  <p class="text-muted text-sm mb-12">Use these details when configuring IPTV apps. Choose "Xtream Codes" as the source type.</p>
+  <table class="table">
+    <tr>
+      <th>Server URL</th>
+      <td>
+        <div class="flex-center gap-8">
+          <span class="text-mono">{{ base_url }}</span>
+          <button onclick="copyToClipboard('{{ base_url }}', this)" class="btn btn-success btn-sm">Copy</button>
+        </div>
+      </td>
+    </tr>
+    <tr>
+      <th>Username</th>
+      <td class="text-mono">{{ iptv_username }}</td>
+    </tr>
+    <tr>
+      <th>Password</th>
+      <td class="text-mono">{{ iptv_password }}</td>
+    </tr>
+  </table>
+</div>
+
+<!-- Playlist Links -->
+{% if item %}
+<div class="card">
+  <div class="card-title">Playlist Links</div>
+  <div class="flex flex-col gap-12">
+    {% if item.has_filtered %}
+    <div>
+      <div class="form-label mb-8">Filtered Playlist</div>
+      <div class="flex-center gap-8">
+        <div class="mono-box" style="flex: 1;">{{ item.stream_url }}</div>
+        <button onclick="copyToClipboard('{{ item.stream_url }}', this)" class="btn btn-success btn-sm">Copy</button>
+      </div>
+    </div>
+    {% endif %}
+    <div>
+      <div class="form-label mb-8">Xtream Playlist</div>
+      <div class="flex-center gap-8">
+        <div class="mono-box" style="flex: 1;">{{ base_url }}/iptv/playlist.m3u</div>
+        <button onclick="copyToClipboard('{{ base_url }}/iptv/playlist.m3u', this)" class="btn btn-success btn-sm">Copy</button>
+      </div>
+    </div>
+  </div>
+</div>
+{% endif %}
+
+<!-- Setup Guides -->
+<div class="card">
+  <div class="card-title">Setup Guides</div>
+  <div class="grid-auto">
+    <a href="https://play.google.com/store/apps/details?id=ar.tvplayer.tv" target="_blank" rel="noopener" class="btn btn-outline" style="justify-content: flex-start;">📱 TiviMate</a>
+    <a href="https://play.google.com/store/apps/details?id=com.nst.iptvsmartersplayer" target="_blank" rel="noopener" class="btn btn-outline" style="justify-content: flex-start;">📱 IPTV Smarters</a>
+    <a href="https://play.google.com/store/apps/details?id=com.teamsmart.vplayer" target="_blank" rel="noopener" class="btn btn-outline" style="justify-content: flex-start;">📱 GSE Smart IPTV</a>
+    <a href="https://www.videolan.org/vlc/" target="_blank" rel="noopener" class="btn btn-outline" style="justify-content: flex-start;">🎬 VLC Player</a>
+  </div>
+</div>
+{% endblock %}

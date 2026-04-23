@@ -1,0 +1,120 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="page-header">
+  <h1>IPTV Provider</h1>
+  <p>Configure your IPTV service credentials</p>
+</div>
+
+{% if success %}<div class="flash flash-success">✓ {{ success }}</div>{% endif %}
+{% if error %}<div class="flash flash-error">✗ {{ error }}</div>{% endif %}
+
+<div class="card">
+  {% if item %}
+  <div class="card-title">{{ item.name }}</div>
+  {% else %}
+  <div class="card-title">Add Your IPTV Provider</div>
+  <p class="text-muted text-sm mb-12">Enter your Xtream Codes provider details to get started.</p>
+  {% endif %}
+
+  <form method="POST" action="/settings">
+    <div class="grid-2">
+      <div class="form-group">
+        <label class="form-label">Provider Name</label>
+        <input type="text" name="name" value="{{ item.name if item else '' }}"
+          placeholder="My IPTV Service" class="form-input" required />
+      </div>
+      <div class="form-group">
+        <label class="form-label">Server URL</label>
+        <input type="text" name="server_url" value="{{ item.server_url if item else '' }}"
+          placeholder="http://your-iptv-server:8080" class="form-input" required />
+      </div>
+    </div>
+
+    <div class="form-group">
+      <button type="button" onclick="toggleCredentials()" id="credBtn" class="btn btn-outline btn-sm">
+        🔐 {% if item %}Edit{% else %}Enter{% endif %} Credentials
+      </button>
+      <div id="credPanel" style="display: {% if not item %}block{% else %}none{% endif %}; margin-top: 12px; padding: 14px; background: var(--bg); border: 1px solid var(--border); border-radius: 6px;">
+        <div class="grid-2">
+          <div class="form-group" style="margin-bottom: 0;">
+            <label class="form-label">Username</label>
+            <input type="text" name="username" value="{{ item.username if item else '' }}"
+              class="form-input" {% if not item %}required{% endif %} />
+          </div>
+          <div class="form-group" style="margin-bottom: 0;">
+            <label class="form-label">Password</label>
+            <input type="password" name="user_pass" value="{{ item.user_pass if item else '' }}"
+              class="form-input" {% if not item %}required{% endif %} />
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="flex flex-center flex-wrap gap-12">
+      <button type="submit" class="btn btn-primary">
+        💾 {% if item %}Save Changes{% else %}Add Provider{% endif %}
+      </button>
+      {% if item %}
+      <button type="button" id="testBtn" onclick="testConnection()" class="btn btn-success">
+        🔌 Test Connection
+      </button>
+      <span id="testResult" class="text-sm"></span>
+      {% endif %}
+    </div>
+  </form>
+</div>
+
+{% if item %}
+<div class="card">
+  <div class="card-title">Provider Status</div>
+  <div class="flex flex-wrap gap-16">
+    <span class="status-item">
+      <span class="status-dot {{ 'dot-on' if item.has_m3u else 'dot-off' }}"></span>Full M3U
+    </span>
+    <span class="status-item">
+      <span class="status-dot {{ 'dot-on' if item.has_filtered else 'dot-off' }}"></span>Filtered Playlist
+    </span>
+    <span class="status-item">
+      <span class="status-dot {{ 'dot-on' if item.has_epg else 'dot-off' }}"></span>EPG
+    </span>
+  </div>
+</div>
+{% endif %}
+
+<script>
+  function testConnection() {
+    var btn = document.getElementById('testBtn');
+    var result = document.getElementById('testResult');
+    btn.disabled = true;
+    btn.textContent = 'Testing…';
+    result.textContent = '';
+    fetch('/settings/test_connection')
+      .then(function(r) { return r.json(); })
+      .then(function(data) {
+        result.textContent = (data.ok ? '✓ ' : '✗ ') + (data.message || data.error);
+        result.style.color = data.ok ? 'var(--success)' : 'var(--danger)';
+      })
+      .catch(function() {
+        result.textContent = '✗ Request failed';
+        result.style.color = 'var(--danger)';
+      })
+      .finally(function() {
+        btn.disabled = false;
+        btn.textContent = '🔌 Test Connection';
+      });
+  }
+
+  function toggleCredentials() {
+    var panel = document.getElementById('credPanel');
+    var btn = document.getElementById('credBtn');
+    if (panel.style.display === 'none') {
+      panel.style.display = 'block';
+      btn.textContent = '🔐 Hide Credentials';
+    } else {
+      panel.style.display = 'none';
+      btn.textContent = '🔐 Edit Credentials';
+    }
+  }
+</script>
+{% endblock %}

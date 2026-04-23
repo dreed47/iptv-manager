@@ -1,5 +1,5 @@
-# services.py
 import logging
+import os
 from sqlalchemy.orm import Session
 from models import Item
 
@@ -21,21 +21,31 @@ def create_item(db: Session, name: str, server_url: str, username: str, user_pas
         db.rollback()
         return None
 
-def update_item(db: Session, item_id: int, name: str, server_url: str, username: str, user_pass: str, languages: str, includes: str, excludes: str, xtream_includes: str = None):
+def update_item(db: Session, item_id: int, name: str, server_url: str, username: str, user_pass: str, languages: str, includes: str, excludes: str, xtream_includes: str = None, m3u_refresh_hours: int = None):
     try:
         db_item = db.query(Item).filter(Item.id == item_id).first()
         if db_item:
-            db_item.name = name
-            db_item.server_url = server_url
-            db_item.username = username
-            db_item.user_pass = user_pass
-            db_item.languages = languages
-            db_item.includes = includes
-            db_item.excludes = excludes
-            db_item.xtream_includes = xtream_includes
+            if name is not None:
+                db_item.name = name
+            if server_url is not None:
+                db_item.server_url = server_url
+            if username is not None:
+                db_item.username = username
+            if user_pass is not None:
+                db_item.user_pass = user_pass
+            if languages is not None:
+                db_item.languages = languages
+            if includes is not None:
+                db_item.includes = includes
+            if excludes is not None:
+                db_item.excludes = excludes
+            if xtream_includes is not None:
+                db_item.xtream_includes = xtream_includes
+            if m3u_refresh_hours is not None:
+                db_item.m3u_refresh_hours = m3u_refresh_hours
             db.commit()
             db.refresh(db_item)
-            logger.info(f"Updated item with id {item_id} to name '{name}'")
+            logger.info(f"Updated item with id {item_id}")
             return db_item
         logger.warning(f"Item with id {item_id} not found for update")
         return None
@@ -44,21 +54,6 @@ def update_item(db: Session, item_id: int, name: str, server_url: str, username:
         db.rollback()
         return None
     
-def delete_item(db: Session, item_id: int):
-    try:
-        db_item = db.query(Item).filter(Item.id == item_id).first()
-        if db_item:
-            db.delete(db_item)
-            db.commit()
-            logger.info(f"Deleted item with id {item_id}")
-            return True
-        logger.warning(f"Item with id {item_id} not found for deletion")
-        return False
-    except Exception as e:
-        logger.error(f"Failed to delete item: {str(e)}")
-        db.rollback()
-        return False
-
 def get_all_items(db: Session):
     try:
         items = db.query(Item).all()
@@ -67,3 +62,46 @@ def get_all_items(db: Session):
     except Exception as e:
         logger.error(f"Failed to retrieve items: {str(e)}")
         return []
+
+
+def get_item_context(db: Session, base_url: str, m3u_dir: str) -> dict | None:
+    """Build the single-provider context dict with file-existence flags. Returns None if not configured."""
+    item = db.query(Item).first()
+    if not item:
+        return None
+    try:
+        existing_files = set(os.listdir(m3u_dir))
+    except Exception as e:
+        logger.error(f"Error listing m3u_files directory: {e}")
+        existing_files = set()
+
+    refresh_h = item.m3u_refresh_hours
+    item_dict = {
+        'id': item.id,
+        'name': item.name,
+        'server_url': item.server_url,
+        'username': item.username,
+        'user_pass': item.user_pass,
+        'languages': item.languages,
+        'includes': item.includes,
+        'excludes': item.excludes,
+        'xtream_includes': item.xtream_includes,
+        'epg_channels': item.epg_channels,
+        'm3u_refresh_hours': (
+            int(refresh_h) if isinstance(refresh_h, (int, str))
+            and str(refresh_h).isdigit() else 0
+        ),
+        'has_m3u': f"xtream_playlist_{item.id}.m3u" in existing_files,
+        'has_filtered': f"filtered_playlist_{item.id}.m3u" in existing_files,
+        'has_epg': "generated_epg.xml" in existing_files,
+        'stream_url': f"{base_url}/stream_filtered_m3u/{item.id}",
+        'epg_url': f"{base_url}/epg.xml",
+        'provider_status': item.provider_status,
+        'provider_exp_date': item.provider_exp_date,
+    }
+    m3u_path = os.path.join(m3u_dir, f"xtream_playlist_{item.id}.m3u")
+    try:
+        item_dict['m3u_last_fetched_ts'] = int(os.path.getmtime(m3u_path))
+    except FileNotFoundError:
+        item_dict['m3u_last_fetched_ts'] = None
+    return item_dict
