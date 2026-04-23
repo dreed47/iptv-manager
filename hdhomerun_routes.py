@@ -23,8 +23,9 @@ templates = Jinja2Templates(directory="templates")
 # Create emulator instance but don't start it yet
 hdhomerun_emulator = HDHomeRunEmulator()
 
-# Module-level cache: guide_number -> real source URL (populated by load_channel_lineup)
+# Module-level caches: guide_number -> source URL / display name (populated by load_channel_lineup)
 _channel_source_urls: dict = {}
+_channel_names: dict = {}
 _channel_source_urls_lock = threading.Lock()
 
 # Active proxy streams — keyed by session UUID, value is session info dict
@@ -219,11 +220,13 @@ def load_channel_lineup(db: Session = Depends(get_db)) -> list:
     # Produce final channel list from dedup map
     channels = list(channels_by_name.values())
 
-    # Update module-level source URL cache before stripping internal fields
+    # Update module-level caches before stripping internal fields
     new_urls = {ch["GuideNumber"]: ch["_SourceURL"] for ch in channels if "_SourceURL" in ch}
-    global _channel_source_urls
+    new_names = {ch["GuideNumber"]: ch.get("GuideName", ch["GuideNumber"]) for ch in channels}
+    global _channel_source_urls, _channel_names
     with _channel_source_urls_lock:
         _channel_source_urls = new_urls
+        _channel_names = new_names
 
     # Remove internal flags
     for ch in channels:
@@ -279,10 +282,13 @@ async def stream_channel(channel_number: str, request: Request, db: Session = De
         prebuf_size = 0
         prebuffering = prebuffer_bytes > 0
         session = requests.Session()
+        with _channel_source_urls_lock:
+            channel_name = _channel_names.get(channel_number, channel_number)
         with _active_streams_lock:
             _active_streams[session_id] = {
                 "session_id": session_id,
                 "channel": channel_number,
+                "channel_name": channel_name,
                 "client_ip": client_ip,
                 "user_agent": user_agent,
                 "started_at": time.time(),

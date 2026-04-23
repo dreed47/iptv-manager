@@ -138,8 +138,11 @@ async def api_active_streams():
         mins, secs = divmod(rem, 60)
         duration = f"{hours}h {mins}m" if hours else f"{mins}m {secs}s"
         mb = s.get("bytes_sent", 0) / (1024 * 1024)
+        channel_num = s.get("channel", "?")
+        channel_name = s.get("channel_name", "")
+        channel_display = f"{channel_num} — {channel_name}" if channel_name and channel_name != channel_num else channel_num
         out.append({
-            "channel": s.get("channel", "?"),
+            "channel": channel_display,
             "client_ip": s.get("client_ip", "?"),
             "duration": duration,
             "mb_sent": round(mb, 1),
