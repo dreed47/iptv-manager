@@ -5,8 +5,10 @@ Starts/stops openvpn as a daemon, polls for tun interface, reports status.
 All files written to /tmp/vpn/ which is ephemeral and re-created on each start.
 """
 
+import ipaddress
 import logging
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -73,6 +75,32 @@ def _tail_log(n: int = 6) -> str:
         return ""
 
 
+def _get_default_gw() -> tuple[str | None, str | None]:
+    """Return (gateway_ip, interface) for the current default route."""
+    try:
+        out = subprocess.check_output(["ip", "route", "show", "default"], text=True)
+        m = re.search(r"default via (\S+) dev (\S+)", out)
+        if m:
+            return m.group(1), m.group(2)
+    except Exception:
+        pass
+    return None, None
+
+
+def _get_iface_network(iface: str) -> str | None:
+    """Return the subnet CIDR assigned to iface (e.g. '172.29.0.0/16')."""
+    try:
+        out = subprocess.check_output(
+            ["ip", "-o", "-f", "inet", "addr", "show", iface], text=True
+        )
+        m = re.search(r"inet (\S+)", out)
+        if m:
+            return str(ipaddress.ip_interface(m.group(1)).network)
+    except Exception:
+        pass
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
@@ -132,6 +160,11 @@ def start_vpn(config_str: str, username: str, password: str) -> tuple[bool, str]
                 "then recreate the container (docker compose down && docker compose up -d)."
             )
 
+        # Capture Docker routing state before OpenVPN overwrites the default route
+        gw_ip, gw_iface = _get_default_gw()
+        docker_net = _get_iface_network(gw_iface) if gw_iface else None
+        logger.info(f"VPN: pre-VPN gateway={gw_ip} iface={gw_iface} docker_net={docker_net}")
+
         os.makedirs(_VPN_DIR, exist_ok=True)
 
         # Strip directives we'll inject via CLI args
@@ -187,6 +220,18 @@ def start_vpn(config_str: str, username: str, password: str) -> tuple[bool, str]
             if _tun_is_up():
                 pid = _read_pid()
                 logger.info(f"VPN connected — tun up, pid={pid}")
+                # Restore the Docker network route — OpenVPN's catch-all routes
+                # (0.0.0.0/1 and 128.0.0.0/1 via tun0) would otherwise intercept
+                # responses back to the Docker gateway, making the web UI unreachable.
+                if gw_ip and gw_iface and docker_net:
+                    try:
+                        subprocess.run(
+                            ["ip", "route", "replace", docker_net, "via", gw_ip, "dev", gw_iface],
+                            check=True, capture_output=True,
+                        )
+                        logger.info(f"VPN: restored Docker route {docker_net} via {gw_ip} dev {gw_iface}")
+                    except Exception as re_err:
+                        logger.warning(f"VPN: could not restore Docker route: {re_err}")
                 return True, "Connected"
             if i == 5:
                 logger.info(f"VPN: still waiting for tun… log: {_tail_log(3)}")
