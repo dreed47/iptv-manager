@@ -2,6 +2,9 @@
 
 A web-based tool for managing, filtering, and serving IPTV playlists and EPG data, with HDHomeRun emulation for seamless Plex, Jellyfin, and Emby Live TV integration.
 
+![Dashboard Preview](/media/screenshot1.png)
+
+
 ## Features
 
 - **Web UI** — Add, edit, and manage your IPTV configuration from a browser. Stat cards on the dashboard link directly to their settings pages.

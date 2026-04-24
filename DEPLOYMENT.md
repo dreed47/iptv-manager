@@ -224,6 +224,24 @@ After loading the module, `/dev/net/tun` will exist on the host and the containe
 docker compose down && docker compose up -d
 ```
 
+#### Proxmox VE / LXC
+
+Proxmox kernels have TUN built in — `modprobe tun` will fail with "Module not found". Instead, pass the device through the LXC container config:
+
+1. In the **Proxmox web UI**, select the LXC container → **Resources** → **Add** → **Device Passthrough** → enter `/dev/net/tun`.
+2. Restart the LXC container.
+3. Inside the LXC, recreate the Docker container: `docker compose down && docker compose up -d`
+
+Alternatively, on the Proxmox host add the device node manually and make it persistent:
+
+```sh
+# Create the device node (survives until next reboot)
+mkdir -p /dev/net && mknod /dev/net/tun c 10 200 && chmod 0666 /dev/net/tun
+
+# Make it persistent across reboots via systemd-tmpfiles
+echo 'c /dev/net/tun 0666 root root - 10:200' > /etc/tmpfiles.d/tun.conf
+```
+
 ### Setup
 
 1. Navigate to **IPTV Provider** (Settings) in the web UI.
@@ -398,9 +416,10 @@ curl http://localhost:5005/discover.json
 
 ### VPN won't connect
 
-- **Container fails to start with "no such file or directory"** — The `tun` kernel module is not loaded on the host. Run `modprobe tun && echo 'tun' >> /etc/modules` on the Docker host, then recreate the container (`docker compose down && docker compose up -d`).
-- **Container starts but VPN gets "Operation not permitted" on /dev/net/tun** — Same root cause: tun module not loaded. Run `modprobe tun` on the host and recreate the container.
-- Confirm the container has the required capabilities. Run `docker inspect <container-name> | grep -A5 CapAdd` — you should see `NET_ADMIN`. If not, verify `cap_add` and `devices` are present in `docker-compose.yml` and recreate the container.
+- **Container fails to start with "no such file or directory"** — `/dev/net/tun` does not exist on the host. Run `modprobe tun && echo 'tun' >> /etc/modules` on the Docker host, then recreate the container (`docker compose down && docker compose up -d`). On Proxmox, see the [Proxmox VE / LXC](#proxmox-ve--lxc) section above.
+- **Container starts but VPN gets "Operation not permitted" on /dev/net/tun** — The TUN device is present but the container lacks permission. Verify `cap_add: [NET_ADMIN]` and `devices: [/dev/net/tun:/dev/net/tun]` are in `docker-compose.yml` and **recreate** (not just restart) the container. On Proxmox LXC, also confirm the device passthrough is configured in the CT resources.
+- **`modprobe tun` fails with "Module not found"** — You are on a Proxmox VE host; its kernel has TUN built in. Use the LXC device passthrough approach instead — see [Proxmox VE / LXC](#proxmox-ve--lxc) above.
+- Confirm the container has the required capabilities: `docker inspect <container-name> | grep -A5 CapAdd` — you should see `NET_ADMIN`.
 - Check OpenVPN logs from the web UI (Tools → Logs) or via `docker compose logs app | grep -i vpn`.
 - Confirm you are using **service credentials**, not your VPN account login. Most providers generate a separate username/password for manual OpenVPN connections.
 - The `.ovpn` config must be a valid OpenVPN config file. Test it with a desktop OpenVPN client first if you are unsure.
