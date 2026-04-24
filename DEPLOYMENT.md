@@ -205,9 +205,11 @@ The provided `docker-compose.yml` already includes everything needed:
 ```yaml
 cap_add:
   - NET_ADMIN
-devices:
-  - /dev/net/tun:/dev/net/tun
+device_cgroup_rules:
+  - 'c 10:200 rwm'
 ```
+
+`NET_ADMIN` lets the container manage network interfaces. The `device_cgroup_rules` entry grants permission to access (and create) the `/dev/net/tun` character device without requiring it to exist on the host beforehand — the container creates the node itself the first time you enable the VPN. This avoids the Docker startup error `no such file or directory` that occurs on hosts where `/dev/net/tun` is not pre-created.
 
 If you modified your compose file and removed these, add them back and **recreate** (not just restart) the container:
 

@@ -31,8 +31,12 @@ services:
       # - "1900:1900/udp"
     cap_add:
       - NET_ADMIN
-    devices:
-      - /dev/net/tun:/dev/net/tun
+    # Grant access to the tun character device (major 10, minor 200) without
+    # requiring /dev/net/tun to exist on the host.  The container creates the
+    # node itself at VPN start time.  If your host already has /dev/net/tun you
+    # can replace these two lines with:  devices: [/dev/net/tun:/dev/net/tun]
+    device_cgroup_rules:
+      - 'c 10:200 rwm'
     volumes:
       - ./m3u_files:/app/m3u_files
       - ./data:/app/data

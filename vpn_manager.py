@@ -126,11 +126,23 @@ def start_vpn(config_str: str, username: str, password: str) -> tuple[bool, str]
             )
 
         if not os.path.exists("/dev/net/tun"):
-            return False, (
-                "/dev/net/tun not available — add 'cap_add: [NET_ADMIN]' and "
-                "'devices: [/dev/net/tun:/dev/net/tun]' to docker-compose.yml, "
-                "then recreate the container"
-            )
+            # Create the tun device node — works when device_cgroup_rules grants
+            # 'c 10:200 rwm' and the container has NET_ADMIN.
+            try:
+                os.makedirs("/dev/net", exist_ok=True)
+                subprocess.run(
+                    ["mknod", "/dev/net/tun", "c", "10", "200"],
+                    check=True, capture_output=True,
+                )
+                os.chmod("/dev/net/tun", 0o666)
+                logger.info("VPN: created /dev/net/tun device node")
+            except Exception as e:
+                return False, (
+                    f"Cannot create /dev/net/tun: {e}. "
+                    "Ensure 'cap_add: [NET_ADMIN]' and "
+                    "'device_cgroup_rules: [c 10:200 rwm]' are set in docker-compose.yml "
+                    "and recreate the container."
+                )
 
         os.makedirs(_VPN_DIR, exist_ok=True)
 
