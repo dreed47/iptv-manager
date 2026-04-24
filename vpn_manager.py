@@ -196,6 +196,7 @@ def start_vpn(config_str: str, username: str, password: str) -> tuple[bool, str]
             "--writepid", _PID_PATH,
             "--log", _LOG_PATH,
             "--script-security", "2",
+            "--route-nopull",
             "--daemon",
         ]
         logger.info(f"VPN: launching {' '.join(cmd[:3])} …")
@@ -220,26 +221,33 @@ def start_vpn(config_str: str, username: str, password: str) -> tuple[bool, str]
             if _tun_is_up():
                 pid = _read_pid()
                 logger.info(f"VPN connected — tun up, pid={pid}")
-                # OpenVPN pushes two catch-all routes (0.0.0.0/1 and 128.0.0.0/1 via tun0)
-                # that cover all IPv4 space.  Without intervention, TCP responses to LAN
-                # clients (e.g. the browser at 192.168.x.x) are sent into the tunnel and
-                # never reach the browser — the TCP handshake never completes and the web
-                # UI appears unreachable.
-                #
-                # Fix: add more-specific routes for all RFC 1918 private ranges via eth0.
-                # The kernel prefers the more-specific /8, /12, /16 over VPN's /1 catch-alls,
-                # so LAN/Docker traffic stays on eth0 while internet traffic goes via tun0.
+                # --route-nopull prevents OpenVPN from touching the routing table at all.
+                # Manually build a full split tunnel:
+                #   public traffic (0/1 + 128/1) → tun0 (through VPN)
+                #   RFC 1918 private ranges      → original gateway (LAN/Docker stays reachable)
                 if gw_ip and gw_iface:
-                    private_nets = ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"]
-                    for net in private_nets:
+                    tun_iface = next(
+                        (n for n in os.listdir("/sys/class/net") if n.startswith("tun")), None
+                    )
+                    if tun_iface:
+                        for prefix in ["0.0.0.0/1", "128.0.0.0/1"]:
+                            try:
+                                subprocess.run(
+                                    ["ip", "route", "replace", prefix, "dev", tun_iface],
+                                    check=True, capture_output=True,
+                                )
+                                logger.info(f"VPN: routed public {prefix} via {tun_iface}")
+                            except Exception as e:
+                                logger.warning(f"VPN: could not add route {prefix}: {e}")
+                    for net in ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"]:
                         try:
                             subprocess.run(
                                 ["ip", "route", "replace", net, "via", gw_ip, "dev", gw_iface],
                                 check=True, capture_output=True,
                             )
                             logger.info(f"VPN: preserved LAN route {net} via {gw_ip} dev {gw_iface}")
-                        except Exception as re_err:
-                            logger.warning(f"VPN: could not add route for {net}: {re_err}")
+                        except Exception as e:
+                            logger.warning(f"VPN: could not add route for {net}: {e}")
                 return True, "Connected"
             if i == 5:
                 logger.info(f"VPN: still waiting for tun… log: {_tail_log(3)}")
@@ -275,6 +283,10 @@ def stop_vpn() -> tuple[bool, str]:
             time.sleep(1)
             if not _tun_is_up():
                 break
+
+        # Remove split-tunnel /1 routes we added on connect
+        for prefix in ["0.0.0.0/1", "128.0.0.0/1"]:
+            subprocess.run(["ip", "route", "del", prefix], capture_output=True)
 
         try:
             os.unlink(_PID_PATH)
