@@ -220,18 +220,26 @@ def start_vpn(config_str: str, username: str, password: str) -> tuple[bool, str]
             if _tun_is_up():
                 pid = _read_pid()
                 logger.info(f"VPN connected — tun up, pid={pid}")
-                # Restore the Docker network route — OpenVPN's catch-all routes
-                # (0.0.0.0/1 and 128.0.0.0/1 via tun0) would otherwise intercept
-                # responses back to the Docker gateway, making the web UI unreachable.
-                if gw_ip and gw_iface and docker_net:
-                    try:
-                        subprocess.run(
-                            ["ip", "route", "replace", docker_net, "via", gw_ip, "dev", gw_iface],
-                            check=True, capture_output=True,
-                        )
-                        logger.info(f"VPN: restored Docker route {docker_net} via {gw_ip} dev {gw_iface}")
-                    except Exception as re_err:
-                        logger.warning(f"VPN: could not restore Docker route: {re_err}")
+                # OpenVPN pushes two catch-all routes (0.0.0.0/1 and 128.0.0.0/1 via tun0)
+                # that cover all IPv4 space.  Without intervention, TCP responses to LAN
+                # clients (e.g. the browser at 192.168.x.x) are sent into the tunnel and
+                # never reach the browser — the TCP handshake never completes and the web
+                # UI appears unreachable.
+                #
+                # Fix: add more-specific routes for all RFC 1918 private ranges via eth0.
+                # The kernel prefers the more-specific /8, /12, /16 over VPN's /1 catch-alls,
+                # so LAN/Docker traffic stays on eth0 while internet traffic goes via tun0.
+                if gw_ip and gw_iface:
+                    private_nets = ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"]
+                    for net in private_nets:
+                        try:
+                            subprocess.run(
+                                ["ip", "route", "replace", net, "via", gw_ip, "dev", gw_iface],
+                                check=True, capture_output=True,
+                            )
+                            logger.info(f"VPN: preserved LAN route {net} via {gw_ip} dev {gw_iface}")
+                        except Exception as re_err:
+                            logger.warning(f"VPN: could not add route for {net}: {re_err}")
                 return True, "Connected"
             if i == 5:
                 logger.info(f"VPN: still waiting for tun… log: {_tail_log(3)}")
