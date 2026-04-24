@@ -4,7 +4,8 @@ A web-based tool for managing, filtering, and serving IPTV playlists and EPG dat
 
 ## Features
 
-- **Web UI** — Add, edit, and manage your IPTV configuration from a browser.
+- **Web UI** — Add, edit, and manage your IPTV configuration from a browser. Stat cards on the dashboard link directly to their settings pages.
+- **Dark Mode** — Toggle between light and dark themes from the sidebar; preference persists across sessions.
 - **M3U Playlist Fetching** — Download playlists from Xtream Codes or direct M3U URLs.
 - **Advanced Filtering** — Filter channels by language, keywords, channel numbers, and wildcards.
 - **Full M3U Browser** — Browse and preview every channel in the raw (unfiltered) playlist before committing to a filter. Includes provider/category filtering, copy-to-clipboard, and an in-browser stream player for each channel.
@@ -13,11 +14,13 @@ A web-based tool for managing, filtering, and serving IPTV playlists and EPG dat
 - **Channel Number Preservation** — `tvg-chno` values from your provider are passed through to the HDHomeRun lineup and EPG so Plex shows the correct channel numbers.
 - **HDHomeRun Emulation** — Appears as an HDHomeRun tuner on your network; Plex, Jellyfin, and Emby discover it automatically or via manual IP entry.
 - **Generic IPTV App Proxy (Xtream Codes)** — Acts as a full Xtream Codes API server so TiviMate, IPTV Smarters, VLC, and other IPTV apps can connect directly. Serves live channels, VOD, and series through a single proxy. Set `IPTV_USERNAME` / `IPTV_PASSWORD` in `.env` and point your app at `http://<host>:<port>`.
+- **OpenVPN Support** — Route all outbound container traffic (to your IPTV provider) through an OpenVPN tunnel. Paste any `.ovpn` config file into the UI, save credentials, and enable with one click. The dashboard and Active Streams panel both show live VPN connection status. See [DEPLOYMENT.md](DEPLOYMENT.md#openvpn) for full setup.
 - **In-Browser Channel Player** — `/channels` lists your filtered lineup with a built-in video player; click any row to watch in the browser via mpegts.js, or open in VLC/IINA.
-- **Stream Tester** — Test credentials and channel IDs directly from the browser before committing them to your config.
+- **Stream Tester** — Test credentials and channel IDs directly from the browser before committing them to your config. Detects Cloudflare-blocked responses (common with VPN exit IPs) and explains the cause.
 - **Health Check Endpoint** — `GET /api/health` returns stream reachability as JSON; integrates with Uptime Kuma (JSON Query monitor) and Home Assistant (REST sensor). Skips the test automatically when a live stream is active to avoid interruptions.
+- **Resilient Stream Proxy** — Automatically reconnects on upstream drops. Detects token-expiry errors (407) and session-rejection errors (458) and refreshes the channel lineup immediately for a fresh URL before retrying.
 - **Scheduled M3U Refresh** — Set a refresh interval (in hours) per config so playlists stay current without manual re-fetching.
-- **Docker** — Single `docker-compose.yml` works on macOS and Linux with no changes.
+- **Docker** — Single `docker-compose.yml` works on macOS and Linux with no changes. VPN support requires `NET_ADMIN` capability and `/dev/net/tun` (already included in the provided compose file).
 
 ## Quick Start
 
@@ -31,13 +34,13 @@ docker compose up -d
 
 Open the web UI at `http://localhost:5005` (or `http://<your-ip>:5005`).
 
-See [DEPLOYMENT.md](DEPLOYMENT.md) for full setup, media server integration, EPG options, and configuration details.
+See [DEPLOYMENT.md](DEPLOYMENT.md) for full setup, media server integration, EPG options, OpenVPN, and configuration details.
 
 ## How It Works
 
 1. **Add a config** — Enter your IPTV provider credentials (Xtream Codes or M3U URL) in the web UI.
 2. **Fetch playlist** — Click **Fetch M3U** to download the full channel list from your provider.
-3. **Browse (optional)** — Use **Browse All Channels** to explore the raw playlist and try playing streams before filtering.
+3. **Browse (optional)** — Use **Browse Full M3U** to explore the raw playlist and try playing streams before filtering.
 4. **Filter** — Build your curated lineup using the **Includes** list. Add channel names (one per line) to select exactly which channels appear in your lineup. Click **Save Changes** to apply.
 5. **View filtered lineup** — Click **Filtered Channel Viewer** to confirm the result.
 6. **Connect your media server** — Point Plex/Jellyfin/Emby DVR at `http://<your-ip>:5005`; it discovers the device as an HDHomeRun tuner.
@@ -87,21 +90,26 @@ Channel numbers flow through the entire stack so what you see in your IPTV app m
 
 | File/Dir | Purpose |
 |---|---|
-| `main.py` | FastAPI app entry point and HTTP request logging middleware |
-| `routes.py` | Web UI, M3U fetch/filter, health check API routes |
-| `hdhomerun_routes.py` | HDHomeRun emulation, stream proxy, channel browser |
+| `main.py` | FastAPI app entry point, logging, startup tasks (VPN auto-start, cache warm) |
+| `routes.py` | Web UI, M3U fetch/filter, VPN enable/disable/status endpoints |
+| `hdhomerun_routes.py` | HDHomeRun emulation, resilient stream proxy, channel browser |
 | `xtream_server_routes.py` | Xtream Codes API proxy for TiviMate, IPTV Smarters, VLC, etc. |
+| `health_routes.py` | Stream tester UI and `/api/health` endpoint |
+| `vpn_manager.py` | OpenVPN subprocess lifecycle (start, stop, status, IP check) |
 | `models.py` | SQLite database models |
 | `services.py` | Business logic / CRUD |
 | `epg_manager.py` | EPG fetching, name-matching, and XMLTV generation |
-| `templates/index.html` | Main web UI |
+| `config.py` | Centralised environment variable parsing and validation |
+| `templates/dashboard.html` | Dashboard with stat cards, active streams, quick actions |
+| `templates/settings.html` | IPTV provider settings and OpenVPN configuration |
+| `templates/base.html` | Shared layout, sidebar nav, dark mode toggle |
 | `templates/channels.html` | Filtered channel browser (click to play in browser) |
 | `templates/m3u_browser.html` | Full raw M3U browser UI |
 | `templates/player.html` | In-browser mpegts.js stream player |
 | `templates/stream_test.html` | Stream connection tester and health check config |
 | `m3u_files/` | Downloaded playlists, filtered playlists, and cached EPG |
 | `data/` | SQLite database |
-| `docker-compose.yml` | Container definition |
+| `docker-compose.yml` | Container definition (includes NET_ADMIN and /dev/net/tun for VPN) |
 | `restart_container.sh` | Rebuild and restart via docker compose |
 | `update.sh` | Git pull + rebuild + restart |
 

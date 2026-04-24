@@ -1,6 +1,6 @@
 import os
 import logging
-from sqlalchemy import create_engine, Column, Integer, String, Boolean
+from sqlalchemy import create_engine, Column, Integer, String, Boolean, Text
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 
@@ -41,6 +41,10 @@ class Item(Base):
     epg_channels = Column(String(1000), nullable=True)
     provider_status = Column(String(50), nullable=True)
     provider_exp_date = Column(String(50), nullable=True)
+    vpn_enabled   = Column(Boolean, nullable=True, default=False)
+    vpn_config    = Column(Text, nullable=True)
+    vpn_username  = Column(String(500), nullable=True)
+    vpn_password  = Column(String(500), nullable=True)
 
 def init_db():
     Base.metadata.create_all(bind=engine)
@@ -64,6 +68,22 @@ def init_db():
             conn.execute(text("ALTER TABLE items ADD COLUMN provider_exp_date VARCHAR(50)"))
             conn.commit()
             logger.info("Migrated: added provider_exp_date column")
+        if "vpn_enabled" not in existing:
+            conn.execute(text("ALTER TABLE items ADD COLUMN vpn_enabled BOOLEAN DEFAULT 0"))
+            conn.commit()
+            logger.info("Migrated: added vpn_enabled column")
+        if "vpn_config" not in existing:
+            conn.execute(text("ALTER TABLE items ADD COLUMN vpn_config TEXT"))
+            conn.commit()
+            logger.info("Migrated: added vpn_config column")
+        if "vpn_username" not in existing:
+            conn.execute(text("ALTER TABLE items ADD COLUMN vpn_username VARCHAR(500)"))
+            conn.commit()
+            logger.info("Migrated: added vpn_username column")
+        if "vpn_password" not in existing:
+            conn.execute(text("ALTER TABLE items ADD COLUMN vpn_password VARCHAR(500)"))
+            conn.commit()
+            logger.info("Migrated: added vpn_password column")
 
 def get_db():
     db = SessionLocal()

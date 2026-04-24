@@ -98,6 +98,10 @@ def get_item_context(db: Session, base_url: str, m3u_dir: str) -> dict | None:
         'epg_url': f"{base_url}/epg.xml",
         'provider_status': item.provider_status,
         'provider_exp_date': item.provider_exp_date,
+        'vpn_enabled': bool(item.vpn_enabled),
+        'vpn_config': item.vpn_config or '',
+        'vpn_username': item.vpn_username or '',
+        'vpn_configured': bool(item.vpn_config and item.vpn_username and item.vpn_password),
     }
     m3u_path = os.path.join(m3u_dir, f"xtream_playlist_{item.id}.m3u")
     try:

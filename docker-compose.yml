@@ -29,6 +29,10 @@ services:
       # Port 1900 not exposed - SSDP can be enabled via web UI if needed
       # Uncomment only if you want auto-discovery AND you're on Linux
       # - "1900:1900/udp"
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
     volumes:
       - ./m3u_files:/app/m3u_files
       - ./data:/app/data

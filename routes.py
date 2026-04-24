@@ -605,6 +605,95 @@ async def handle_xtream_form(
     return RedirectResponse(url="/xtream", status_code=303)
 
 
+# ---------------------------------------------------------------------------
+# VPN endpoints
+# ---------------------------------------------------------------------------
+
+@router.post("/vpn/settings", response_class=RedirectResponse)
+async def save_vpn_settings(
+    vpn_config: str = Form(""),
+    vpn_username: str = Form(""),
+    vpn_password: str = Form(""),
+    db: Session = Depends(get_db),
+):
+    item = db.query(Item).first()
+    if not item:
+        return RedirectResponse(url="/settings?error=No provider configured", status_code=303)
+    if vpn_config.strip():
+        item.vpn_config = vpn_config.strip()
+    if vpn_username.strip():
+        item.vpn_username = vpn_username.strip()
+    if vpn_password.strip():
+        item.vpn_password = vpn_password.strip()
+    db.commit()
+    return RedirectResponse(url="/settings?success=VPN settings saved", status_code=303)
+
+
+@router.post("/vpn/enable", response_class=RedirectResponse)
+async def vpn_enable(request: Request, db: Session = Depends(get_db)):
+    import vpn_manager
+    import asyncio
+    next_url = (await request.form()).get("next", "/settings")
+    item = db.query(Item).first()
+    if not item:
+        return RedirectResponse(url="/settings?error=No provider configured", status_code=303)
+    if not (item.vpn_config and item.vpn_username and item.vpn_password):
+        return RedirectResponse(
+            url=f"{next_url}?error=VPN settings incomplete — save .ovpn config and credentials first",
+            status_code=303,
+        )
+    ok, msg = await asyncio.to_thread(
+        vpn_manager.start_vpn, item.vpn_config, item.vpn_username, item.vpn_password
+    )
+    if ok:
+        item.vpn_enabled = True
+        db.commit()
+        return RedirectResponse(url=f"{next_url}?success=VPN connected", status_code=303)
+    return RedirectResponse(
+        url=f"{next_url}?error={urllib.parse.quote('VPN failed: ' + msg)}", status_code=303
+    )
+
+
+@router.post("/vpn/disable", response_class=RedirectResponse)
+async def vpn_disable(request: Request, db: Session = Depends(get_db)):
+    import vpn_manager
+    import asyncio
+    next_url = (await request.form()).get("next", "/settings")
+    ok, msg = await asyncio.to_thread(vpn_manager.stop_vpn)
+    item = db.query(Item).first()
+    if item:
+        item.vpn_enabled = False
+        db.commit()
+    if ok:
+        return RedirectResponse(url=f"{next_url}?success=VPN disconnected", status_code=303)
+    return RedirectResponse(
+        url=f"{next_url}?error={urllib.parse.quote('VPN stop failed: ' + msg)}", status_code=303
+    )
+
+
+@router.get("/vpn/status", response_class=JSONResponse)
+async def vpn_status():
+    import vpn_manager
+    import asyncio
+    return JSONResponse(await asyncio.to_thread(vpn_manager.get_vpn_status))
+
+
+@router.get("/settings/test_vpn", response_class=JSONResponse)
+async def test_vpn():
+    import vpn_manager
+    import asyncio
+    status, ip = await asyncio.gather(
+        asyncio.to_thread(vpn_manager.get_vpn_status),
+        asyncio.to_thread(vpn_manager.get_external_ip),
+    )
+    return JSONResponse({
+        "ip": ip,
+        "vpn_running": status["running"],
+        "interface": status.get("interface"),
+        "error": None if ip else "Could not reach IP check service (api.ipify.org)",
+    })
+
+
 @router.get("/tools", response_class=HTMLResponse)
 async def tools_page(request: Request, db: Session = Depends(get_db), error: str = None, success: str = None):
     base_url = get_base_url(request)

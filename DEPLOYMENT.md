@@ -20,33 +20,33 @@ Open the web UI at `http://localhost:5005`.
 
 ## Environment Variables
 
-| Variable                     | Default            | Description |
-|------------------------------|--------------------|-------------|
-| `APP_PORT`                   | `5005`             | Host port Docker binds to. Change if running multiple instances. |
-| `CONTAINER_NAME`             | `iptv-app`         | Docker container name. Change when running multiple instances to avoid name conflicts. |
-| `RESTART_POLICY`             | `unless-stopped`   | Docker restart policy. Set to `no` to prevent auto-restart (e.g. during maintenance). Valid values: `no`, `always`, `unless-stopped`, `on-failure`. |
-| `TZ`                         | `UTC`              | Container timezone used for log timestamps. Set to your local tz database name, e.g. `America/New_York`, `America/Chicago`, `Europe/London`. |
-| `HDHR_ADVERTISE_HOST`        | `127.0.0.1`        | IP address your media server uses to reach this app. Use your LAN IP if they run on separate machines. |
-| `HDHR_SCHEME`                | `http`             | Protocol (`http` or `https`). |
-| `HDHR_MODEL`                 | `HDHR3-US`         | HDHomeRun model string reported to media servers. |
-| `HDHR_FRIENDLY_NAME`         | `IPTV HDHomeRun`   | Device name shown in Plex/Jellyfin/Emby. Useful when running multiple instances. |
-| `HDHR_TUNER_COUNT`           | `2`                | Concurrent streams the media server may request. Raise for more simultaneous recordings. |
-| `HDHR_DISABLE_SSDP`          | `1`                | `1` = SSDP disabled (default, works everywhere). `0` = SSDP enabled (Linux only, enables auto-discovery). |
-| `IPTV_USERNAME`              | `iptv`             | Username IPTV apps use to connect **to this app** (not your upstream provider). Used by TiviMate, IPTV Smarters, VLC, etc. |
-| `IPTV_PASSWORD`              | `iptv`             | Password IPTV apps use to connect **to this app** (not your upstream provider). |
-| `EPG_XML_SOURCES`            | *(see below)*      | Comma-separated XMLTV URL(s) to fetch guide data from. Defaults to `https://epg.pw/xmltv/epg_US.xml`. |
-| `EPG_CACHE_HOURS`            | `12`               | How long to cache the downloaded EPG before re-fetching. |
-| `ALLOW_FULL_M3U_DOWNLOAD`    | `1`                | Set to `0` to disable the **Fetch M3U** button in the UI. Useful on shared/production deployments to prevent accidental re-fetches. |
-| `STREAM_CHUNK_KB`            | `64`               | Size in KB of each chunk read from the upstream source. Larger values (128, 256) reduce overhead; too large may increase latency. |
-| `STREAM_PREBUFFER_KB`        | `512`              | KB to buffer server-side before sending to the client. Increase (e.g. 1024, 2048) if streams stutter at startup. Set to `0` to disable. |
-| `STREAM_MAX_RETRIES`         | `5`                | How many times the proxy reconnects if the stream drops. Set to `0` to disable auto-reconnect. |
-| `STREAM_RETRY_DELAY`         | `3`                | Seconds to wait between reconnect attempts. |
-| `STREAM_READ_TIMEOUT`        | `30`               | Seconds without incoming data before the proxy considers the stream stale and reconnects. Lower values (e.g. `15`) catch silent hangs faster. |
-| `STREAM_SESSION_STALE_SECONDS` | `30`             | Seconds since the last received chunk before a session is considered dead. Used by the health check to avoid false "stream active" reports after a client disconnects. |
-| `PLAYER_STASH_KB`            | `1024`             | mpegts.js client-side stash buffer in KB for the in-browser player. Larger values absorb more upstream jitter. |
-| `PLAYER_LATENCY_MAX`         | `30`               | Max live buffer latency in seconds before the browser player skips ahead (in-browser player only). |
-| `PLAYER_LATENCY_MIN`         | `5`                | Minimum buffer to keep in seconds (in-browser player only). |
-| `HEALTH_CHECK_TVG_ID`        | *(none)*           | Channel TVG-ID used by `GET /api/health` for Uptime Kuma / Home Assistant probes. Pick a reliable, low-priority channel. See [Monitoring](#monitoring). |
+| Variable | Default | Description |
+|---|---|---|
+| `APP_PORT` | `5005` | Host port Docker binds to. Change if running multiple instances. |
+| `CONTAINER_NAME` | `iptv-app` | Docker container name. Change when running multiple instances to avoid name conflicts. |
+| `RESTART_POLICY` | `unless-stopped` | Docker restart policy. Set to `no` to prevent auto-restart (e.g. during maintenance). Valid values: `no`, `always`, `unless-stopped`, `on-failure`. |
+| `TZ` | `UTC` | Container timezone used for log timestamps. Set to your local tz database name, e.g. `America/New_York`, `America/Chicago`, `Europe/London`. |
+| `HDHR_ADVERTISE_HOST` | `127.0.0.1` | IP address your media server uses to reach this app. Use your LAN IP if they run on separate machines. |
+| `HDHR_SCHEME` | `http` | Protocol (`http` or `https`). |
+| `HDHR_MODEL` | `HDHR3-US` | HDHomeRun model string reported to media servers. |
+| `HDHR_FRIENDLY_NAME` | `IPTV HDHomeRun` | Device name shown in Plex/Jellyfin/Emby. Useful when running multiple instances. |
+| `HDHR_TUNER_COUNT` | `2` | Concurrent streams the media server may request. Raise for more simultaneous recordings. |
+| `HDHR_DISABLE_SSDP` | `1` | `1` = SSDP disabled (default, works everywhere). `0` = SSDP enabled (Linux only, enables auto-discovery). |
+| `IPTV_USERNAME` | `iptv` | Username IPTV apps use to connect **to this app** (not your upstream provider). Used by TiviMate, IPTV Smarters, VLC, etc. |
+| `IPTV_PASSWORD` | `iptv` | Password IPTV apps use to connect **to this app** (not your upstream provider). |
+| `EPG_XML_SOURCES` | *(see below)* | Comma-separated XMLTV URL(s) to fetch guide data from. Defaults to `https://epg.pw/xmltv/epg_US.xml`. |
+| `EPG_CACHE_HOURS` | `12` | How long to cache the downloaded EPG before re-fetching. |
+| `ALLOW_FULL_M3U_DOWNLOAD` | `1` | Set to `0` to disable the **Fetch M3U** button in the UI. Useful on shared/production deployments to prevent accidental re-fetches. |
+| `STREAM_CHUNK_KB` | `64` | Size in KB of each chunk read from the upstream source. Larger values (128, 256) reduce overhead; too large may increase latency. |
+| `STREAM_PREBUFFER_KB` | `512` | KB to buffer server-side before sending to the client. Increase (e.g. 1024, 2048) if streams stutter at startup. Set to `0` to disable. |
+| `STREAM_MAX_RETRIES` | `5` | How many times the proxy reconnects if the stream drops. Set to `0` to disable auto-reconnect. |
+| `STREAM_RETRY_DELAY` | `3` | Seconds to wait between reconnect attempts. |
+| `STREAM_READ_TIMEOUT` | `30` | Seconds without incoming data before the proxy considers the stream stale and reconnects. Lower values (e.g. `15`) catch silent hangs faster. |
+| `STREAM_SESSION_STALE_SECONDS` | `30` | Seconds since the last received chunk before a session is considered dead. Used by the health check to avoid false "stream active" reports after a client disconnects. |
+| `PLAYER_STASH_KB` | `1024` | mpegts.js client-side stash buffer in KB for the in-browser player. Larger values absorb more upstream jitter. |
+| `PLAYER_LATENCY_MAX` | `30` | Max live buffer latency in seconds before the browser player skips ahead (in-browser player only). |
+| `PLAYER_LATENCY_MIN` | `5` | Minimum buffer to keep in seconds (in-browser player only). |
+| `HEALTH_CHECK_TVG_ID` | *(none)* | Channel TVG-ID used by `GET /api/health` for Uptime Kuma / Home Assistant probes. Pick a reliable, low-priority channel. See [Monitoring](#monitoring). |
 
 ---
 
@@ -87,7 +87,7 @@ Channels with a `24/7:` style prefix (e.g., `24/7: THE BIG BANG THEORY`) are nev
 ### EPG Options — Choose One
 
 | Option | Steps | When to use |
-|--------|-------|-------------|
+|---|---|---|
 | **IPTV Manager EPG** (recommended) | Enter `http://<host>:5005/epg.xml` as the guide source in your media server's DVR/tuner settings | Works for all IPTV providers; full programme schedules via name-matching |
 | **Plex location-based guide** | Skip the "Add Guide Source" step in Plex DVR wizard; let Plex map channels automatically | Plex Pass only; best when your lineup contains standard US broadcast/cable channels; Plex matches by channel number (`GuideNumber`) to its own guide database |
 | **No guide data** | Skip the guide source step entirely | Channels are still streamable; guide grid shows no programme info |
@@ -126,6 +126,7 @@ The `GuideNumber` that Plex sees (and that the `/auto/v<number>` stream URL uses
 ### Channel Numbers in the EPG
 
 The generated `/epg.xml` carries channel numbers in two places:
+
 - `<display-name>` — prefixed with the channel number (e.g., `503 CNN`) so Plex sorts the guide grid correctly.
 - `<lcn>` (Logical Channel Number) element — a standards-compliant way for media servers to read the channel number independently of the display name.
 
@@ -145,9 +146,9 @@ In addition to HDHomeRun emulation for Plex/Jellyfin/Emby, the app acts as a ful
 
 In your IPTV app's "Add Playlist / Add Source" screen, choose **Xtream Codes** and enter:
 
-| Field    | Value |
-|----------|-------|
-| Server   | `http://<HDHR_ADVERTISE_HOST>:<APP_PORT>` |
+| Field | Value |
+|---|---|
+| Server | `http://<HDHR_ADVERTISE_HOST>:<APP_PORT>` |
 | Username | value of `IPTV_USERNAME` in `.env` (default: `iptv`) |
 | Password | value of `IPTV_PASSWORD` in `.env` (default: `iptv`) |
 
@@ -188,6 +189,60 @@ Enter comma-separated name patterns (wildcards supported):
 Each config has an **Auto-refresh interval** field (in hours). When set to a non-zero value, the app automatically re-fetches and re-filters the playlist on that schedule — useful when your provider issues new stream URLs or tokens periodically.
 
 Set it to `0` (or leave blank) to disable automatic refreshes and fetch manually via the **Fetch M3U** button.
+
+---
+
+## OpenVPN
+
+The app can route all outbound container traffic (connections to your IPTV provider) through an OpenVPN tunnel. This is useful if your provider performs better over VPN or if you want to conceal IPTV traffic from your ISP.
+
+> **Scope:** VPN affects only outbound traffic from the container (to your IPTV provider). Inbound connections from Plex, IPTV apps, and your browser reach the container via Docker's bridge network and are unaffected — your local devices always connect to this app on your LAN IP directly.
+
+### Docker Requirements
+
+The provided `docker-compose.yml` already includes everything needed:
+
+```yaml
+cap_add:
+  - NET_ADMIN
+devices:
+  - /dev/net/tun:/dev/net/tun
+```
+
+If you modified your compose file and removed these, add them back and **recreate** (not just restart) the container:
+
+```sh
+docker compose down && docker compose up -d
+```
+
+### Setup
+
+1. Navigate to **IPTV Provider** (Settings) in the web UI.
+2. Expand the **OpenVPN** section.
+3. Paste the full contents of an `.ovpn` config file from your VPN provider into the text area.
+4. Enter your VPN **service credentials** (username and password).
+
+   > Most VPN providers issue separate *service credentials* for manual/OpenVPN connections — these are different from your account login email and password. Check your VPN provider's manual setup documentation.
+
+5. Click **Save VPN Settings**.
+6. Click **Enable VPN**. The status indicator turns green when the tunnel is up.
+
+### Controls
+
+| Action | Where |
+|---|---|
+| Enable / Disable VPN | Settings → OpenVPN section, or Dashboard → Quick Actions |
+| Check connection status | Dashboard → OpenVPN stat card (live, updates every 10 s) |
+| Test your exit IP | Settings → OpenVPN → **Test Connection** (shows the public IP the provider sees) |
+| VPN per-stream indicator | Dashboard → Active Streams (each row shows 🔒 VPN or Direct) |
+
+### Auto-Start on Container Restart
+
+If VPN was enabled when the container stopped, it reconnects automatically on the next startup — no manual action required.
+
+### Stream Tester and VPN
+
+The **Stream Tester** page makes test requests from the container, so they go through the VPN when it is active. Some IPTV providers front their authentication endpoints with Cloudflare, which may block known VPN exit IPs. If the tester reports a Cloudflare error, this does **not** necessarily mean your streams are broken — actual stream URLs (sourced from your M3U file) connect to direct stream servers that are usually not behind Cloudflare and work fine over VPN.
 
 ---
 
@@ -329,7 +384,19 @@ curl http://localhost:5005/discover.json
 
 - Test a stream directly: `curl -I "http://<host>:5005/auto/v<GuideNumber>"`
 - The app proxies all streams — it connects to your provider and forwards the data. If the provider URL is unreachable or the token has expired, re-fetch the M3U.
-- Use the **Browse All Channels** → ▶ play button to test individual stream URLs directly before they go through the HDHomeRun proxy.
+- The proxy automatically detects token-expiry errors (HTTP 407) and session-rejection errors (HTTP 458) and refreshes the channel lineup for a fresh URL before retrying.
+- Use **Browse Full M3U** → ▶ play button to test individual stream URLs directly before they go through the HDHomeRun proxy.
+
+### VPN won't connect
+
+- Confirm the container has the required capabilities. Run `docker inspect iptv-app | grep -A5 CapAdd` — you should see `NET_ADMIN`. If not, recreate the container (`docker compose down && docker compose up -d`) after verifying `cap_add` and `devices` are present in `docker-compose.yml`.
+- Check OpenVPN logs from the web UI (Tools → Logs) or via `docker compose logs app | grep vpn`.
+- Confirm you are using **service credentials**, not your VPN account login. Most providers generate a separate username/password for manual OpenVPN connections.
+- The `.ovpn` config must be a valid OpenVPN config file. Test it with a desktop OpenVPN client first if you are unsure.
+
+### Stream Tester fails when VPN is on
+
+This is expected in many cases. The Stream Tester opens a connection to your provider's authentication endpoint, which may be fronted by Cloudflare. Cloudflare blocks requests from known VPN/datacenter IPs. This does not mean your actual streams are broken — stream URLs from your M3U file connect to direct stream servers that are not behind Cloudflare and work normally through VPN. The error modal in the Stream Tester will indicate when a Cloudflare block is detected.
 
 ---
 
@@ -343,13 +410,15 @@ The app exposes a health-check endpoint at `GET /api/health` that external tools
 2. Otherwise it opens a connection to your provider, reads the first 4 KB of data, then immediately closes — the same check the stream_test page performs manually.
 3. Returns `{"status": "ok"}` (HTTP 200) on success, or `{"status": "down"}` (HTTP 503) on failure.
 
-### Setup
+### Monitoring Setup
 
 1. Find the TVG-ID of a reliable, low-priority channel (visible on the Stream Tester page).
 2. Add it to `.env`:
-   ```
+
+   ```sh
    HEALTH_CHECK_TVG_ID=12345
    ```
+
 3. Rebuild the container.
 
 You can also override the channel per-request with `?tvg_id=12345`, or target a specific config with `?item_id=1`.
@@ -357,7 +426,7 @@ You can also override the channel per-request with `?tvg_id=12345`, or target a 
 ### Uptime Kuma
 
 | Field | Value |
-|-------|-------|
+|---|---|
 | Monitor type | **HTTP(S) — JSON Query** |
 | URL | `http://<host>:5005/api/health` |
 | JSON Query | `$.status` |

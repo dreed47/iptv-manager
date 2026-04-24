@@ -1,6 +1,11 @@
 {% extends "base.html" %}
 
 {% block content %}
+<style>
+  .stat-link { color: inherit; text-decoration: none; }
+  .stat-link:hover { text-decoration: underline; opacity: 0.8; }
+</style>
+
 <div class="page-header">
   <h1>Dashboard</h1>
   <p>IPTV Manager — HDHomeRun Emulator for Plex/Jellyfin/Emby &amp; Xtream Codes proxy for IPTV apps</p>
@@ -9,9 +14,9 @@
 {% if success %}<div class="flash flash-success">✓ {{ success }}</div>{% endif %}
 {% if error %}<div class="flash flash-error">✗ {{ error }}</div>{% endif %}
 
-<div class="grid-3 mb-16">
+<div class="grid-auto mb-16">
   <div class="card" style="margin-bottom: 0;">
-    <div class="stat-label">IPTV Provider</div>
+    <div class="stat-label"><a href="/settings" class="stat-link">IPTV Provider</a></div>
     {% if item %}
     <div class="stat-value" style="font-size: 16px; color: var(--primary);">{{ item.name }}</div>
     <div class="stat-sub text-mono">{{ item.server_url }}</div>
@@ -32,7 +37,7 @@
   </div>
 
   <div class="card" style="margin-bottom: 0;">
-    <div class="stat-label">HDHomeRun</div>
+    <div class="stat-label"><a href="/hdhomerun" class="stat-link">HDHomeRun</a></div>
     <div class="stat-value" style="color: {{ 'var(--success)' if hdhr_running else '#94a3b8' }};">
       {{ 'Active' if hdhr_running else 'Inactive' }}
     </div>
@@ -40,9 +45,15 @@
   </div>
 
   <div class="card" style="margin-bottom: 0;">
-    <div class="stat-label">Xtream Proxy</div>
+    <div class="stat-label"><a href="/xtream" class="stat-link">Xtream Proxy</a></div>
     <div class="stat-value" style="color: var(--primary);">Ready</div>
     <div class="stat-sub">Server running</div>
+  </div>
+
+  <div class="card" style="margin-bottom: 0;">
+    <div class="stat-label"><a href="/settings" class="stat-link">OpenVPN</a></div>
+    <div class="stat-value" id="vpnStatValue" style="color: #94a3b8;">—</div>
+    <div class="stat-sub" id="vpnStatSub">Checking…</div>
   </div>
 </div>
 
@@ -64,18 +75,31 @@
       {% if can_enable_ssdp %}
         {% if not hdhr_running %}
         <form method="POST" action="/hdhr/enable">
-          <button type="submit" class="btn btn-primary">Enable HDHomeRun Discovery</button>
+          <button type="submit" class="btn btn-primary">Enable HDHomeRun</button>
         </form>
         {% else %}
         <form method="POST" action="/hdhr/disable">
-          <button type="submit" class="btn btn-secondary">Disable HDHomeRun Discovery</button>
+          <button type="submit" class="btn btn-secondary">Disable HDHomeRun</button>
         </form>
         {% endif %}
       {% endif %}
-      {% if item and item.has_filtered %}
-      <a href="/channels" target="_blank" class="btn btn-outline">View Channel Guide</a>
+      {% if item and item.vpn_configured %}
+      <form method="POST" action="/vpn/enable" id="qa-vpn-enable-form" style="display:none;">
+        <input type="hidden" name="next" value="/" />
+        <button type="submit" class="btn btn-success">Enable VPN</button>
+      </form>
+      <form method="POST" action="/vpn/disable" id="qa-vpn-disable-form" style="display:none;">
+        <input type="hidden" name="next" value="/" />
+        <button type="submit" class="btn btn-danger">Disable VPN</button>
+      </form>
       {% endif %}
-      <a href="/stream_test" target="_blank" class="btn btn-warning">Test Stream</a>
+      {% if item and item.has_filtered %}
+      <a href="/channels" target="_blank" class="btn btn-outline">Channel Guide</a>
+      {% endif %}
+      {% if item and item.has_m3u %}
+      <a href="/m3u_browser/{{ item.id }}" target="_blank" class="btn btn-outline">Browse Full M3U</a>
+      {% endif %}
+      <a href="/stream_test" target="_blank" class="btn btn-warning">Stream Tester</a>
     </div>
   </div>
 
@@ -121,13 +145,45 @@
     });
   });
 
+  var _vpnRunning = false;
+
+  function updateVpnStat(vpnData) {
+    var val = document.getElementById('vpnStatValue');
+    var sub = document.getElementById('vpnStatSub');
+    if (!val) return;
+    _vpnRunning = vpnData && vpnData.running;
+    if (_vpnRunning) {
+      val.textContent = 'Connected';
+      val.style.color = 'var(--success)';
+      sub.textContent = vpnData.interface || 'tun active';
+    } else {
+      val.textContent = 'Off';
+      val.style.color = '#94a3b8';
+      sub.textContent = 'Not running';
+    }
+    // Sync VPN toggle buttons in Quick Actions
+    var enableForm  = document.getElementById('qa-vpn-enable-form');
+    var disableForm = document.getElementById('qa-vpn-disable-form');
+    if (enableForm)  enableForm.style.display  = _vpnRunning ? 'none' : 'inline';
+    if (disableForm) disableForm.style.display = _vpnRunning ? 'inline' : 'none';
+  }
+
   function updateStreams() {
-    fetch('/api/active_streams')
-      .then(function(r) { return r.json(); })
-      .then(function(data) {
-        var badge = document.getElementById('streams-status');
-        var body = document.getElementById('streams-body');
+    Promise.all([
+      fetch('/api/active_streams').then(function(r) { return r.json(); }),
+      fetch('/vpn/status').then(function(r) { return r.json(); }),
+    ]).then(function(results) {
+        var data   = results[0];
+        var vpn    = results[1];
+        var badge  = document.getElementById('streams-status');
+        var body   = document.getElementById('streams-body');
         var streams = data.streams || [];
+
+        updateVpnStat(vpn);
+
+        var vpnBadge = vpn.running
+          ? '<span style="display:inline-flex;align-items:center;gap:3px;padding:2px 6px;font-size:10px;font-weight:700;border-radius:8px;background:rgba(22,163,74,0.12);color:var(--success);">🔒 VPN</span>'
+          : '<span style="display:inline-flex;align-items:center;gap:3px;padding:2px 6px;font-size:10px;font-weight:700;border-radius:8px;background:var(--bg);color:var(--text-muted);">Direct</span>';
 
         if (streams.length === 0) {
           badge.textContent = 'Idle';
@@ -137,11 +193,12 @@
           badge.textContent = streams.length === 1 ? '1 Active' : streams.length + ' Active';
           badge.className = 'badge badge-success';
           var rows = streams.map(function(s) {
-            return '<div style="display:grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap:8px; padding:10px 12px; background:var(--bg); border:1px solid var(--border); border-radius:6px; font-size:13px;">'
+            return '<div style="display:grid; grid-template-columns: 1fr 1fr 1fr 1fr auto; gap:8px; padding:10px 12px; background:var(--bg); border:1px solid var(--border); border-radius:6px; font-size:13px; align-items:center;">'
               + '<div><div class="form-label" style="margin-bottom:2px;">Channel</div><span style="font-weight:600;">' + s.channel + '</span></div>'
               + '<div><div class="form-label" style="margin-bottom:2px;">Client</div><span class="text-mono">' + s.client_ip + '</span></div>'
               + '<div><div class="form-label" style="margin-bottom:2px;">Duration</div>' + s.duration + '</div>'
               + '<div><div class="form-label" style="margin-bottom:2px;">Sent</div>' + s.mb_sent + ' MB</div>'
+              + '<div>' + vpnBadge + '</div>'
               + '</div>';
           });
           body.innerHTML = '<div class="flex flex-col gap-8">' + rows.join('') + '</div>';

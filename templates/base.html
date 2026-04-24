@@ -3,6 +3,13 @@
 <head>
   <meta charset="UTF-8" />
   <title>{{ friendly_name }}{% if page_title %} — {{ page_title }}{% endif %}</title>
+  <script>
+    (function() {
+      if (localStorage.getItem('theme') === 'dark') {
+        document.documentElement.classList.add('dark');
+      }
+    })();
+  </script>
   <style>
     :root {
       --primary:        #2563eb;
@@ -21,6 +28,43 @@
       --sidebar-bg:     #0f172a;
       --radius:         8px;
       --shadow:         0 1px 3px rgba(0,0,0,0.07), 0 1px 2px rgba(0,0,0,0.04);
+    }
+
+    html.dark {
+      --text:       #f1f5f9;
+      --text-muted: #94a3b8;
+      --border:     #334155;
+      --surface:    #1e293b;
+      --bg:         #0f172a;
+      --sidebar-bg: #020617;
+      --shadow:     0 1px 3px rgba(0,0,0,0.3), 0 1px 2px rgba(0,0,0,0.2);
+    }
+
+    html.dark .badge-success { background: #14532d; color: #86efac; }
+    html.dark .badge-danger  { background: #7f1d1d; color: #fca5a5; }
+    html.dark .badge-warning { background: #78350f; color: #fcd34d; }
+    html.dark .badge-neutral { background: #1e293b; color: #94a3b8; }
+
+    html.dark .flash-success { background: #14532d; color: #86efac; border-color: #166534; }
+    html.dark .flash-error   { background: #7f1d1d; color: #fca5a5; border-color: #991b1b; }
+
+    html.dark .info-box {
+      background: #1c1a09;
+      border-color: #713f12;
+      color: #fcd34d;
+    }
+
+    html.dark .form-input,
+    html.dark .form-select,
+    html.dark .form-textarea {
+      color-scheme: dark;
+    }
+
+    html.dark .btn-outline { border-color: var(--border); }
+
+    html.dark .sidebar-toggle {
+      background: #0f172a;
+      border-color: #475569;
     }
 
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -365,6 +409,34 @@
     .mb-12 { margin-bottom: 12px; }
     .mb-16 { margin-bottom: 16px; }
 
+    /* ── Dark mode toggle ────────────────────────────── */
+    .sidebar-footer {
+      padding: 10px 8px;
+      border-top: 1px solid rgba(255,255,255,0.06);
+    }
+    .dark-toggle {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      width: 100%;
+      padding: 8px 8px;
+      background: none;
+      border: none;
+      border-radius: 6px;
+      color: #94a3b8;
+      font-size: 13px;
+      font-weight: 500;
+      cursor: pointer;
+      white-space: nowrap;
+      overflow: hidden;
+      transition: background 0.15s, color 0.15s;
+      font-family: inherit;
+    }
+    .dark-toggle:hover { background: rgba(255,255,255,0.06); color: #e2e8f0; }
+    .dark-toggle-icon { font-size: 15px; flex-shrink: 0; width: 20px; text-align: center; }
+    .sidebar.collapsed .dark-toggle-text { display: none; }
+    .sidebar.collapsed .dark-toggle { justify-content: center; }
+
     /* ── Responsive ──────────────────────────────── */
     @media (max-width: 768px) {
       body { flex-direction: column; }
@@ -401,6 +473,13 @@
       <a href="/tools" class="nav-item {{ 'active' if active_page == 'tools' else '' }}">
         <span class="nav-icon">🛠️</span><span class="nav-text">Tools</span>
       </a>
+    </div>
+
+    <div class="sidebar-footer">
+      <button class="dark-toggle" onclick="toggleDarkMode()" id="darkToggle">
+        <span class="dark-toggle-icon" id="darkToggleIcon">🌙</span>
+        <span class="dark-toggle-text" id="darkToggleText">Dark Mode</span>
+      </button>
     </div>
   </nav>
 
@@ -455,8 +534,23 @@
       });
     }
 
+    function _syncDarkToggle(isDark) {
+      var icon = document.getElementById('darkToggleIcon');
+      var text = document.getElementById('darkToggleText');
+      if (!icon) return;
+      icon.textContent = isDark ? '☀️' : '🌙';
+      text.textContent = isDark ? 'Light Mode' : 'Dark Mode';
+    }
+
+    function toggleDarkMode() {
+      var isDark = document.documentElement.classList.toggle('dark');
+      localStorage.setItem('theme', isDark ? 'dark' : 'light');
+      _syncDarkToggle(isDark);
+    }
+
     document.addEventListener('DOMContentLoaded', function() {
       initFlashMessages();
+      _syncDarkToggle(document.documentElement.classList.contains('dark'));
       document.querySelectorAll('button[type="submit"]').forEach(function(btn) {
         btn.addEventListener('click', function() {
           if (!btn.disabled) {

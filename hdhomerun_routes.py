@@ -406,15 +406,17 @@ async def stream_channel(channel_number: str, request: Request, db: Session = De
                         f"Stream error for channel {channel_number} after {bytes_sent} bytes "
                         f"(attempt {attempt}/{max_retries}): {exc}"
                     )
-                    # 407 means the stream token expired — reload immediately for a fresh URL
-                    is_auth_error = (
-                        isinstance(exc, requests.exceptions.HTTPError)
-                        and exc.response is not None
-                        and exc.response.status_code in (401, 403, 407)
+                    # Auth/session errors (401, 403, 407, 458) mean the token or session is dead.
+                    # 458 is a provider-specific "session rejected" code — treat it like token expiry.
+                    http_status = (
+                        exc.response.status_code
+                        if isinstance(exc, requests.exceptions.HTTPError) and exc.response is not None
+                        else None
                     )
-                    if is_auth_error and not url_refreshed:
+                    is_session_error = http_status in (401, 403, 407, 458)
+                    if is_session_error and not url_refreshed:
                         logger.warning(
-                            f"Channel {channel_number}: auth error ({exc.response.status_code}) — "
+                            f"Channel {channel_number}: session error ({http_status}) — "
                             f"forcing immediate lineup reload for fresh URL"
                         )
                         try:
@@ -428,6 +430,14 @@ async def stream_channel(channel_number: str, request: Request, db: Session = De
                             url_refreshed = True
                         except Exception as reload_exc:
                             logger.error(f"Lineup reload failed: {reload_exc}")
+                    # 458 from a fresh connection (0 bytes) means the provider is rate-limiting or
+                    # blocking rapid reconnects — wait longer than the normal retry delay.
+                    if http_status == 458 and bytes_sent - bytes_at_last_connect == 0:
+                        logger.warning(
+                            f"Channel {channel_number}: 458 with 0 bytes — provider likely rate-limiting; "
+                            f"sleeping {retry_delay * 4:.0f}s before next attempt"
+                        )
+                        time.sleep(retry_delay * 4)
                     # Flush any partial prebuffer before retrying
                     if prebuf:
                         for c in prebuf:

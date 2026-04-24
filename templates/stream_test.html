@@ -611,6 +611,7 @@ active.</pre>
 
       const msg = typeof json === 'string' ? json : json.error;
       row('Error', msg);
+      if (json.cf_note) row('VPN / CDN Note', json.cf_note);
       if (json.detail) row('Detail', json.detail);
       if (json.stream_url) row('URL Tested', json.stream_url);
       if (json.headers) {

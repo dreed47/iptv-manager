@@ -79,6 +79,25 @@ def create_app():
         except Exception as exc:
             logger.warning(f"Xtream cache pre-warm failed: {exc}")
 
+    async def _autostart_vpn():
+        try:
+            from models import Item
+            import vpn_manager
+            with SessionLocal() as db:
+                item = db.query(Item).first()
+                if item and item.vpn_enabled and item.vpn_config and item.vpn_username and item.vpn_password:
+                    logger.info("VPN auto-start: enabled flag set — connecting…")
+                    ok, msg = await asyncio.to_thread(
+                        vpn_manager.start_vpn,
+                        item.vpn_config, item.vpn_username, item.vpn_password,
+                    )
+                    if ok:
+                        logger.info(f"VPN auto-start: {msg}")
+                    else:
+                        logger.warning(f"VPN auto-start failed: {msg}")
+        except Exception as exc:
+            logger.warning(f"VPN auto-start error: {exc}")
+
     @app.on_event("startup")
     async def startup_event():
         logger.info("Starting application...")
@@ -86,6 +105,7 @@ def create_app():
         logger.info("Database initialized")
         start_m3u_scheduler()
         logger.info("M3U scheduler started")
+        asyncio.create_task(_autostart_vpn())
         # Warm the Xtream cache in the background so the first stream request
         # doesn't block for ~28s while 180K+ VOD/series entries are indexed.
         asyncio.create_task(_warm_xtream_cache())

@@ -105,6 +105,73 @@
 
 {% if item %}
 <div class="card">
+  <div class="card-title collapsible" id="vpnCardTitle" onclick="toggleVpnCard()">
+    OpenVPN
+    <span class="chevron" id="vpnChevron">▶</span>
+  </div>
+
+  <div id="vpnCardBody" style="display: none;">
+    <form method="POST" action="/vpn/settings">
+      <div class="form-group">
+        <label class="form-label">OpenVPN Config (.ovpn)</label>
+        <textarea name="vpn_config" class="form-textarea" style="min-height:130px; font-size:11px;"
+          placeholder="Paste .ovpn file content here…">{{ item.vpn_config or '' }}</textarea>
+        <p class="form-help">
+          Paste the contents of an .ovpn config file from your VPN provider.
+          Use the <strong>service credentials</strong> below (separate from your account login — check your provider's manual setup docs).
+        </p>
+      </div>
+      <div class="grid-2">
+        <div class="form-group" style="margin-bottom:0;">
+          <label class="form-label">Username</label>
+          <input type="text" name="vpn_username" value="{{ item.vpn_username or '' }}"
+            placeholder="VPN service username" class="form-input" autocomplete="username" />
+        </div>
+        <div class="form-group" style="margin-bottom:0;">
+          <label class="form-label">Password</label>
+          <input type="password" name="vpn_password" value=""
+            placeholder="{% if item.vpn_configured %}(saved — leave blank to keep){% else %}VPN service password{% endif %}"
+            class="form-input" autocomplete="new-password" />
+        </div>
+      </div>
+      <div style="margin-top:14px;">
+        <button type="submit" class="btn btn-primary btn-sm">💾 Save VPN Settings</button>
+      </div>
+    </form>
+
+    <hr class="divider" />
+
+    <div class="flex flex-center flex-wrap gap-12">
+      <span class="status-item">
+        <span class="status-dot" id="vpnDot" style="background:#cbd5e1;"></span>
+        <span id="vpnStatusText" class="text-sm">Checking…</span>
+      </span>
+      <form method="POST" action="/vpn/enable" style="display:inline;">
+        <button type="submit" class="btn btn-success btn-sm"
+          {% if not item.vpn_configured %}disabled title="Save VPN settings first"{% endif %}>
+          Enable VPN
+        </button>
+      </form>
+      <form method="POST" action="/vpn/disable" style="display:inline;">
+        <button type="submit" class="btn btn-danger btn-sm">Disable VPN</button>
+      </form>
+      <button type="button" class="btn btn-outline btn-sm" id="vpnTestBtn"
+        onclick="testVpnConnection()"
+        {% if not item.vpn_configured %}disabled title="Save VPN settings first"{% endif %}>
+        🌐 Test Connection
+      </button>
+      <span id="vpnTestResult" class="text-sm"></span>
+    </div>
+
+    {% if not item.vpn_configured %}
+    <p class="form-help" style="margin-top:10px;">⚠️ Save your .ovpn config and credentials above to enable the VPN controls.</p>
+    {% endif %}
+  </div>
+</div>
+{% endif %}
+
+{% if item %}
+<div class="card">
   <div class="card-title">Provider Status</div>
   <div class="flex flex-wrap gap-16">
     <span class="status-item">
@@ -143,6 +210,54 @@
       });
   }
 
+  function loadVpnStatus() {
+    fetch('/vpn/status')
+      .then(function(r) { return r.json(); })
+      .then(function(data) {
+        var dot  = document.getElementById('vpnDot');
+        var text = document.getElementById('vpnStatusText');
+        if (!dot || !text) return;
+        if (data.running) {
+          dot.style.background = 'var(--success)';
+          text.textContent = 'Connected' + (data.interface ? ' (' + data.interface + ')' : '');
+        } else {
+          dot.style.background = '#cbd5e1';
+          text.textContent = 'Disconnected';
+        }
+      })
+      .catch(function() {
+        var text = document.getElementById('vpnStatusText');
+        if (text) text.textContent = 'Status unknown';
+      });
+  }
+
+  function testVpnConnection() {
+    var btn    = document.getElementById('vpnTestBtn');
+    var result = document.getElementById('vpnTestResult');
+    btn.disabled = true;
+    btn.textContent = 'Checking…';
+    result.textContent = '';
+    fetch('/settings/test_vpn')
+      .then(function(r) { return r.json(); })
+      .then(function(data) {
+        if (data.ip) {
+          result.textContent = (data.vpn_running ? '✓ VPN IP: ' : '⚠ Direct IP: ') + data.ip;
+          result.style.color = data.vpn_running ? 'var(--success)' : 'var(--text-muted)';
+        } else {
+          result.textContent = '✗ ' + (data.error || 'Could not get IP');
+          result.style.color = 'var(--danger)';
+        }
+      })
+      .catch(function() {
+        result.textContent = '✗ Request failed';
+        result.style.color = 'var(--danger)';
+      })
+      .finally(function() {
+        btn.disabled = false;
+        btn.textContent = '🌐 Test Connection';
+      });
+  }
+
   document.addEventListener('DOMContentLoaded', function() {
     document.querySelectorAll('[data-ts]').forEach(function(el) {
       var ts = parseInt(el.getAttribute('data-ts'), 10);
@@ -152,7 +267,23 @@
         month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit'
       });
     });
+    loadVpnStatus();
   });
+
+  function toggleVpnCard() {
+    var body    = document.getElementById('vpnCardBody');
+    var title   = document.getElementById('vpnCardTitle');
+    var chevron = document.getElementById('vpnChevron');
+    if (body.style.display === 'none') {
+      body.style.display = 'block';
+      title.classList.add('open');
+      chevron.textContent = '▼';
+    } else {
+      body.style.display = 'none';
+      title.classList.remove('open');
+      chevron.textContent = '▶';
+    }
+  }
 
   function toggleCredentials() {
     var panel = document.getElementById('credPanel');

@@ -45,11 +45,31 @@ async def api_stream_test(
         "Accept": "*/*",
         "Connection": "close",
     }
+    resp = None
     try:
         resp = requests.get(stream_url, stream=True, timeout=10, headers=headers, allow_redirects=True)
         resp.raise_for_status()
+        ct = resp.headers.get("content-type", "")
         chunk = next(resp.iter_content(chunk_size=4096), None)
-        resp.close()
+        # Cloudflare may return 200 with an HTML challenge page — detect and fail clearly
+        if "text/html" in ct:
+            cf_ray = resp.headers.get("cf-ray") or resp.headers.get("CF-RAY")
+            note = (
+                "Cloudflare intercepted the request and returned an HTML page instead of stream data. "
+                "This usually means the provider's login/API endpoint is protected by Cloudflare, "
+                "which blocks requests from VPN/datacenter IPs. "
+                "Actual stream URLs from your M3U file often bypass this and may still work."
+                if cf_ray else
+                "Server returned an HTML page instead of stream data. "
+                "Check your server URL and credentials."
+            )
+            return {
+                "success": False,
+                "stream_url": stream_url,
+                "error": "Not a valid stream (HTML page returned)",
+                "detail": note,
+                "headers": dict(resp.headers),
+            }
         if chunk:
             return {"success": True, "stream_url": stream_url}
         return {
@@ -65,13 +85,24 @@ async def api_stream_test(
             body_preview = e.response.text[:300].strip()
         except Exception:
             pass
-        return {
+        resp_headers = dict(e.response.headers)
+        cf_ray = resp_headers.get("cf-ray") or resp_headers.get("CF-RAY")
+        result = {
             "success": False,
             "stream_url": stream_url,
             "error": f"HTTP {e.response.status_code}: {reason}",
             "detail": body_preview or None,
-            "headers": dict(e.response.headers),
+            "headers": resp_headers,
         }
+        if cf_ray:
+            result["cf_note"] = (
+                "Cloudflare blocked the request (CF-RAY detected). "
+                "This typically happens when connecting via a VPN — Cloudflare identifies VPN exit IPs "
+                "as datacenter traffic and blocks them. "
+                "Your actual IPTV streams (sourced from the M3U file) connect to direct stream servers "
+                "that are usually not behind Cloudflare and should still work through VPN."
+            )
+        return result
     except requests.exceptions.ConnectionError as e:
         return {
             "success": False,
@@ -93,6 +124,9 @@ async def api_stream_test(
             "error": str(e),
             "detail": type(e).__name__,
         }
+    finally:
+        if resp is not None:
+            resp.close()
 
 
 # ---------------------------------------------------------------------------
@@ -157,8 +191,17 @@ async def api_health(
         resp.raise_for_status()
         chunk = next(resp.iter_content(chunk_size=4096), None)
         latency_ms = int((time.monotonic() - t0) * 1000)
-        if chunk:
+        ct = resp.headers.get("content-type", "")
+        if chunk and "text/html" not in ct and (chunk[0:1] == b'\x47' or len(chunk) > 0):
             return {"status": "ok", "latency_ms": latency_ms, "item": item.name, "active_streams": 0}
+        if "text/html" in ct:
+            return JSONResponse(
+                status_code=503,
+                content={"status": "down",
+                         "error": "Server returned an HTML page instead of a stream",
+                         "detail": "The provider may be showing a Cloudflare challenge or login page.",
+                         "latency_ms": latency_ms, "item": item.name, "active_streams": 0},
+            )
         return JSONResponse(
             status_code=503,
             content={"status": "down", "error": "Stream connected but returned no data",
