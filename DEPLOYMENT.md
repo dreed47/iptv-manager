@@ -200,18 +200,25 @@ The app can route all outbound container traffic (connections to your IPTV provi
 
 ### Docker Requirements
 
-The provided `docker-compose.yml` already includes everything needed:
+The provided `docker-compose.yml` already includes the necessary capability and device binding:
 
 ```yaml
 cap_add:
   - NET_ADMIN
-device_cgroup_rules:
-  - 'c 10:200 rwm'
+devices:
+  - /dev/net/tun:/dev/net/tun
 ```
 
-`NET_ADMIN` lets the container manage network interfaces. The `device_cgroup_rules` entry grants permission to access (and create) the `/dev/net/tun` character device without requiring it to exist on the host beforehand — the container creates the node itself the first time you enable the VPN. This avoids the Docker startup error `no such file or directory` that occurs on hosts where `/dev/net/tun` is not pre-created.
+`NET_ADMIN` lets the container manage network interfaces. The `devices` entry passes the host's TUN device into the container.
 
-If you modified your compose file and removed these, add them back and **recreate** (not just restart) the container:
+**The `tun` kernel module must be loaded on the Docker host** before the container starts. On most systems it is loaded automatically, but on minimal Debian/Ubuntu installs it may not be. Run this on the host once:
+
+```sh
+modprobe tun                      # load immediately
+echo 'tun' >> /etc/modules        # persist across reboots
+```
+
+After loading the module, `/dev/net/tun` will exist on the host and the container can bind-mount it. Then recreate (not just restart) the container so the device binding takes effect:
 
 ```sh
 docker compose down && docker compose up -d
@@ -391,8 +398,10 @@ curl http://localhost:5005/discover.json
 
 ### VPN won't connect
 
-- Confirm the container has the required capabilities. Run `docker inspect iptv-app | grep -A5 CapAdd` — you should see `NET_ADMIN`. If not, recreate the container (`docker compose down && docker compose up -d`) after verifying `cap_add` and `devices` are present in `docker-compose.yml`.
-- Check OpenVPN logs from the web UI (Tools → Logs) or via `docker compose logs app | grep vpn`.
+- **Container fails to start with "no such file or directory"** — The `tun` kernel module is not loaded on the host. Run `modprobe tun && echo 'tun' >> /etc/modules` on the Docker host, then recreate the container (`docker compose down && docker compose up -d`).
+- **Container starts but VPN gets "Operation not permitted" on /dev/net/tun** — Same root cause: tun module not loaded. Run `modprobe tun` on the host and recreate the container.
+- Confirm the container has the required capabilities. Run `docker inspect <container-name> | grep -A5 CapAdd` — you should see `NET_ADMIN`. If not, verify `cap_add` and `devices` are present in `docker-compose.yml` and recreate the container.
+- Check OpenVPN logs from the web UI (Tools → Logs) or via `docker compose logs app | grep -i vpn`.
 - Confirm you are using **service credentials**, not your VPN account login. Most providers generate a separate username/password for manual OpenVPN connections.
 - The `.ovpn` config must be a valid OpenVPN config file. Test it with a desktop OpenVPN client first if you are unsure.
 

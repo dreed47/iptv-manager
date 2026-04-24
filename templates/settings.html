@@ -267,6 +267,17 @@
         month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit'
       });
     });
+    // Restore VPN card open/close state
+    if (localStorage.getItem('vpnCardOpen') === '1') {
+      var body    = document.getElementById('vpnCardBody');
+      var title   = document.getElementById('vpnCardTitle');
+      var chevron = document.getElementById('vpnChevron');
+      if (body) {
+        body.style.display = 'block';
+        title.classList.add('open');
+        chevron.textContent = '▼';
+      }
+    }
     loadVpnStatus();
   });
 
@@ -278,10 +289,12 @@
       body.style.display = 'block';
       title.classList.add('open');
       chevron.textContent = '▼';
+      localStorage.setItem('vpnCardOpen', '1');
     } else {
       body.style.display = 'none';
       title.classList.remove('open');
       chevron.textContent = '▶';
+      localStorage.setItem('vpnCardOpen', '0');
     }
   }
 
