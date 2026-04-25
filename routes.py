@@ -736,7 +736,6 @@ async def save_mqtt_settings(
     mqtt_username: str = Form(""),
     mqtt_password: str = Form(""),
     mqtt_topic_prefix: str = Form("iptv-manager"),
-    mqtt_ha_discovery: str = Form(""),
     mqtt_device_name: str = Form("IPTV Manager"),
 ):
     import mqtt_manager as _mqtt
@@ -745,7 +744,6 @@ async def save_mqtt_settings(
         return RedirectResponse(url="/tools?error=No provider configured", status_code=303)
 
     enabled = mqtt_enabled.lower() in ("1", "true", "on", "yes")
-    ha_disc = mqtt_ha_discovery.lower() in ("1", "true", "on", "yes")
 
     item.mqtt_enabled = enabled
     item.mqtt_host = mqtt_host.strip() or None
@@ -754,7 +752,6 @@ async def save_mqtt_settings(
     if mqtt_password:
         item.mqtt_password = mqtt_password
     item.mqtt_topic_prefix = mqtt_topic_prefix.strip() or "iptv-manager"
-    item.mqtt_ha_discovery = ha_disc
     item.mqtt_device_name = mqtt_device_name.strip() or "IPTV Manager"
     db.commit()
 
@@ -764,7 +761,6 @@ async def save_mqtt_settings(
         "mqtt_username": item.mqtt_username,
         "mqtt_password": item.mqtt_password,
         "mqtt_topic_prefix": item.mqtt_topic_prefix,
-        "mqtt_ha_discovery": item.mqtt_ha_discovery,
         "mqtt_device_name": item.mqtt_device_name,
     }
     if enabled and item.mqtt_host:
@@ -781,6 +777,22 @@ async def save_mqtt_settings(
 async def mqtt_status():
     import mqtt_manager as _mqtt
     return JSONResponse(_mqtt.get_mqtt_status())
+
+
+@router.post("/mqtt/ha_discovery", response_class=JSONResponse)
+async def mqtt_ha_discovery():
+    import mqtt_manager as _mqtt
+    status = _mqtt.get_mqtt_status()
+    if not status.get("connected"):
+        return JSONResponse({"ok": False, "error": "MQTT not connected — connect first"})
+    mgr = _mqtt._manager
+    if mgr is None:
+        return JSONResponse({"ok": False, "error": "No active MQTT manager"})
+    try:
+        mgr.publish_ha_discovery()
+        return JSONResponse({"ok": True, "message": "Discovery payloads published"})
+    except Exception as exc:
+        return JSONResponse({"ok": False, "error": str(exc)})
 
 
 @router.post("/mqtt/test", response_class=JSONResponse)

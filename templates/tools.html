@@ -154,23 +154,17 @@
         </div>
       </div>
 
-      <div class="form-group">
-        <label class="form-label" style="display:flex; align-items:center; gap:8px; cursor:pointer;">
-          <input type="checkbox" name="mqtt_ha_discovery" value="1"
-            {% if item.mqtt_ha_discovery %}checked{% endif %}
-            style="width:16px; height:16px;" />
-          Enable Home Assistant auto-discovery
-        </label>
-        <p class="form-help">Publishes discovery configs to <code>homeassistant/</code> so HA creates entities automatically (sensor: active streams, binary_sensor: VPN, binary_sensor: app online).</p>
-      </div>
-
       <div class="flex flex-center flex-wrap gap-12">
         <button type="submit" class="btn btn-primary btn-sm">💾 Save MQTT Settings</button>
         <button type="button" class="btn btn-outline btn-sm" id="mqttTestBtn" onclick="testMqtt()">
           🔌 Test Connection
         </button>
+        <button type="button" class="btn btn-outline btn-sm" id="mqttHaBtn" onclick="publishHaDiscovery()">
+          🏠 Publish HA Discovery
+        </button>
         <span id="mqttTestResult" class="text-sm"></span>
       </div>
+      <p class="form-help mt-8">HA Discovery publishes sensor/binary_sensor configs to <code>homeassistant/</code> so Home Assistant creates entities automatically. One-time action — retained by the broker.</p>
     </form>
 
     <hr class="divider" />
@@ -222,6 +216,28 @@
       .catch(function() {
         var text = document.getElementById('mqttStatusText');
         if (text) text.textContent = 'Status unknown';
+      });
+  }
+
+  function publishHaDiscovery() {
+    var btn    = document.getElementById('mqttHaBtn');
+    var result = document.getElementById('mqttTestResult');
+    btn.disabled = true;
+    btn.textContent = 'Publishing…';
+    result.textContent = '';
+    fetch('/mqtt/ha_discovery', { method: 'POST' })
+      .then(function(r) { return r.json(); })
+      .then(function(data) {
+        result.textContent = (data.ok ? '✓ ' : '✗ ') + (data.message || data.error || '');
+        result.style.color = data.ok ? 'var(--success)' : 'var(--danger)';
+      })
+      .catch(function() {
+        result.textContent = '✗ Request failed';
+        result.style.color = 'var(--danger)';
+      })
+      .finally(function() {
+        btn.disabled = false;
+        btn.textContent = '🏠 Publish HA Discovery';
       });
   }
 

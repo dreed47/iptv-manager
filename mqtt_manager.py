@@ -71,7 +71,6 @@ class MqttManager:
         self._username = config.get("mqtt_username") or None
         self._password = config.get("mqtt_password") or None
         self._prefix = (config.get("mqtt_topic_prefix") or "iptv-manager").rstrip("/")
-        self._ha_discovery = bool(config.get("mqtt_ha_discovery"))
         self._device_name = config.get("mqtt_device_name") or "IPTV Manager"
 
         self._connected = False
@@ -134,8 +133,6 @@ class MqttManager:
 
         # Publish initial state now that the CONNACK exchange is fully settled
         self._publish(lwt_topic, "online", retain=True)
-        if self._ha_discovery:
-            self.publish_ha_discovery()
 
         # Start polling thread
         self._stop_event.clear()
@@ -230,8 +227,6 @@ class MqttManager:
 
         if force:
             self._publish(f"{self._prefix}/status", "online", retain=True)
-            if reconnected and self._ha_discovery:
-                self.publish_ha_discovery()
             self._last_heartbeat = now
 
     # ------------------------------------------------------------------
