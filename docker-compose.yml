@@ -27,7 +27,7 @@ services:
       - ./data:/app/data
     restart: ${RESTART_POLICY:-unless-stopped}
     healthcheck:
-      test: ["CMD", "sh", "-c", "curl -f http://localhost:${APP_PORT:-5005}/"]
+      test: ["CMD", "curl", "-f", "http://localhost:5005/"]
       interval: 30s
       timeout: 5s
       retries: 3
