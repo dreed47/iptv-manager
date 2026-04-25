@@ -1,0 +1,16 @@
+# IPTV Manager — VPN on/off indicator
+# Requires: custom:mushroom-entity-card  (https://github.com/piitaya/lovelace-mushroom)
+#
+# Replace "iptv_manager" with the slug of your Device / Sensor Name.
+# Examples:
+#   Device name "IPTV Manager"  → iptv_manager
+#   Device name "IPTV Bedroom"  → iptv_bedroom
+#
+type: custom:mushroom-entity-card
+entity: binary_sensor.iptv_manager_vpn
+name: IPTV Manager VPN
+icon: mdi:shield-lock
+layout: vertical
+primary_info: name
+secondary_info: state
+icon_color: green

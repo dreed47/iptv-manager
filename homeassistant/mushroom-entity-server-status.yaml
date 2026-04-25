@@ -1,0 +1,16 @@
+# IPTV Manager — Server online/offline indicator
+# Requires: custom:mushroom-entity-card  (https://github.com/piitaya/lovelace-mushroom)
+#
+# Replace "iptv_manager" with the slug of your Device / Sensor Name.
+# Examples:
+#   Device name "IPTV Manager"  → iptv_manager
+#   Device name "IPTV Bedroom"  → iptv_bedroom
+#
+type: custom:mushroom-entity-card
+entity: binary_sensor.iptv_manager_online
+name: IPTV Manager Server
+icon: mdi:server-network
+layout: vertical
+primary_info: name
+secondary_info: state
+icon_color: green

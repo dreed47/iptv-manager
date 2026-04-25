@@ -1,0 +1,12 @@
+# IPTV Manager — Stream count chip (compact, for chip rows / header bars)
+# Requires: custom:mushroom-chips-card  (https://github.com/piitaya/lovelace-mushroom)
+#
+# Replace "iptv_manager" with the slug of your Device / Sensor Name.
+#
+type: custom:mushroom-chips-card
+chips:
+  - type: entity
+    entity: sensor.iptv_manager_active_streams
+    icon: mdi:television-play
+    icon_color: blue
+    content_info: state

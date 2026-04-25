@@ -192,6 +192,122 @@ Set it to `0` (or leave blank) to disable automatic refreshes and fetch manually
 
 ---
 
+## Session Management
+
+Each IPTV config has an **Active Sessions Allowed** setting (Settings → IPTV Provider, default: 1). This caps the number of concurrent streams at the proxy layer and applies across all client types (HDHomeRun, Xtream live, VOD, and series).
+
+### Session Limit Enforcement
+
+- When a new stream request arrives and the active count equals the limit, the app returns **HTTP 429** (`Session limit reached (N/N active streams)`). The client sees a connection-refused or "stream unavailable" error depending on the app.
+- The Dashboard shows `active / max` (e.g., `2 / 3`) in the Active Streams badge — red when at the limit, green otherwise.
+
+### Killing a Stream
+
+Each row in the **Active Streams** table has a **✕ Kill** button. Clicking it:
+
+1. Immediately terminates the proxied stream generator for that session.
+2. Blocks the client's IP from reconnecting for **60 seconds** (returns HTTP 429 on any new stream request from that IP within the window).
+3. Shows `Blocked 60s` in place of the Kill button as confirmation.
+
+The 60-second block prevents most IPTV players from auto-reconnecting and immediately consuming a session slot again.
+
+---
+
+## MQTT Integration
+
+The app can publish real-time state to any MQTT broker — stream counts, active session details, and VPN status. Home Assistant MQTT auto-discovery is supported, creating entities in HA with no manual configuration.
+
+### MQTT Setup
+
+1. Navigate to **Tools → MQTT Integration** (collapsed card at the bottom).
+2. Check **Enable MQTT publishing**.
+3. Enter your broker **Host** and **Port** (default 1883).
+4. Optionally add **Username / Password** if your broker requires authentication.
+5. Set a **Topic Prefix** (default `iptv-manager`) — all topics published by this instance are prefixed with this value. Use a unique prefix per instance (e.g., `iptv-bedroom`, `iptv-office`).
+6. Set a **Device / Sensor Name** — shown as the device name in Home Assistant. Use a unique name per instance (e.g., `IPTV Bedroom`).
+7. Click **💾 Save MQTT Settings**. The broker connection is established immediately.
+8. Click **🔌 Test Connection** to verify connectivity without changing the running connection.
+
+### Auto-Start
+
+If MQTT is enabled when the container starts, the broker connection is established automatically — no manual action required.
+
+### Topic Structure
+
+All topics are prefixed with the configured **Topic Prefix** (default `iptv-manager`).
+
+| Topic | Payload | Notes |
+|---|---|---|
+| `{prefix}/status` | `online` / `offline` | LWT — broker publishes `offline` automatically on unclean disconnect |
+| `{prefix}/streams/count` | `"2"` | Integer string; updates within 10 s of any change |
+| `{prefix}/streams/attributes` | JSON | Full session array (see below) |
+| `{prefix}/vpn/state` | `ON` / `OFF` | Updates within 10 s of VPN state change |
+| `{prefix}/vpn/attributes` | JSON | `{"connected": true, "interface": "tun0"}` |
+
+All topics are published with `retain=true` so new subscribers receive the last-known state immediately.
+
+#### `streams/attributes` Payload
+
+```json
+{
+  "count": 2,
+  "streams": [
+    {
+      "session_id": "abc123",
+      "channel": "501 — CNN",
+      "channel_number": "501",
+      "channel_name": "CNN",
+      "client_ip": "192.168.1.42",
+      "user_agent": "TiviMate/4.x",
+      "duration": "12m 4s",
+      "elapsed_seconds": 724,
+      "mb_sent": 142.3,
+      "started_at": 1714070400
+    }
+  ]
+}
+```
+
+### Reconnection
+
+On unexpected disconnects the app uses paho-mqtt's built-in exponential backoff: first retry after 30 seconds, doubling up to a 5-minute cap. The connection status is visible in real time via the status dot at the bottom of the MQTT card and on the Dashboard.
+
+### Home Assistant Auto-Discovery
+
+1. Ensure MQTT is connected (green dot in the MQTT card).
+2. Click **🏠 Publish HA Discovery** in the MQTT card.
+3. HA creates three entities under a single device named after your **Device / Sensor Name** setting:
+
+| Entity | Type | State | Attributes |
+|---|---|---|---|
+| `sensor.{device}_active_streams` | Sensor | Stream count | Full session array |
+| `binary_sensor.{device}_vpn` | Binary sensor | `on` / `off` | `connected`, `interface` |
+| `binary_sensor.{device}_online` | Binary sensor | `on` / `off` | — |
+
+Where `{device}` is the slug of your device name (e.g., `iptv_manager` for "IPTV Manager", `iptv_bedroom` for "IPTV Bedroom").
+
+> **One-time action:** Discovery payloads are retained by the broker, so HA picks them up on any restart without re-publishing. Only re-publish after changing the prefix, device name, or broker.
+
+### Multiple Instances
+
+Each instance running on the same broker **must** have a unique **Topic Prefix** and **Device / Sensor Name**. The MQTT client ID is derived from the topic prefix, so there are no broker-side collisions between instances.
+
+### Home Assistant Dashboard Cards
+
+Sample Lovelace card YAML files are in the [`homeassistant/`](homeassistant/) directory:
+
+| File | Description |
+|---|---|
+| `button-card-stream-status.yaml` | Rich stream detail card using `custom:button-card` |
+| `mushroom-entity-server-status.yaml` | Compact online/offline indicator using Mushroom |
+| `mushroom-entity-vpn-status.yaml` | Compact VPN on/off indicator using Mushroom |
+| `mushroom-chip-streams.yaml` | Small chip showing live stream count |
+| `entities-overview-card.yaml` | Standard HA entities card showing all three sensors |
+
+Replace `iptv_manager` in the entity names with your device name slug if you changed the default.
+
+---
+
 ## OpenVPN
 
 The app can route all outbound container traffic (connections to your IPTV provider) through an OpenVPN tunnel. This is useful if your provider performs better over VPN or if you want to conceal IPTV traffic from your ISP.
@@ -242,7 +358,7 @@ mkdir -p /dev/net && mknod /dev/net/tun c 10 200 && chmod 0666 /dev/net/tun
 echo 'c /dev/net/tun 0666 root root - 10:200' > /etc/tmpfiles.d/tun.conf
 ```
 
-### Setup
+### OpenVPN Setup
 
 1. Navigate to **IPTV Provider** (Settings) in the web UI.
 2. Expand the **OpenVPN** section.

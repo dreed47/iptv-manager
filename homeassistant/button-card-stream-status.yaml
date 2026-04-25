@@ -1,0 +1,87 @@
+# IPTV Manager — Active Streams detail card
+# Requires: custom:button-card  (https://github.com/custom-cards/button-card)
+#
+# Replace "iptv_manager" with the slug of your Device / Sensor Name.
+# Examples:
+#   Device name "IPTV Manager"  → iptv_manager
+#   Device name "IPTV Bedroom"  → iptv_bedroom
+#   Device name "IPTV First"    → iptv_first
+#
+type: custom:button-card
+entity: sensor.iptv_manager_active_streams
+show_icon: false
+show_name: false
+show_label: true
+show_state: false
+label: |
+  [[[
+    const streams = entity.attributes.streams || [];
+    const count   = streams.length;
+    const max     = entity.attributes.max_sessions;
+    const limitLabel = max ? ` (${count}/${max})` : ` (${count})`;
+
+    if (count === 0) {
+      return `
+        <div style="text-align:left">
+          <div style="font-size:1.1em;font-weight:600;margin-bottom:10px">📺 Active Streams</div>
+          <div style="
+            background:rgba(var(--rgb-green-color,50,200,100),0.15);
+            border-left:3px solid var(--success-color,#4caf50);
+            border-radius:6px;
+            padding:8px 12px;
+            font-size:0.85em;
+            color:var(--success-color,#4caf50);
+          ">✅ No active streams</div>
+        </div>
+      `;
+    }
+
+    let out = `
+      <div style="text-align:left;width:100%">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+          <span style="font-size:1.1em;font-weight:600">📺 Active Streams</span>
+          <span style="
+            background:var(--primary-color);
+            color:var(--primary-background-color);
+            border-radius:12px;
+            padding:2px 10px;
+            font-size:0.78em;
+            font-weight:600;
+          ">${count} Stream${count !== 1 ? 's' : ''}${limitLabel}</span>
+        </div>
+    `;
+
+    streams.forEach(stream => {
+      out += `
+        <div style="
+          background:rgba(var(--rgb-primary-color,3,169,244),0.08);
+          border-left:3px solid var(--primary-color);
+          border-radius:8px;
+          padding:10px 12px;
+          margin-bottom:8px;
+        ">
+          <div style="font-weight:600;font-size:0.95em;margin-bottom:6px">
+            📡 ${stream.channel_name || stream.channel}
+            <span style="font-weight:400;opacity:0.5;font-size:0.85em">· Ch. ${stream.channel_number}</span>
+          </div>
+          <div style="display:flex;gap:14px;flex-wrap:wrap;font-size:0.8em;opacity:0.75">
+            <span>🖥 ${stream.client_ip}</span>
+            <span>⏱ ${stream.duration}</span>
+            <span>💾 ${stream.mb_sent} MB</span>
+          </div>
+        </div>
+      `;
+    });
+
+    out += '</div>';
+    return out;
+  ]]]
+styles:
+  card:
+    - padding: 16px
+    - text-align: left
+  label:
+    - width: 100%
+    - white-space: normal
+    - font-size: 1em
+    - line-height: "1.4"

@@ -1,0 +1,24 @@
+# IPTV Manager — All-in-one entities overview card (no custom components required)
+#
+# Replace "iptv_manager" with the slug of your Device / Sensor Name.
+# Examples:
+#   Device name "IPTV Manager"  → iptv_manager
+#   Device name "IPTV Bedroom"  → iptv_bedroom
+#
+# Entity ID pattern:
+#   sensor.{device_slug}_active_streams
+#   binary_sensor.{device_slug}_online
+#   binary_sensor.{device_slug}_vpn
+#
+type: entities
+title: IPTV Manager
+entities:
+  - entity: binary_sensor.iptv_manager_online
+    name: Server
+    icon: mdi:server-network
+  - entity: binary_sensor.iptv_manager_vpn
+    name: VPN
+    icon: mdi:shield-lock
+  - entity: sensor.iptv_manager_active_streams
+    name: Active Streams
+    icon: mdi:television-play

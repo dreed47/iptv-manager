@@ -2,7 +2,10 @@
 
 A web-based tool for managing, filtering, and serving IPTV playlists and EPG data, with HDHomeRun emulation for seamless Plex, Jellyfin, and Emby Live TV integration.
 
+#### Dashboard
 ![Dashboard Preview](/media/screenshot1.png)
+#### Home Assistant Cards
+![Home Assistant Cards](/media/screenshot2.png)
 
 
 ## Features
@@ -18,6 +21,8 @@ A web-based tool for managing, filtering, and serving IPTV playlists and EPG dat
 - **HDHomeRun Emulation** — Appears as an HDHomeRun tuner on your network; Plex, Jellyfin, and Emby discover it automatically or via manual IP entry.
 - **Generic IPTV App Proxy (Xtream Codes)** — Acts as a full Xtream Codes API server so TiviMate, IPTV Smarters, VLC, and other IPTV apps can connect directly. Serves live channels, VOD, and series through a single proxy. Set `IPTV_USERNAME` / `IPTV_PASSWORD` in `.env` and point your app at `http://<host>:<port>`.
 - **OpenVPN Support** — Route all outbound container traffic (to your IPTV provider) through an OpenVPN tunnel. Paste any `.ovpn` config file into the UI, save credentials, and enable with one click. The dashboard and Active Streams panel both show live VPN connection status. See [DEPLOYMENT.md](DEPLOYMENT.md#openvpn) for full setup.
+- **Session Management** — Set a maximum number of concurrent streams per config (1–unlimited). New connections over the limit receive HTTP 429. The dashboard shows live `active/max` counts. Each active stream row has a **Kill** button; killed clients are blocked from reconnecting for 60 seconds to prevent immediate re-entry.
+- **MQTT Integration** — Publishes real-time stream and VPN state to any MQTT broker every 10 seconds on change (heartbeat every 60 s). Supports Home Assistant MQTT auto-discovery — click **Publish HA Discovery** once and HA creates sensor and binary_sensor entities automatically. Configure in **Tools → MQTT Integration**. See [DEPLOYMENT.md](DEPLOYMENT.md#mqtt-integration) for topic reference and HA card examples.
 - **In-Browser Channel Player** — `/channels` lists your filtered lineup with a built-in video player; click any row to watch in the browser via mpegts.js, or open in VLC/IINA.
 - **Stream Tester** — Test credentials and channel IDs directly from the browser before committing them to your config. Detects Cloudflare-blocked responses (common with VPN exit IPs) and explains the cause.
 - **Health Check Endpoint** — `GET /api/health` returns stream reachability as JSON; integrates with Uptime Kuma (JSON Query monitor) and Home Assistant (REST sensor). Skips the test automatically when a live stream is active to avoid interruptions.
@@ -93,12 +98,13 @@ Channel numbers flow through the entire stack so what you see in your IPTV app m
 
 | File/Dir | Purpose |
 |---|---|
-| `main.py` | FastAPI app entry point, logging, startup tasks (VPN auto-start, cache warm) |
-| `routes.py` | Web UI, M3U fetch/filter, VPN enable/disable/status endpoints |
-| `hdhomerun_routes.py` | HDHomeRun emulation, resilient stream proxy, channel browser |
+| `main.py` | FastAPI app entry point, logging, startup tasks (VPN auto-start, MQTT auto-start, cache warm) |
+| `routes.py` | Web UI, M3U fetch/filter, VPN, MQTT settings/status/test endpoints |
+| `hdhomerun_routes.py` | HDHomeRun emulation, resilient stream proxy, session management, channel browser |
 | `xtream_server_routes.py` | Xtream Codes API proxy for TiviMate, IPTV Smarters, VLC, etc. |
 | `health_routes.py` | Stream tester UI and `/api/health` endpoint |
 | `vpn_manager.py` | OpenVPN subprocess lifecycle (start, stop, status, IP check) |
+| `mqtt_manager.py` | MQTT singleton manager, polling thread, HA auto-discovery publisher |
 | `models.py` | SQLite database models |
 | `services.py` | Business logic / CRUD |
 | `epg_manager.py` | EPG fetching, name-matching, and XMLTV generation |
