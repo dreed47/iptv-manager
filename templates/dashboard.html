@@ -195,10 +195,7 @@
           var rows = streams.map(function(s) {
             return '<div style="display:grid; grid-template-columns: 1fr 1fr 1fr 1fr auto; gap:8px; padding:10px 12px; background:var(--bg); border:1px solid var(--border); border-radius:6px; font-size:13px; align-items:center;">'
               + '<div><div class="form-label" style="margin-bottom:2px;">Channel</div><span style="font-weight:600;">' + s.channel + '</span></div>'
-              + '<div><div class="form-label" style="margin-bottom:2px;">Client</div><span class="text-mono">' + s.client_ip + '</span>'
-              + (s.is_bridge ? '<div style="font-size:11px;color:var(--warning);margin-top:2px;">⚠ Docker bridge — real IP unknown</div>'
-                : s.hostname ? '<div style="font-size:11px;color:var(--text-muted);margin-top:2px;">' + s.hostname + '</div>' : '')
-              + '</div>'
+              + '<div><div class="form-label" style="margin-bottom:2px;">Client</div><span class="text-mono">' + s.client_ip + '</span></div>'
               + '<div><div class="form-label" style="margin-bottom:2px;">Duration</div>' + s.duration + '</div>'
               + '<div><div class="form-label" style="margin-bottom:2px;">Sent</div>' + s.mb_sent + ' MB</div>'
               + '<div>' + vpnBadge + '</div>'

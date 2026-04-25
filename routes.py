@@ -2,9 +2,6 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Form, Re
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, FileResponse, Response
 from fastapi.templating import Jinja2Templates
 import time
-import asyncio
-import ipaddress
-import socket
 from sqlalchemy.orm import Session
 from models import get_db, Item
 from services import create_item, update_item, get_item_context
@@ -129,44 +126,13 @@ async def test_connection(request: Request, db: Session = Depends(get_db)):
         return JSONResponse({"ok": False, "error": f"{type(e).__name__}: {e}"})
 
 
-_DOCKER_BRIDGE_NETS = [
-    ipaddress.ip_network("172.16.0.0/12"),  # Docker default/custom bridge gateways
-    ipaddress.ip_network("10.0.0.0/8"),     # Docker swarm / compose default
-]
-
-def _is_docker_bridge(ip: str) -> bool:
-    try:
-        addr = ipaddress.ip_address(ip)
-        return any(addr in net for net in _DOCKER_BRIDGE_NETS) and int(ip.split(".")[-1]) == 1
-    except ValueError:
-        return False
-
-
-_dns_cache: dict[str, str] = {}
-
-async def _reverse_lookup(ip: str) -> str:
-    if ip in _dns_cache:
-        return _dns_cache[ip]
-    try:
-        loop = asyncio.get_event_loop()
-        hostname, _, _ = await loop.run_in_executor(None, socket.gethostbyaddr, ip)
-        _dns_cache[ip] = hostname
-        return hostname
-    except Exception:
-        _dns_cache[ip] = ""
-        return ""
-
-
 @router.get("/api/active_streams", response_class=JSONResponse)
 async def api_active_streams():
+    import math
     streams = get_active_streams()
-    now = time.time()
-
-    ips = [s.get("client_ip", "") for s in streams]
-    hostnames = await asyncio.gather(*[_reverse_lookup(ip) for ip in ips])
-
     out = []
-    for s, hostname in zip(streams, hostnames):
+    now = time.time()
+    for s in streams:
         elapsed = int(now - s.get("started_at", now))
         hours, rem = divmod(elapsed, 3600)
         mins, secs = divmod(rem, 60)
@@ -175,12 +141,9 @@ async def api_active_streams():
         channel_num = s.get("channel", "?")
         channel_name = s.get("channel_name", "")
         channel_display = f"{channel_num} — {channel_name}" if channel_name and channel_name != channel_num else channel_num
-        client_ip = s.get("client_ip", "?")
         out.append({
             "channel": channel_display,
-            "client_ip": client_ip,
-            "hostname": hostname if hostname and hostname != client_ip else "",
-            "is_bridge": _is_docker_bridge(client_ip),
+            "client_ip": s.get("client_ip", "?"),
             "duration": duration,
             "mb_sent": round(mb, 1),
         })
