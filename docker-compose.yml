@@ -21,7 +21,7 @@ services:
     #                      real client IPs visible, ports mapping is ignored.
     network_mode: ${NETWORK_MODE:-bridge}
     ports:
-      - "${APP_PORT:-5005}:5005"
+      - "${APP_PORT:-5005}:${APP_PORT:-5005}"
     # ────────────────────────────────────────────────────────────────────────
     cap_add:
       - NET_ADMIN
@@ -32,7 +32,7 @@ services:
       - ./data:/app/data
     restart: ${RESTART_POLICY:-unless-stopped}
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:5005/"]
+      test: ["CMD", "sh", "-c", "curl -f http://localhost:${APP_PORT:-5005}/"]
       interval: 30s
       timeout: 5s
       retries: 3
