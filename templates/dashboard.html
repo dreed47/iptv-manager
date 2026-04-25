@@ -175,8 +175,12 @@
       .then(function(r) { return r.json(); })
       .then(function(data) {
         if (data.ok) {
-          btn.closest('[data-session]').style.opacity = '0.4';
-          setTimeout(updateStreams, 800);
+          var row = btn.closest('[data-session]');
+          row.style.opacity = '0.4';
+          var secs = data.block_seconds || 60;
+          btn.textContent = 'Blocked ' + secs + 's';
+          btn.style.fontSize = '10px';
+          setTimeout(updateStreams, 1200);
         } else {
           btn.disabled = false;
           btn.textContent = '✕';

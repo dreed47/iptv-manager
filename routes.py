@@ -9,7 +9,7 @@ import config
 import logging
 import os
 import re
-from hdhomerun_routes import hdhomerun_emulator, get_active_streams, kill_stream
+from hdhomerun_routes import hdhomerun_emulator, get_active_streams, kill_stream, KILL_BLOCK_SECONDS
 import urllib.parse
 import json
 from epg_manager import get_epg as _refresh_epg
@@ -159,7 +159,7 @@ async def kill_stream_api(session_id: str):
     ok = kill_stream(session_id)
     if not ok:
         return JSONResponse({"ok": False, "error": "Session not found"}, status_code=404)
-    return JSONResponse({"ok": True})
+    return JSONResponse({"ok": True, "block_seconds": KILL_BLOCK_SECONDS})
 
 
 @router.get("/api/logs", response_class=JSONResponse)

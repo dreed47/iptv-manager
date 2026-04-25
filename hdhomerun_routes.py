@@ -35,6 +35,11 @@ _active_streams_lock = threading.Lock()
 # Sessions with no chunk activity for longer than this are considered dead
 _SESSION_STALE_SECONDS = config.STREAM_SESSION_STALE_SECONDS
 
+# IPs blocked after admin kill: ip -> unblock_timestamp
+_blocked_ips: dict[str, float] = {}
+_blocked_ips_lock = threading.Lock()
+KILL_BLOCK_SECONDS = 60
+
 
 def _live_streams() -> list[dict]:
     """Return sessions that have had recent activity (not stale)."""
@@ -51,14 +56,31 @@ def get_active_streams() -> list[dict]:
     return _live_streams()
 
 
+def is_ip_blocked(ip: str) -> bool:
+    with _blocked_ips_lock:
+        until = _blocked_ips.get(ip)
+        if until is None:
+            return False
+        if time.time() < until:
+            return True
+        del _blocked_ips[ip]
+        return False
+
+
 def kill_stream(session_id: str) -> bool:
-    """Mark a session as killed so its generator will exit on the next chunk."""
+    """Mark a session as killed and block its IP so reconnects are rejected for KILL_BLOCK_SECONDS."""
     with _active_streams_lock:
         s = _active_streams.get(session_id)
         if not s:
             return False
         s["killed"] = True
-    logger.info(f"Admin killed stream session={session_id}")
+        client_ip = s.get("client_ip")
+    if client_ip and client_ip not in ("unknown", ""):
+        with _blocked_ips_lock:
+            _blocked_ips[client_ip] = time.time() + KILL_BLOCK_SECONDS
+        logger.info(f"Admin killed stream session={session_id} ip={client_ip} blocked for {KILL_BLOCK_SECONDS}s")
+    else:
+        logger.info(f"Admin killed stream session={session_id} (no IP to block)")
     return True
 
 
@@ -266,6 +288,11 @@ async def stream_channel(channel_number: str, request: Request, db: Session = De
     if not source_url:
         raise HTTPException(status_code=404, detail=f"Channel {channel_number} not found")
 
+    client_ip = request.client.host if request.client else "unknown"
+    if is_ip_blocked(client_ip):
+        logger.warning(f"Stream reconnect blocked for {client_ip} (recently killed)")
+        raise HTTPException(status_code=429, detail="Stream was terminated — reconnect blocked briefly")
+
     item = db.query(Item).first()
     max_sessions = int(item.max_sessions) if item and item.max_sessions is not None else 1
     active_count = get_active_stream_count()
@@ -294,7 +321,6 @@ async def stream_channel(channel_number: str, request: Request, db: Session = De
     retry_delay     = config.STREAM_RETRY_DELAY
     read_timeout    = config.STREAM_READ_TIMEOUT
 
-    client_ip = request.client.host if request.client else "unknown"
     user_agent = request.headers.get("user-agent", "unknown")
     session_id = str(uuid.uuid4())
 

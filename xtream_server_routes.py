@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Form, Request
 from fastapi.responses import JSONResponse, StreamingResponse, RedirectResponse, Response
 from sqlalchemy.orm import Session
 from models import get_db, Item
-from hdhomerun_routes import register_extra_channels, _active_streams, _active_streams_lock, _SESSION_STALE_SECONDS, get_active_stream_count
+from hdhomerun_routes import register_extra_channels, _active_streams, _active_streams_lock, _SESSION_STALE_SECONDS, get_active_stream_count, is_ip_blocked
 import asyncio
 import config
 import hashlib
@@ -991,6 +991,10 @@ async def proxy_vod(
     if not entry or entry.stream_type != "movie":
         raise HTTPException(status_code=404, detail=f"VOD stream {stream_id} not found")
 
+    client_ip = request.client.host if request.client else "unknown"
+    if is_ip_blocked(client_ip):
+        raise HTTPException(status_code=429, detail="Stream was terminated — reconnect blocked briefly")
+
     item = db.query(Item).first()
     max_sessions = int(item.max_sessions) if item and item.max_sessions is not None else 1
     active_count = get_active_stream_count()
@@ -1034,6 +1038,10 @@ async def proxy_series(
         stream_id = int(stream_id_str)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid stream ID")
+
+    client_ip = request.client.host if request.client else "unknown"
+    if is_ip_blocked(client_ip):
+        raise HTTPException(status_code=429, detail="Stream was terminated — reconnect blocked briefly")
 
     item = db.query(Item).first()
     max_sessions = int(item.max_sessions) if item and item.max_sessions is not None else 1
