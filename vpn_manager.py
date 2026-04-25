@@ -285,8 +285,12 @@ def stop_vpn() -> tuple[bool, str]:
                 break
 
         # Remove split-tunnel /1 routes we added on connect
-        for prefix in ["0.0.0.0/1", "128.0.0.0/1"]:
-            subprocess.run(["ip", "route", "del", prefix], capture_output=True)
+        ip_bin = shutil.which("ip")
+        if ip_bin:
+            for prefix in ["0.0.0.0/1", "128.0.0.0/1"]:
+                subprocess.run([ip_bin, "route", "del", prefix], capture_output=True)
+        else:
+            logger.warning("'ip' binary not found; skipping route cleanup")
 
         try:
             os.unlink(_PID_PATH)

@@ -2,9 +2,9 @@ services:
   app:
     build: .
     container_name: ${CONTAINER_NAME:-iptv-app}
+    network_mode: host
     environment:
       - HDHR_ADVERTISE_HOST=${HDHR_ADVERTISE_HOST}
-      # Use a single port setting; advertise the same port Plex will hit on the host
       - HDHR_ADVERTISE_PORT=${APP_PORT}
       - HDHR_SCHEME=${HDHR_SCHEME}
       # Model number shown in Plex (default "HDHR3-US")
@@ -23,12 +23,9 @@ services:
       - IPTV_PASSWORD=${IPTV_PASSWORD:-iptv}
       # Log timestamps timezone — set TZ in .env (e.g. America/New_York, America/Chicago, America/Los_Angeles)
       - TZ=${TZ:-UTC}
-    ports:
-      # Host port is configurable via .env (APP_PORT). Container listens on 5005.
-      - "${APP_PORT:-5005}:5005"
-      # Port 1900 not exposed - SSDP can be enabled via web UI if needed
-      # Uncomment only if you want auto-discovery AND you're on Linux
-      # - "1900:1900/udp"
+    # network_mode: host — ports mapping is ignored; container binds directly to host ports.
+    # APP_PORT in .env controls which port uvicorn listens on (default 5005).
+    # ports: ["${APP_PORT:-5005}:5005"]  ← not used in host mode
     cap_add:
       - NET_ADMIN
     devices:
@@ -50,9 +47,3 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
-    dns:
-      - 1.1.1.1
-      - 8.8.8.8
-    dns_search: []
-    extra_hosts:
-      - "host.docker.internal:host-gateway"

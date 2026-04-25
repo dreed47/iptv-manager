@@ -5,7 +5,7 @@ WORKDIR /app
 
 # Install ffmpeg (and clean up apt cache to keep the image small)
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ffmpeg curl openvpn \
+    && apt-get install -y --no-install-recommends ffmpeg curl openvpn iproute2 \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
