@@ -14,15 +14,10 @@ services:
       - IPTV_USERNAME=${IPTV_USERNAME:-iptv}
       - IPTV_PASSWORD=${IPTV_PASSWORD:-iptv}
       - TZ=${TZ:-UTC}
-    # ── Networking ──────────────────────────────────────────────────────────
-    # NETWORK_MODE=bridge  (default, macOS + Linux) — port-mapped bridge;
-    #                      client IPs appear as the Docker gateway (172.x.x.1).
-    # NETWORK_MODE=host    (Linux only) — container shares host network stack;
-    #                      real client IPs visible, ports mapping is ignored.
-    network_mode: ${NETWORK_MODE:-bridge}
     ports:
-      - "${APP_PORT:-5005}:${APP_PORT:-5005}"
-    # ────────────────────────────────────────────────────────────────────────
+      - "${APP_PORT:-5005}:5005"
+    # To see real client IPs instead of the Docker bridge gateway, run the app
+    # directly on the host (no Docker) or use network_mode: host on Linux.
     cap_add:
       - NET_ADMIN
     devices:
