@@ -2,35 +2,30 @@ services:
   app:
     build: .
     container_name: ${CONTAINER_NAME:-iptv-app}
-    network_mode: host
     environment:
       - HDHR_ADVERTISE_HOST=${HDHR_ADVERTISE_HOST}
       - HDHR_ADVERTISE_PORT=${APP_PORT}
       - HDHR_SCHEME=${HDHR_SCHEME}
-      # Model number shown in Plex (default "HDHR3-US")
       - HDHR_MODEL=${HDHR_MODEL:-HDHR3-US}
-      # Friendly name shown in Plex (default "IPTV HDHomeRun")
       - HDHR_FRIENDLY_NAME=${HDHR_FRIENDLY_NAME:-IPTV HDHomeRun}
-      # Number of concurrent tuners to advertise (default 2 if not set)
       - HDHR_TUNER_COUNT=${HDHR_TUNER_COUNT:-2}
-      # SSDP disabled by default (avoids multicast issues on macOS/most Linux hosts)
-      # Override with HDHR_DISABLE_SSDP=0 in .env if you want SSDP auto-discovery
       - HDHR_DISABLE_SSDP=${HDHR_DISABLE_SSDP:-1}
-      # Set to 0 to disable the Fetch M3U button in the UI
       - ALLOW_FULL_M3U_DOWNLOAD=${ALLOW_FULL_M3U_DOWNLOAD:-1}
-      # Credentials for downstream IPTV players (TiviMate, IPTV Smarters, VLC, etc.)
       - IPTV_USERNAME=${IPTV_USERNAME:-iptv}
       - IPTV_PASSWORD=${IPTV_PASSWORD:-iptv}
-      # Log timestamps timezone — set TZ in .env (e.g. America/New_York, America/Chicago, America/Los_Angeles)
       - TZ=${TZ:-UTC}
-    # network_mode: host — ports mapping is ignored; container binds directly to host ports.
-    # APP_PORT in .env controls which port uvicorn listens on (default 5005).
-    # ports: ["${APP_PORT:-5005}:5005"]  ← not used in host mode
+    # ── Networking ──────────────────────────────────────────────────────────
+    # NETWORK_MODE=bridge  (default, macOS + Linux) — port-mapped bridge;
+    #                      client IPs appear as the Docker gateway (172.x.x.1).
+    # NETWORK_MODE=host    (Linux only) — container shares host network stack;
+    #                      real client IPs visible, ports mapping is ignored.
+    network_mode: ${NETWORK_MODE:-bridge}
+    ports:
+      - "${APP_PORT:-5005}:5005"
+    # ────────────────────────────────────────────────────────────────────────
     cap_add:
       - NET_ADMIN
     devices:
-      # Requires the tun kernel module on the host: modprobe tun
-      # Make it persistent: echo 'tun' >> /etc/modules
       - /dev/net/tun:/dev/net/tun
     volumes:
       - ./m3u_files:/app/m3u_files
@@ -47,3 +42,9 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+    dns:
+      - 1.1.1.1
+      - 8.8.8.8
+    dns_search: []
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
