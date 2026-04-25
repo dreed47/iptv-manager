@@ -7,7 +7,6 @@ Supports Home Assistant MQTT auto-discovery.
 
 import json
 import logging
-import math
 import threading
 import time
 
@@ -22,6 +21,8 @@ _manager_lock = threading.Lock()
 
 POLL_INTERVAL = 10      # seconds between state polls
 HEARTBEAT_INTERVAL = 60 # seconds between forced publishes regardless of change
+RECONNECT_DELAY = 30    # seconds to wait before first reconnect attempt after disconnect
+RECONNECT_DELAY_MAX = 300  # cap backoff at 5 minutes
 
 
 # ---------------------------------------------------------------------------
@@ -77,6 +78,7 @@ class MqttManager:
         self._client = None
         self._poll_thread: threading.Thread | None = None
         self._stop_event = threading.Event()
+        self._just_reconnected = False  # set by _on_connect; poll loop re-publishes state
 
         # Track previous state to detect changes
         self._prev_stream_count = -1
@@ -96,7 +98,11 @@ class MqttManager:
         if not self._host:
             return False, "No MQTT host configured"
 
-        client = mqtt.Client(client_id="iptv-manager", clean_session=True)
+        # Unique client_id per prefix prevents broker-side collisions between instances
+        uid = self._prefix.replace("/", "_").replace("-", "_")
+        client = mqtt.Client(client_id=f"iptv-{uid}", clean_session=True)
+        # Let paho handle reconnects with our backoff; on_connect fires _just_reconnected
+        client.reconnect_delay_set(RECONNECT_DELAY, RECONNECT_DELAY_MAX)
 
         if self._username:
             client.username_pw_set(self._username, self._password)
@@ -126,10 +132,8 @@ class MqttManager:
             client.loop_stop()
             return False, f"Connected to {self._host}:{self._port} but no CONNACK received within 5s"
 
-        # Publish online status
+        # Publish initial state now that the CONNACK exchange is fully settled
         self._publish(lwt_topic, "online", retain=True)
-
-        # Send HA discovery if enabled
         if self._ha_discovery:
             self.publish_ha_discovery()
 
@@ -143,13 +147,19 @@ class MqttManager:
 
     def disconnect(self):
         self._stop_event.set()
-        if self._client and self._connected:
+        if self._client:
+            if self._connected:
+                try:
+                    self._publish(f"{self._prefix}/status", "offline", retain=True)
+                    self._client.disconnect()
+                except Exception:
+                    pass
+            # Always stop the network thread — without this, the old paho loop
+            # survives into reconnect-backoff state and collides with a new client.
             try:
-                self._publish(f"{self._prefix}/status", "offline", retain=True)
-                self._client.disconnect()
+                self._client.loop_stop()
             except Exception:
                 pass
-            self._client.loop_stop()
         self._connected = False
         logger.info("MQTT disconnected")
 
@@ -166,13 +176,18 @@ class MqttManager:
     def _on_connect(self, client, userdata, flags, rc):
         if rc == 0:
             self._connected = True
+            self._just_reconnected = True  # poll loop will re-publish status on next tick
+            logger.info(f"MQTT (re)connected to {self._host}:{self._port}")
         else:
             logger.warning(f"MQTT connect failed: rc={rc}")
 
     def _on_disconnect(self, client, userdata, rc):
         self._connected = False
         if rc != 0:
-            logger.warning(f"MQTT unexpected disconnect: rc={rc}")
+            logger.warning(
+                f"MQTT unexpected disconnect: rc={rc} — "
+                f"paho will retry with backoff ({RECONNECT_DELAY}–{RECONNECT_DELAY_MAX}s)"
+            )
 
     # ------------------------------------------------------------------
     # Polling loop
@@ -195,7 +210,9 @@ class MqttManager:
         vpn = get_vpn_status()
 
         now = time.time()
-        force = (now - self._last_heartbeat) >= HEARTBEAT_INTERVAL
+        reconnected = self._just_reconnected
+        self._just_reconnected = False
+        force = reconnected or (now - self._last_heartbeat) >= HEARTBEAT_INTERVAL
 
         stream_count = len(streams)
         vpn_running = vpn.get("running", False)
@@ -213,6 +230,8 @@ class MqttManager:
 
         if force:
             self._publish(f"{self._prefix}/status", "online", retain=True)
+            if reconnected and self._ha_discovery:
+                self.publish_ha_discovery()
             self._last_heartbeat = now
 
     # ------------------------------------------------------------------
