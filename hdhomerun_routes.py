@@ -293,9 +293,24 @@ async def stream_channel(channel_number: str, request: Request, db: Session = De
         logger.warning(f"Stream reconnect blocked for {client_ip} (recently killed)")
         raise HTTPException(status_code=429, detail="Stream was terminated — reconnect blocked briefly")
 
+    # Same-IP channel switch: kill existing sessions from this IP so the new channel starts immediately.
+    # No IP block is added — this is an automatic replace, not an admin action.
+    with _active_streams_lock:
+        existing_from_ip = [
+            (sid, s) for sid, s in _active_streams.items()
+            if s.get("client_ip") == client_ip and not s.get("killed")
+        ]
+    for sid, s in existing_from_ip:
+        old_ch = s.get("channel_name") or s.get("channel", "?")
+        with _active_streams_lock:
+            if sid in _active_streams:
+                _active_streams[sid]["killed"] = True
+        logger.info(f"Auto-replaced session {sid}: IP {client_ip} switched from '{old_ch}' to ch {channel_number}")
+
     item = db.query(Item).first()
     max_sessions = int(item.max_sessions) if item and item.max_sessions is not None else 1
-    active_count = get_active_stream_count()
+    # Count only non-killed live streams for the limit check
+    active_count = sum(1 for s in _live_streams() if not s.get("killed"))
     if active_count >= max_sessions:
         logger.warning(
             f"Stream rejected for channel {channel_number}: {active_count}/{max_sessions} sessions active"
