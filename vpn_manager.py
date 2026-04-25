@@ -196,7 +196,6 @@ def start_vpn(config_str: str, username: str, password: str) -> tuple[bool, str]
             "--writepid", _PID_PATH,
             "--log", _LOG_PATH,
             "--script-security", "2",
-            "--route-nopull",
             "--daemon",
         ]
         logger.info(f"VPN: launching {' '.join(cmd[:3])} …")
@@ -221,24 +220,10 @@ def start_vpn(config_str: str, username: str, password: str) -> tuple[bool, str]
             if _tun_is_up():
                 pid = _read_pid()
                 logger.info(f"VPN connected — tun up, pid={pid}")
-                # --route-nopull prevents OpenVPN from touching the routing table at all.
-                # Manually build a full split tunnel:
-                #   public traffic (0/1 + 128/1) → tun0 (through VPN)
-                #   RFC 1918 private ranges      → original gateway (LAN/Docker stays reachable)
+                # Let OpenVPN finish adding its own routes (redirect-gateway) before we override.
+                time.sleep(3)
                 if gw_ip and gw_iface:
-                    tun_iface = next(
-                        (n for n in os.listdir("/sys/class/net") if n.startswith("tun")), None
-                    )
-                    if tun_iface:
-                        for prefix in ["0.0.0.0/1", "128.0.0.0/1"]:
-                            try:
-                                subprocess.run(
-                                    ["ip", "route", "replace", prefix, "dev", tun_iface],
-                                    check=True, capture_output=True,
-                                )
-                                logger.info(f"VPN: routed public {prefix} via {tun_iface}")
-                            except Exception as e:
-                                logger.warning(f"VPN: could not add route {prefix}: {e}")
+                    # Override: keep RFC 1918 LAN traffic on the original gateway
                     for net in ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"]:
                         try:
                             subprocess.run(
@@ -248,7 +233,7 @@ def start_vpn(config_str: str, username: str, password: str) -> tuple[bool, str]
                             logger.info(f"VPN: preserved LAN route {net} via {gw_ip} dev {gw_iface}")
                         except Exception as e:
                             logger.warning(f"VPN: could not add route for {net}: {e}")
-                    # Route DNS servers directly (bypass VPN) so name resolution keeps working
+                    # Override: DNS servers bypass the VPN tunnel so name resolution keeps working
                     for dns_ip in ["1.1.1.1", "8.8.8.8"]:
                         try:
                             subprocess.run(
@@ -293,14 +278,6 @@ def stop_vpn() -> tuple[bool, str]:
             time.sleep(1)
             if not _tun_is_up():
                 break
-
-        # Remove split-tunnel /1 routes we added on connect
-        ip_bin = shutil.which("ip")
-        if ip_bin:
-            for prefix in ["0.0.0.0/1", "128.0.0.0/1"]:
-                subprocess.run([ip_bin, "route", "del", prefix], capture_output=True)
-        else:
-            logger.warning("'ip' binary not found; skipping route cleanup")
 
         try:
             os.unlink(_PID_PATH)
