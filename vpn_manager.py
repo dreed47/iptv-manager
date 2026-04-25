@@ -248,6 +248,16 @@ def start_vpn(config_str: str, username: str, password: str) -> tuple[bool, str]
                             logger.info(f"VPN: preserved LAN route {net} via {gw_ip} dev {gw_iface}")
                         except Exception as e:
                             logger.warning(f"VPN: could not add route for {net}: {e}")
+                    # Route DNS servers directly (bypass VPN) so name resolution keeps working
+                    for dns_ip in ["1.1.1.1", "8.8.8.8"]:
+                        try:
+                            subprocess.run(
+                                ["ip", "route", "replace", f"{dns_ip}/32", "via", gw_ip, "dev", gw_iface],
+                                check=True, capture_output=True,
+                            )
+                            logger.info(f"VPN: DNS {dns_ip} routed via {gw_ip} (bypass tunnel)")
+                        except Exception as e:
+                            logger.warning(f"VPN: could not add DNS bypass route for {dns_ip}: {e}")
                 return True, "Connected"
             if i == 5:
                 logger.info(f"VPN: still waiting for tun… log: {_tail_log(3)}")
