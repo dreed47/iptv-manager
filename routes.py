@@ -9,7 +9,7 @@ import config
 import logging
 import os
 import re
-from hdhomerun_routes import hdhomerun_emulator, get_active_streams
+from hdhomerun_routes import hdhomerun_emulator, get_active_streams, kill_stream
 import urllib.parse
 import json
 from epg_manager import get_epg as _refresh_epg
@@ -74,15 +74,16 @@ async def handle_settings_form(
     username: str = Form(...),
     user_pass: str = Form(...),
     m3u_refresh_hours: int = Form(0),
+    max_sessions: int = Form(1),
     db: Session = Depends(get_db),
 ):
     existing = db.query(Item).first()
     if existing:
-        result = update_item(db, existing.id, name, server_url, username, user_pass, None, None, None, m3u_refresh_hours=m3u_refresh_hours)
+        result = update_item(db, existing.id, name, server_url, username, user_pass, None, None, None, m3u_refresh_hours=m3u_refresh_hours, max_sessions=max_sessions)
     else:
-        result = create_item(db, name, server_url, username, user_pass, None, None, None)
+        result = create_item(db, name, server_url, username, user_pass, None, None, None, max_sessions=max_sessions)
         if result:
-            update_item(db, result.id, None, None, None, None, None, None, None, m3u_refresh_hours)
+            update_item(db, result.id, None, None, None, None, None, None, None, m3u_refresh_hours, max_sessions=max_sessions)
     if not result:
         return RedirectResponse(url="/settings?error=Failed to save provider", status_code=303)
     return RedirectResponse(url="/settings?success=Provider saved successfully", status_code=303)
@@ -127,9 +128,11 @@ async def test_connection(request: Request, db: Session = Depends(get_db)):
 
 
 @router.get("/api/active_streams", response_class=JSONResponse)
-async def api_active_streams():
+async def api_active_streams(db: Session = Depends(get_db)):
     import math
     streams = get_active_streams()
+    item = db.query(Item).first()
+    max_sessions = int(item.max_sessions) if item and item.max_sessions is not None else 1
     out = []
     now = time.time()
     for s in streams:
@@ -142,12 +145,21 @@ async def api_active_streams():
         channel_name = s.get("channel_name", "")
         channel_display = f"{channel_num} — {channel_name}" if channel_name and channel_name != channel_num else channel_num
         out.append({
+            "session_id": s.get("session_id", ""),
             "channel": channel_display,
             "client_ip": s.get("client_ip", "?"),
             "duration": duration,
             "mb_sent": round(mb, 1),
         })
-    return JSONResponse({"streams": out})
+    return JSONResponse({"streams": out, "max_sessions": max_sessions})
+
+
+@router.post("/api/streams/{session_id}/kill", response_class=JSONResponse)
+async def kill_stream_api(session_id: str):
+    ok = kill_stream(session_id)
+    if not ok:
+        return JSONResponse({"ok": False, "error": "Session not found"}, status_code=404)
+    return JSONResponse({"ok": True})
 
 
 @router.get("/api/logs", response_class=JSONResponse)

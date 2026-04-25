@@ -45,6 +45,7 @@ class Item(Base):
     vpn_config    = Column(Text, nullable=True)
     vpn_username  = Column(String(500), nullable=True)
     vpn_password  = Column(String(500), nullable=True)
+    max_sessions  = Column(Integer, nullable=True, default=1)
 
 def init_db():
     Base.metadata.create_all(bind=engine)
@@ -84,6 +85,10 @@ def init_db():
             conn.execute(text("ALTER TABLE items ADD COLUMN vpn_password VARCHAR(500)"))
             conn.commit()
             logger.info("Migrated: added vpn_password column")
+        if "max_sessions" not in existing:
+            conn.execute(text("ALTER TABLE items ADD COLUMN max_sessions INTEGER DEFAULT 1"))
+            conn.commit()
+            logger.info("Migrated: added max_sessions column")
 
 def get_db():
     db = SessionLocal()

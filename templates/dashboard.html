@@ -168,6 +168,26 @@
     if (disableForm) disableForm.style.display = _vpnRunning ? 'inline' : 'none';
   }
 
+  function killStream(sessionId, btn) {
+    btn.disabled = true;
+    btn.textContent = '…';
+    fetch('/api/streams/' + sessionId + '/kill', { method: 'POST' })
+      .then(function(r) { return r.json(); })
+      .then(function(data) {
+        if (data.ok) {
+          btn.closest('[data-session]').style.opacity = '0.4';
+          setTimeout(updateStreams, 800);
+        } else {
+          btn.disabled = false;
+          btn.textContent = '✕';
+        }
+      })
+      .catch(function() {
+        btn.disabled = false;
+        btn.textContent = '✕';
+      });
+  }
+
   function updateStreams() {
     Promise.all([
       fetch('/api/active_streams').then(function(r) { return r.json(); }),
@@ -178,6 +198,7 @@
         var badge  = document.getElementById('streams-status');
         var body   = document.getElementById('streams-body');
         var streams = data.streams || [];
+        var maxSessions = data.max_sessions || 1;
 
         updateVpnStat(vpn);
 
@@ -185,20 +206,28 @@
           ? '<span style="display:inline-flex;align-items:center;gap:3px;padding:2px 6px;font-size:10px;font-weight:700;border-radius:8px;background:rgba(22,163,74,0.12);color:var(--success);">🔒 VPN</span>'
           : '<span style="display:inline-flex;align-items:center;gap:3px;padding:2px 6px;font-size:10px;font-weight:700;border-radius:8px;background:var(--bg);color:var(--text-muted);">Direct</span>';
 
+        var limitLabel = maxSessions >= 99 ? '∞' : maxSessions;
+
         if (streams.length === 0) {
-          badge.textContent = 'Idle';
+          badge.textContent = '0/' + limitLabel;
           badge.className = 'badge badge-neutral';
           body.innerHTML = '<p class="text-muted text-sm" style="font-style:italic;">No active streams.</p>';
         } else {
-          badge.textContent = streams.length === 1 ? '1 Active' : streams.length + ' Active';
-          badge.className = 'badge badge-success';
+          var atLimit = streams.length >= maxSessions && maxSessions < 99;
+          badge.textContent = streams.length + '/' + limitLabel;
+          badge.className = 'badge ' + (atLimit ? 'badge-danger' : 'badge-success');
           var rows = streams.map(function(s) {
-            return '<div style="display:grid; grid-template-columns: 1fr 1fr 1fr 1fr auto; gap:8px; padding:10px 12px; background:var(--bg); border:1px solid var(--border); border-radius:6px; font-size:13px; align-items:center;">'
+            var sid = s.session_id || '';
+            var killBtn = sid
+              ? '<button onclick="killStream(\'' + sid + '\', this)" class="btn btn-danger" style="padding:3px 8px;font-size:11px;line-height:1.4;" title="Kill stream">✕</button>'
+              : '';
+            return '<div data-session="' + sid + '" style="display:grid; grid-template-columns: 1fr 1fr 1fr 1fr auto auto; gap:8px; padding:10px 12px; background:var(--bg); border:1px solid var(--border); border-radius:6px; font-size:13px; align-items:center;">'
               + '<div><div class="form-label" style="margin-bottom:2px;">Channel</div><span style="font-weight:600;">' + s.channel + '</span></div>'
               + '<div><div class="form-label" style="margin-bottom:2px;">Client</div><span class="text-mono">' + s.client_ip + '</span></div>'
               + '<div><div class="form-label" style="margin-bottom:2px;">Duration</div>' + s.duration + '</div>'
               + '<div><div class="form-label" style="margin-bottom:2px;">Sent</div>' + s.mb_sent + ' MB</div>'
               + '<div>' + vpnBadge + '</div>'
+              + '<div>' + killBtn + '</div>'
               + '</div>';
           });
           body.innerHTML = '<div class="flex flex-col gap-8">' + rows.join('') + '</div>';

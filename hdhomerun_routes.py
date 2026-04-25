@@ -51,6 +51,17 @@ def get_active_streams() -> list[dict]:
     return _live_streams()
 
 
+def kill_stream(session_id: str) -> bool:
+    """Mark a session as killed so its generator will exit on the next chunk."""
+    with _active_streams_lock:
+        s = _active_streams.get(session_id)
+        if not s:
+            return False
+        s["killed"] = True
+    logger.info(f"Admin killed stream session={session_id}")
+    return True
+
+
 def register_extra_channels(url_map: dict, name_map: dict | None = None):
     """Register source URLs (and optionally display names) for extra channels."""
     with _channel_source_urls_lock:
@@ -255,6 +266,18 @@ async def stream_channel(channel_number: str, request: Request, db: Session = De
     if not source_url:
         raise HTTPException(status_code=404, detail=f"Channel {channel_number} not found")
 
+    item = db.query(Item).first()
+    max_sessions = int(item.max_sessions) if item and item.max_sessions is not None else 1
+    active_count = get_active_stream_count()
+    if active_count >= max_sessions:
+        logger.warning(
+            f"Stream rejected for channel {channel_number}: {active_count}/{max_sessions} sessions active"
+        )
+        raise HTTPException(
+            status_code=429,
+            detail=f"Session limit reached ({active_count}/{max_sessions} active streams)",
+        )
+
     logger.info(f"Stream request for channel {channel_number} method={request.method}")
     logger.info(f"Proxying channel {channel_number} -> {source_url}")
 
@@ -296,6 +319,7 @@ async def stream_channel(channel_number: str, request: Request, db: Session = De
                 "started_at": time.time(),
                 "last_chunk_at": time.time(),
                 "bytes_sent": 0,
+                "killed": False,
             }
         # Use a mutable container so inner reconnect logic can update the URL.
         current_url = [source_url]
@@ -361,6 +385,9 @@ async def stream_channel(channel_number: str, request: Request, db: Session = De
                         for chunk in resp.iter_content(chunk_size=chunk_size):
                             if not chunk:
                                 continue
+                            if _active_streams.get(session_id, {}).get("killed"):
+                                logger.info(f"Stream {session_id} channel={channel_number} terminated by admin")
+                                return
                             if prebuffering:
                                 prebuf.append(chunk)
                                 prebuf_size += len(chunk)

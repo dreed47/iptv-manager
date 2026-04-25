@@ -58,24 +58,40 @@
     </div>
 
     {% if item %}
-    <div class="form-group">
-      <label class="form-label">
-        Auto-refresh M3U
-        {% if item.m3u_last_fetched_ts %}
-        <span style="text-transform:none; font-weight:400; letter-spacing:0;" data-ts="{{ item.m3u_last_fetched_ts }}">
-          — Last fetch: <span class="last-fetch-time">…</span>
-        </span>
-        {% endif %}
-      </label>
-      {% set rh = item.m3u_refresh_hours | int %}
-      <select name="m3u_refresh_hours" class="form-select">
-        <option value="0"   {% if rh == 0   %}selected{% endif %}>Disabled</option>
-        <option value="6"   {% if rh == 6   %}selected{% endif %}>Every 6 hours</option>
-        <option value="12"  {% if rh == 12  %}selected{% endif %}>Every 12 hours</option>
-        <option value="24"  {% if rh == 24  %}selected{% endif %}>Every 24 hours</option>
-        <option value="48"  {% if rh == 48  %}selected{% endif %}>Every 48 hours</option>
-        <option value="168" {% if rh == 168 %}selected{% endif %}>Every week</option>
-      </select>
+    <div class="grid-2">
+      <div class="form-group">
+        <label class="form-label">
+          Auto-refresh M3U
+          {% if item.m3u_last_fetched_ts %}
+          <span style="text-transform:none; font-weight:400; letter-spacing:0;" data-ts="{{ item.m3u_last_fetched_ts }}">
+            — Last fetch: <span class="last-fetch-time">…</span>
+          </span>
+          {% endif %}
+        </label>
+        {% set rh = item.m3u_refresh_hours | int %}
+        <select name="m3u_refresh_hours" class="form-select">
+          <option value="0"   {% if rh == 0   %}selected{% endif %}>Disabled</option>
+          <option value="6"   {% if rh == 6   %}selected{% endif %}>Every 6 hours</option>
+          <option value="12"  {% if rh == 12  %}selected{% endif %}>Every 12 hours</option>
+          <option value="24"  {% if rh == 24  %}selected{% endif %}>Every 24 hours</option>
+          <option value="48"  {% if rh == 48  %}selected{% endif %}>Every 48 hours</option>
+          <option value="168" {% if rh == 168 %}selected{% endif %}>Every week</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Max Concurrent Streams</label>
+        {% set ms = item.max_sessions | int %}
+        <select name="max_sessions" class="form-select">
+          <option value="1" {% if ms == 1 %}selected{% endif %}>1 stream</option>
+          <option value="2" {% if ms == 2 %}selected{% endif %}>2 streams</option>
+          <option value="3" {% if ms == 3 %}selected{% endif %}>3 streams</option>
+          <option value="4" {% if ms == 4 %}selected{% endif %}>4 streams</option>
+          <option value="5" {% if ms == 5 %}selected{% endif %}>5 streams</option>
+          <option value="10" {% if ms == 10 %}selected{% endif %}>10 streams</option>
+          <option value="99" {% if ms >= 99 %}selected{% endif %}>Unlimited</option>
+        </select>
+        <p class="form-help">New stream requests are rejected when this limit is reached.</p>
+      </div>
     </div>
     {% endif %}
 

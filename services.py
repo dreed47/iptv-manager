@@ -8,9 +8,9 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # services.py
-def create_item(db: Session, name: str, server_url: str, username: str, user_pass: str, languages: str, includes: str, excludes: str, xtream_includes: str = None, m3u_refresh_hours: int = 0):
+def create_item(db: Session, name: str, server_url: str, username: str, user_pass: str, languages: str, includes: str, excludes: str, xtream_includes: str = None, m3u_refresh_hours: int = 0, max_sessions: int = 1):
     try:
-        db_item = Item(name=name, server_url=server_url, username=username, user_pass=user_pass, languages=languages, includes=includes, excludes=excludes, xtream_includes=xtream_includes, m3u_refresh_hours=m3u_refresh_hours)
+        db_item = Item(name=name, server_url=server_url, username=username, user_pass=user_pass, languages=languages, includes=includes, excludes=excludes, xtream_includes=xtream_includes, m3u_refresh_hours=m3u_refresh_hours, max_sessions=max_sessions)
         db.add(db_item)
         db.commit()
         db.refresh(db_item)
@@ -21,7 +21,7 @@ def create_item(db: Session, name: str, server_url: str, username: str, user_pas
         db.rollback()
         return None
 
-def update_item(db: Session, item_id: int, name: str, server_url: str, username: str, user_pass: str, languages: str, includes: str, excludes: str, xtream_includes: str = None, m3u_refresh_hours: int = None):
+def update_item(db: Session, item_id: int, name: str, server_url: str, username: str, user_pass: str, languages: str, includes: str, excludes: str, xtream_includes: str = None, m3u_refresh_hours: int = None, max_sessions: int = None):
     try:
         db_item = db.query(Item).filter(Item.id == item_id).first()
         if db_item:
@@ -43,6 +43,8 @@ def update_item(db: Session, item_id: int, name: str, server_url: str, username:
                 db_item.xtream_includes = xtream_includes
             if m3u_refresh_hours is not None:
                 db_item.m3u_refresh_hours = m3u_refresh_hours
+            if max_sessions is not None:
+                db_item.max_sessions = max_sessions
             db.commit()
             db.refresh(db_item)
             logger.info(f"Updated item with id {item_id}")
@@ -102,6 +104,7 @@ def get_item_context(db: Session, base_url: str, m3u_dir: str) -> dict | None:
         'vpn_config': item.vpn_config or '',
         'vpn_username': item.vpn_username or '',
         'vpn_configured': bool(item.vpn_config and item.vpn_username and item.vpn_password),
+        'max_sessions': int(item.max_sessions) if item.max_sessions is not None else 1,
     }
     m3u_path = os.path.join(m3u_dir, f"xtream_playlist_{item.id}.m3u")
     try:

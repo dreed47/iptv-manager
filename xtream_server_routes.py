@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Form, Request
 from fastapi.responses import JSONResponse, StreamingResponse, RedirectResponse, Response
 from sqlalchemy.orm import Session
 from models import get_db, Item
-from hdhomerun_routes import register_extra_channels, _active_streams, _SESSION_STALE_SECONDS
+from hdhomerun_routes import register_extra_channels, _active_streams, _active_streams_lock, _SESSION_STALE_SECONDS, get_active_stream_count
 import asyncio
 import config
 import hashlib
@@ -343,7 +343,7 @@ def _build_cache(items: list, fingerprint: tuple) -> XtreamCache:
         patterns = [p.strip() for p in raw_xi.split(",") if p.strip()]
         if not patterns:
             continue
-        logger.info(f"Xtream extra: item={item.id} patterns={patterns}")
+        logger.debug(f"Xtream extra: item={item.id} patterns={patterns}")
         full_path = os.path.join(M3U_DIR, f"xtream_playlist_{item.id}.m3u")
         scanned = skipped_filtered = skipped_dedup = matched_count = 0
         for e in _parse_m3u_file(full_path):
@@ -381,7 +381,7 @@ def _build_cache(items: list, fingerprint: tuple) -> XtreamCache:
             used_guide_numbers.add(guide_num)
             extra_channel_urls[guide_num] = e["url"]
             extra_channel_names[guide_num] = display
-        logger.info(f"Xtream extra: item={item.id} patterns={patterns} scanned={scanned} skipped_dedup={skipped_dedup} matched={matched_count}")
+        logger.debug(f"Xtream extra: item={item.id} patterns={patterns} scanned={scanned} skipped_dedup={skipped_dedup} matched={matched_count}")
 
     # Build live_streams from the filtered channels dedup map
     live_streams = []
@@ -942,11 +942,15 @@ def _proxy_finite_stream(source_url: str, request: Request, media_type: str, str
             "started_at": time.time(),
             "last_chunk_at": time.time(),
             "bytes_sent": 0,
+            "killed": False,
         }
         bytes_sent = 0
         try:
             for chunk in resp.iter_content(chunk_size=chunk_size):
                 if chunk:
+                    if _active_streams.get(session_id, {}).get("killed"):
+                        logger.info(f"Stream {session_id} ({stream_label}) terminated by admin")
+                        return
                     bytes_sent += len(chunk)
                     _active_streams[session_id]["bytes_sent"] = bytes_sent
                     _active_streams[session_id]["last_chunk_at"] = time.time()
@@ -987,6 +991,15 @@ async def proxy_vod(
     if not entry or entry.stream_type != "movie":
         raise HTTPException(status_code=404, detail=f"VOD stream {stream_id} not found")
 
+    item = db.query(Item).first()
+    max_sessions = int(item.max_sessions) if item and item.max_sessions is not None else 1
+    active_count = get_active_stream_count()
+    if active_count >= max_sessions:
+        raise HTTPException(
+            status_code=429,
+            detail=f"Session limit reached ({active_count}/{max_sessions} active streams)",
+        )
+
     # Check if we already have the correct URL (resolved extension from a prior get_vod_info call)
     with _vod_url_cache_lock:
         resolved_url = _vod_url_cache.get(stream_id)
@@ -1021,6 +1034,15 @@ async def proxy_series(
         stream_id = int(stream_id_str)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid stream ID")
+
+    item = db.query(Item).first()
+    max_sessions = int(item.max_sessions) if item and item.max_sessions is not None else 1
+    active_count = get_active_stream_count()
+    if active_count >= max_sessions:
+        raise HTTPException(
+            status_code=429,
+            detail=f"Session limit reached ({active_count}/{max_sessions} active streams)",
+        )
 
     # Episode cache is populated when get_series_info is called; check it first
     with _episode_cache_lock:
