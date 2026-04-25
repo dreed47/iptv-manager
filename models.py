@@ -46,6 +46,14 @@ class Item(Base):
     vpn_username  = Column(String(500), nullable=True)
     vpn_password  = Column(String(500), nullable=True)
     max_sessions  = Column(Integer, nullable=True, default=1)
+    mqtt_enabled       = Column(Boolean, nullable=True, default=False)
+    mqtt_host          = Column(String(200), nullable=True)
+    mqtt_port          = Column(Integer, nullable=True, default=1883)
+    mqtt_username      = Column(String(200), nullable=True)
+    mqtt_password      = Column(String(500), nullable=True)
+    mqtt_topic_prefix  = Column(String(200), nullable=True, default="iptv-manager")
+    mqtt_ha_discovery  = Column(Boolean, nullable=True, default=False)
+    mqtt_device_name   = Column(String(200), nullable=True, default="IPTV Manager")
 
 def init_db():
     Base.metadata.create_all(bind=engine)
@@ -89,6 +97,38 @@ def init_db():
             conn.execute(text("ALTER TABLE items ADD COLUMN max_sessions INTEGER DEFAULT 1"))
             conn.commit()
             logger.info("Migrated: added max_sessions column")
+        if "mqtt_enabled" not in existing:
+            conn.execute(text("ALTER TABLE items ADD COLUMN mqtt_enabled BOOLEAN DEFAULT 0"))
+            conn.commit()
+            logger.info("Migrated: added mqtt_enabled column")
+        if "mqtt_host" not in existing:
+            conn.execute(text("ALTER TABLE items ADD COLUMN mqtt_host VARCHAR(200)"))
+            conn.commit()
+            logger.info("Migrated: added mqtt_host column")
+        if "mqtt_port" not in existing:
+            conn.execute(text("ALTER TABLE items ADD COLUMN mqtt_port INTEGER DEFAULT 1883"))
+            conn.commit()
+            logger.info("Migrated: added mqtt_port column")
+        if "mqtt_username" not in existing:
+            conn.execute(text("ALTER TABLE items ADD COLUMN mqtt_username VARCHAR(200)"))
+            conn.commit()
+            logger.info("Migrated: added mqtt_username column")
+        if "mqtt_password" not in existing:
+            conn.execute(text("ALTER TABLE items ADD COLUMN mqtt_password VARCHAR(500)"))
+            conn.commit()
+            logger.info("Migrated: added mqtt_password column")
+        if "mqtt_topic_prefix" not in existing:
+            conn.execute(text("ALTER TABLE items ADD COLUMN mqtt_topic_prefix VARCHAR(200) DEFAULT 'iptv-manager'"))
+            conn.commit()
+            logger.info("Migrated: added mqtt_topic_prefix column")
+        if "mqtt_ha_discovery" not in existing:
+            conn.execute(text("ALTER TABLE items ADD COLUMN mqtt_ha_discovery BOOLEAN DEFAULT 0"))
+            conn.commit()
+            logger.info("Migrated: added mqtt_ha_discovery column")
+        if "mqtt_device_name" not in existing:
+            conn.execute(text("ALTER TABLE items ADD COLUMN mqtt_device_name VARCHAR(200) DEFAULT 'IPTV Manager'"))
+            conn.commit()
+            logger.info("Migrated: added mqtt_device_name column")
 
 def get_db():
     db = SessionLocal()

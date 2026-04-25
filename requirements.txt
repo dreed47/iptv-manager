@@ -5,3 +5,4 @@ pydantic
 jinja2
 python-multipart
 requests
+paho-mqtt

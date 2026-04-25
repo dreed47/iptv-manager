@@ -725,3 +725,82 @@ async def tools_page(request: Request, db: Session = Depends(get_db), error: str
     logger.info(f"Template render duration: {time.perf_counter() - start:.3f}s")
     return HTMLResponse(content=rendered)
 
+
+@router.post("/mqtt/settings", response_class=RedirectResponse)
+async def save_mqtt_settings(
+    request: Request,
+    db: Session = Depends(get_db),
+    mqtt_enabled: str = Form(""),
+    mqtt_host: str = Form(""),
+    mqtt_port: int = Form(1883),
+    mqtt_username: str = Form(""),
+    mqtt_password: str = Form(""),
+    mqtt_topic_prefix: str = Form("iptv-manager"),
+    mqtt_ha_discovery: str = Form(""),
+    mqtt_device_name: str = Form("IPTV Manager"),
+):
+    import mqtt_manager as _mqtt
+    item = db.query(Item).first()
+    if not item:
+        return RedirectResponse(url="/tools?error=No provider configured", status_code=303)
+
+    enabled = mqtt_enabled.lower() in ("1", "true", "on", "yes")
+    ha_disc = mqtt_ha_discovery.lower() in ("1", "true", "on", "yes")
+
+    item.mqtt_enabled = enabled
+    item.mqtt_host = mqtt_host.strip() or None
+    item.mqtt_port = mqtt_port
+    item.mqtt_username = mqtt_username.strip() or None
+    if mqtt_password:
+        item.mqtt_password = mqtt_password
+    item.mqtt_topic_prefix = mqtt_topic_prefix.strip() or "iptv-manager"
+    item.mqtt_ha_discovery = ha_disc
+    item.mqtt_device_name = mqtt_device_name.strip() or "IPTV Manager"
+    db.commit()
+
+    cfg = {
+        "mqtt_host": item.mqtt_host,
+        "mqtt_port": item.mqtt_port,
+        "mqtt_username": item.mqtt_username,
+        "mqtt_password": item.mqtt_password,
+        "mqtt_topic_prefix": item.mqtt_topic_prefix,
+        "mqtt_ha_discovery": item.mqtt_ha_discovery,
+        "mqtt_device_name": item.mqtt_device_name,
+    }
+    if enabled and item.mqtt_host:
+        ok, msg = _mqtt.start_mqtt(cfg)
+        if not ok:
+            return RedirectResponse(url=f"/tools?error={urllib.parse.quote('MQTT saved but connect failed: ' + msg)}", status_code=303)
+    else:
+        _mqtt.stop_mqtt()
+
+    return RedirectResponse(url="/tools?success=MQTT settings saved", status_code=303)
+
+
+@router.get("/mqtt/status", response_class=JSONResponse)
+async def mqtt_status():
+    import mqtt_manager as _mqtt
+    return JSONResponse(_mqtt.get_mqtt_status())
+
+
+@router.post("/mqtt/test", response_class=JSONResponse)
+async def mqtt_test(
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    import asyncio
+    import mqtt_manager as _mqtt
+    item = db.query(Item).first()
+    if not item or not item.mqtt_host:
+        return JSONResponse({"ok": False, "error": "No MQTT host configured — save settings first"})
+    cfg = {
+        "mqtt_host": item.mqtt_host,
+        "mqtt_port": item.mqtt_port,
+        "mqtt_username": item.mqtt_username,
+        "mqtt_password": item.mqtt_password,
+        "mqtt_topic_prefix": item.mqtt_topic_prefix or "iptv-manager",
+        "mqtt_ha_discovery": False,
+    }
+    ok, msg = await asyncio.to_thread(_mqtt.test_mqtt_connection, cfg)
+    return JSONResponse({"ok": ok, "message": msg})
+

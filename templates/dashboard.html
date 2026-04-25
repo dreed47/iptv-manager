@@ -55,6 +55,12 @@
     <div class="stat-value" id="vpnStatValue" style="color: #94a3b8;">—</div>
     <div class="stat-sub" id="vpnStatSub">Checking…</div>
   </div>
+
+  <div class="card" style="margin-bottom: 0;">
+    <div class="stat-label"><a href="/tools" class="stat-link">MQTT</a></div>
+    <div class="stat-value" id="mqttStatValue" style="color: #94a3b8;">—</div>
+    <div class="stat-sub" id="mqttStatSub">Checking…</div>
+  </div>
 </div>
 
 <!-- Active Streams -->
@@ -168,6 +174,25 @@
     if (disableForm) disableForm.style.display = _vpnRunning ? 'inline' : 'none';
   }
 
+  function updateMqttStat(mqttData) {
+    var val = document.getElementById('mqttStatValue');
+    var sub = document.getElementById('mqttStatSub');
+    if (!val) return;
+    if (mqttData && mqttData.connected) {
+      val.textContent = 'Connected';
+      val.style.color = 'var(--success)';
+      sub.textContent = mqttData.broker || 'broker active';
+    } else if (mqttData && mqttData.broker) {
+      val.textContent = 'Off';
+      val.style.color = '#94a3b8';
+      sub.textContent = 'Disconnected';
+    } else {
+      val.textContent = 'Off';
+      val.style.color = '#94a3b8';
+      sub.textContent = 'Not configured';
+    }
+  }
+
   function killStream(sessionId, btn) {
     btn.disabled = true;
     btn.textContent = '…';
@@ -196,15 +221,18 @@
     Promise.all([
       fetch('/api/active_streams').then(function(r) { return r.json(); }),
       fetch('/vpn/status').then(function(r) { return r.json(); }),
+      fetch('/mqtt/status').then(function(r) { return r.json(); }).catch(function() { return null; }),
     ]).then(function(results) {
         var data   = results[0];
         var vpn    = results[1];
+        var mqtt   = results[2];
         var badge  = document.getElementById('streams-status');
         var body   = document.getElementById('streams-body');
         var streams = data.streams || [];
         var maxSessions = data.max_sessions || 1;
 
         updateVpnStat(vpn);
+        if (mqtt !== null) updateMqttStat(mqtt);
 
         var vpnBadge = vpn.running
           ? '<span style="display:inline-flex;align-items:center;gap:3px;padding:2px 6px;font-size:10px;font-weight:700;border-radius:8px;background:rgba(22,163,74,0.12);color:var(--success);">🔒 VPN</span>'

@@ -105,6 +105,15 @@ def get_item_context(db: Session, base_url: str, m3u_dir: str) -> dict | None:
         'vpn_username': item.vpn_username or '',
         'vpn_configured': bool(item.vpn_config and item.vpn_username and item.vpn_password),
         'max_sessions': int(item.max_sessions) if item.max_sessions is not None else 1,
+        'mqtt_enabled': bool(item.mqtt_enabled),
+        'mqtt_host': item.mqtt_host or '',
+        'mqtt_port': int(item.mqtt_port) if item.mqtt_port is not None else 1883,
+        'mqtt_username': item.mqtt_username or '',
+        'mqtt_password': item.mqtt_password or '',
+        'mqtt_topic_prefix': item.mqtt_topic_prefix or 'iptv-manager',
+        'mqtt_ha_discovery': bool(item.mqtt_ha_discovery),
+        'mqtt_device_name': item.mqtt_device_name or 'IPTV Manager',
+        'mqtt_configured': bool(item.mqtt_host),
     }
     m3u_path = os.path.join(m3u_dir, f"xtream_playlist_{item.id}.m3u")
     try:

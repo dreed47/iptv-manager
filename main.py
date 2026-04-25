@@ -98,6 +98,31 @@ def create_app():
         except Exception as exc:
             logger.warning(f"VPN auto-start error: {exc}")
 
+    async def _autostart_mqtt():
+        try:
+            from models import Item
+            import mqtt_manager
+            with SessionLocal() as db:
+                item = db.query(Item).first()
+                if item and item.mqtt_enabled and item.mqtt_host:
+                    logger.info("MQTT auto-start: enabled flag set — connecting…")
+                    config = {
+                        "mqtt_host": item.mqtt_host,
+                        "mqtt_port": item.mqtt_port,
+                        "mqtt_username": item.mqtt_username,
+                        "mqtt_password": item.mqtt_password,
+                        "mqtt_topic_prefix": item.mqtt_topic_prefix or "iptv-manager",
+                        "mqtt_ha_discovery": item.mqtt_ha_discovery,
+                        "mqtt_device_name": item.mqtt_device_name or "IPTV Manager",
+                    }
+                    ok, msg = await asyncio.to_thread(mqtt_manager.start_mqtt, config)
+                    if ok:
+                        logger.info(f"MQTT auto-start: {msg}")
+                    else:
+                        logger.warning(f"MQTT auto-start failed: {msg}")
+        except Exception as exc:
+            logger.warning(f"MQTT auto-start error: {exc}")
+
     @app.on_event("startup")
     async def startup_event():
         logger.info("Starting application...")
@@ -106,6 +131,7 @@ def create_app():
         start_m3u_scheduler()
         logger.info("M3U scheduler started")
         asyncio.create_task(_autostart_vpn())
+        asyncio.create_task(_autostart_mqtt())
         # Warm the Xtream cache in the background so the first stream request
         # doesn't block for ~28s while 180K+ VOD/series entries are indexed.
         asyncio.create_task(_warm_xtream_cache())
