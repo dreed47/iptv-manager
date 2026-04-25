@@ -131,3 +131,7 @@ Channel numbers flow through the entire stack so what you see in your IPTV app m
 ## License
 
 MIT
+
+---
+
+> **Content disclaimer:** This tool is a playlist manager and stream proxy — it does not provide or host any content. Always use IPTV services that have obtained the appropriate licenses for the content they distribute.
