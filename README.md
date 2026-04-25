@@ -5,7 +5,7 @@ A web-based tool for managing, filtering, and serving IPTV playlists and EPG dat
 #### Dashboard
 ![Dashboard Preview](/media/screenshot1.png)
 #### Home Assistant Cards
-<img src="media/screenshot2.png" alt="Home Assistant Cards" width="250">
+<img src="media/screenshot2.png" alt="Home Assistant Cards" width="500">
 
 
 ## Features
