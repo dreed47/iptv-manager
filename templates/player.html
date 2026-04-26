@@ -150,12 +150,13 @@
         status.className = 'status' + (cls ? ' ' + cls : '');
       }
 
-      // MP4 files play natively; mpegts.js is only for MPEG-TS / live streams
+      // MP4 files play natively; mpegts.js is only for MPEG-TS / live streams.
+      // Route MP4s through the local proxy so CORS / provider restrictions don't block playback.
       const urlPath = streamUrl.split('?')[0].toLowerCase();
       const isMp4 = urlPath.endsWith('.mp4') || urlPath.endsWith('.m4v');
 
       if (isMp4) {
-        video.src = streamUrl;
+        video.src = '/api/proxy_url?url=' + encodeURIComponent(streamUrl);
         video.addEventListener('canplay', () => {
           setStatus('Stream loaded — playing', 'ok');
           video.play().catch(() => {});

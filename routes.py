@@ -336,6 +336,49 @@ async def stream_player(request: Request, url: str = "", name: str = "Stream"):
 
 
 # ---------------------------------------------------------------------------
+# Generic URL proxy — used by the player for direct MP4/VOD URLs that the
+# browser can't fetch directly due to CORS or provider restrictions.
+# ---------------------------------------------------------------------------
+
+@router.get("/api/proxy_url")
+async def proxy_url(request: Request, url: str):
+    import requests as _req
+    from fastapi.responses import StreamingResponse as _SR
+
+    proxy_headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Accept": "*/*",
+    }
+    range_header = request.headers.get("range")
+    proxy_headers["Range"] = range_header or "bytes=0-"
+
+    try:
+        resp = _req.get(url, headers=proxy_headers, stream=True, timeout=(10, 120), allow_redirects=True)
+        resp.raise_for_status()
+    except _req.exceptions.HTTPError as exc:
+        status = exc.response.status_code if exc.response is not None else 502
+        return JSONResponse({"error": f"Upstream {status}"}, status_code=502)
+    except Exception as exc:
+        return JSONResponse({"error": str(exc)}, status_code=502)
+
+    forward_headers = {"Accept-Ranges": "bytes", "Cache-Control": "no-cache"}
+    for hdr in ("Content-Type", "Content-Range"):
+        val = resp.headers.get(hdr)
+        if val:
+            forward_headers[hdr] = val
+
+    client_status = 206 if resp.status_code == 206 else 200
+
+    def _stream():
+        for chunk in resp.iter_content(chunk_size=65536):
+            if chunk:
+                yield chunk
+
+    return _SR(_stream(), status_code=client_status, headers=forward_headers,
+               media_type=forward_headers.get("Content-Type", "video/mp4"))
+
+
+# ---------------------------------------------------------------------------
 # Full M3U browser
 # ---------------------------------------------------------------------------
 
