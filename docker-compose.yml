@@ -13,6 +13,8 @@ services:
       - ALLOW_FULL_M3U_DOWNLOAD=${ALLOW_FULL_M3U_DOWNLOAD:-1}
       - IPTV_USERNAME=${IPTV_USERNAME:-iptv}
       - IPTV_PASSWORD=${IPTV_PASSWORD:-iptv}
+      - PLEX_URL=${PLEX_URL:-}
+      - PLEX_TOKEN=${PLEX_TOKEN:-}
       - TZ=${TZ:-UTC}
     ports:
       - "${APP_PORT:-5005}:5005"
