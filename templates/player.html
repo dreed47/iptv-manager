@@ -150,18 +150,31 @@
         status.className = 'status' + (cls ? ' ' + cls : '');
       }
 
-      if (mpegts.getFeatureList().mseLivePlayback) {
+      // MP4 files play natively; mpegts.js is only for MPEG-TS / live streams
+      const urlPath = streamUrl.split('?')[0].toLowerCase();
+      const isMp4 = urlPath.endsWith('.mp4') || urlPath.endsWith('.m4v');
+
+      if (isMp4) {
+        video.src = streamUrl;
+        video.addEventListener('canplay', () => {
+          setStatus('Stream loaded — playing', 'ok');
+          video.play().catch(() => {});
+        });
+        video.addEventListener('waiting', () => setStatus('Buffering…'));
+        video.addEventListener('playing', () => setStatus('Playing', 'ok'));
+        video.addEventListener('error', () => {
+          const err = video.error;
+          setStatus('Stream error: ' + (err ? err.message : 'unknown') + '. Try VLC or IINA below.', 'error');
+        });
+      } else if (mpegts.getFeatureList().mseLivePlayback) {
         const player = mpegts.createPlayer({
           type: 'mpegts',
           isLive: true,
           url: streamUrl,
         }, {
           enableWorker: true,
-          // Server-side pre-buffer already fills initial pipeline;
-          // client keeps a generous buffer to absorb upstream jitter.
           enableStashBuffer: true,
           stashInitialSize: {{ stash_kb }},
-          // Don't chase latency — let the buffer grow to absorb jitter
           liveBufferLatencyChasing: false,
           liveBufferLatencyMaxLatency: {{ latency_max }},
           liveBufferLatencyMinRemain: {{ latency_min }},
