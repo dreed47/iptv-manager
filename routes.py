@@ -192,8 +192,11 @@ async def plex_webhook(payload: str = Form(None)):
 
 async def _release_orphan_streams():
     import asyncio, requests as _req
+    logger.info("Plex: orphan check task started")
     await asyncio.sleep(3)
+    logger.info("Plex: orphan check running after sleep")
     if not config.PLEX_URL or not config.PLEX_TOKEN:
+        logger.warning("Plex: PLEX_URL or PLEX_TOKEN not set, skipping")
         return
     try:
         resp = await asyncio.to_thread(
