@@ -177,9 +177,9 @@ async def plex_webhook(payload: str = Form(None)):
     if not data.get("Metadata", {}).get("live"):
         return JSONResponse({"ok": True})
 
-    channel = data.get("Metadata", {}).get("grandparentTitle", "?")
     player = data.get("Player", {}).get("title", "?")
-    logger.info(f"Plex webhook: media.stop live TV — channel='{channel}' player='{player}'")
+    logger.info(f"Plex webhook: media.stop live TV — player='{player}'")
+    logger.debug(f"Plex webhook metadata: {json.dumps(data.get('Metadata', {}))}")
     import asyncio
     asyncio.create_task(_release_orphan_streams())
     return JSONResponse({"ok": True})
@@ -200,18 +200,17 @@ async def _release_orphan_streams():
         )
         resp.raise_for_status()
         plex_sessions = resp.json().get("MediaContainer", {}).get("Metadata") or []
-        plex_live_channels = {
-            s.get("grandparentTitle", "").lower()
-            for s in plex_sessions
-            if s.get("live")
-        }
-        for s in get_active_streams():
-            ch = (s.get("channel_name") or "").lower()
-            if ch and ch not in plex_live_channels:
+        plex_live_count = sum(1 for s in plex_sessions if s.get("live"))
+        our_streams = get_active_streams()
+        logger.info(f"Plex session check: {plex_live_count} Plex live session(s), {len(our_streams)} active stream(s)")
+        if len(our_streams) > plex_live_count:
+            # Kill oldest streams first until counts match
+            to_kill = sorted(our_streams, key=lambda s: s.get("started_at", 0))
+            for s in to_kill[:len(our_streams) - plex_live_count]:
                 kill_stream(s["session_id"])
                 logger.info(
                     f"Plex webhook: released orphan stream {s['session_id']} "
-                    f"(channel '{ch}' no longer in Plex sessions)"
+                    f"channel='{s.get('channel_name', '?')}'"
                 )
     except Exception as exc:
         logger.warning(f"Plex session check failed: {exc}")
