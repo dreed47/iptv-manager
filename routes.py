@@ -162,6 +162,9 @@ async def kill_stream_api(session_id: str):
     return JSONResponse({"ok": True, "block_seconds": KILL_BLOCK_SECONDS})
 
 
+_plex_bg_tasks: set = set()
+
+
 @router.post("/api/plex/webhook")
 async def plex_webhook(payload: str = Form(None)):
     if not payload:
@@ -181,7 +184,9 @@ async def plex_webhook(payload: str = Form(None)):
     logger.info(f"Plex webhook: media.stop live TV — player='{player}'")
     logger.debug(f"Plex webhook metadata: {json.dumps(data.get('Metadata', {}))}")
     import asyncio
-    asyncio.create_task(_release_orphan_streams())
+    task = asyncio.create_task(_release_orphan_streams())
+    _plex_bg_tasks.add(task)
+    task.add_done_callback(_plex_bg_tasks.discard)
     return JSONResponse({"ok": True})
 
 
