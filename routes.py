@@ -162,6 +162,57 @@ async def kill_stream_api(session_id: str):
     return JSONResponse({"ok": True, "block_seconds": KILL_BLOCK_SECONDS})
 
 
+@router.post("/api/plex/webhook")
+async def plex_webhook(payload: str = Form(None)):
+    if not payload:
+        return JSONResponse({"ok": True})
+    try:
+        data = json.loads(payload)
+    except Exception:
+        return JSONResponse({"ok": False}, status_code=400)
+
+    if data.get("event") != "media.stop":
+        return JSONResponse({"ok": True})
+    if not data.get("Metadata", {}).get("live"):
+        return JSONResponse({"ok": True})
+
+    import asyncio
+    asyncio.create_task(_release_orphan_streams())
+    return JSONResponse({"ok": True})
+
+
+async def _release_orphan_streams():
+    import asyncio, requests as _req
+    await asyncio.sleep(3)
+    if not config.PLEX_URL or not config.PLEX_TOKEN:
+        return
+    try:
+        resp = await asyncio.to_thread(
+            lambda: _req.get(
+                f"{config.PLEX_URL}/status/sessions",
+                headers={"X-Plex-Token": config.PLEX_TOKEN, "Accept": "application/json"},
+                timeout=5,
+            )
+        )
+        resp.raise_for_status()
+        plex_sessions = resp.json().get("MediaContainer", {}).get("Metadata") or []
+        plex_live_channels = {
+            s.get("grandparentTitle", "").lower()
+            for s in plex_sessions
+            if s.get("live")
+        }
+        for s in get_active_streams():
+            ch = (s.get("channel_name") or "").lower()
+            if ch and ch not in plex_live_channels:
+                kill_stream(s["session_id"])
+                logger.info(
+                    f"Plex webhook: released orphan stream {s['session_id']} "
+                    f"(channel '{ch}' no longer in Plex sessions)"
+                )
+    except Exception as exc:
+        logger.warning(f"Plex session check failed: {exc}")
+
+
 @router.get("/api/logs", response_class=JSONResponse)
 async def api_logs(level: str = "", since: float = 0):
     from main import get_log_buffer

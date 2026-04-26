@@ -51,6 +51,12 @@ IPTV_PASSWORD: str = os.getenv("IPTV_PASSWORD", "iptv")
 LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO").strip().upper()
 
 # ---------------------------------------------------------------------------
+# Plex integration (optional — enables webhook-driven stream release)
+# ---------------------------------------------------------------------------
+PLEX_URL: str   = os.getenv("PLEX_URL", "").rstrip("/")
+PLEX_TOKEN: str = os.getenv("PLEX_TOKEN", "")
+
+# ---------------------------------------------------------------------------
 # Feature flags
 # ---------------------------------------------------------------------------
 ALLOW_FULL_M3U_DOWNLOAD: bool = os.getenv("ALLOW_FULL_M3U_DOWNLOAD", "1").strip() == "1"
