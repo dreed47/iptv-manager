@@ -34,7 +34,7 @@ class HDHomeRunEmulator:
         id_source = f"{ip}:{port}"
         hash_obj = hashlib.md5(id_source.encode())
         device_id = hash_obj.hexdigest()[:8].upper()
-        logger.info(f"Generated device ID from {id_source}: {device_id}")
+        logger.debug(f"Generated device ID from {id_source}: {device_id}")
         return device_id
     
     def update_device_id(self, ip_port_tuple=None):
@@ -114,10 +114,10 @@ HDHomerun-Features: base
             
             try:
                 t0 = time.perf_counter()
-                logger.info("Attempting to bind to SSDP port 1900 (may take a few seconds on macOS)...")
+                logger.debug("Attempting to bind to SSDP port 1900 (may take a few seconds on macOS)...")
                 sock.bind(('0.0.0.0', 1900))
                 t1 = time.perf_counter()
-                logger.info(f"SSDP socket.bind completed in {t1 - t0:.3f}s")
+                logger.debug(f"SSDP socket.bind completed in {t1 - t0:.3f}s")
             except socket.timeout:
                 logger.error(f"SSDP bind timed out after 5 seconds - HDHomeRun discovery will not work")
                 logger.error("This is a known issue on macOS Docker. The app will continue without SSDP.")
@@ -134,7 +134,7 @@ HDHomerun-Features: base
                 t0 = time.perf_counter()
                 sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
                 t1 = time.perf_counter()
-                logger.info(f"SSDP setsockopt ADD_MEMBERSHIP completed in {t1 - t0:.3f}s")
+                logger.debug(f"SSDP setsockopt ADD_MEMBERSHIP completed in {t1 - t0:.3f}s")
             except Exception as e:
                 logger.error(f"SSDP setsockopt ADD_MEMBERSHIP failed: {e}")
                 # Not fatal; continue but log
@@ -181,7 +181,7 @@ HDHomerun-Features: base
             self.thread.start()
             return True
         
-        logger.info("SSDP thread already running")
+        logger.debug("SSDP thread already running")
         return True
 
     def stop(self, timeout: float = 2.0):

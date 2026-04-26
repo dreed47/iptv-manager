@@ -38,7 +38,7 @@ def do_fetch_m3u(item_id: int, db) -> tuple:
 
     base_url = f"{item.server_url.rstrip('/')}/player_api.php"
     auth_url = f"{base_url}?username={urllib.parse.quote(item.username)}&password={urllib.parse.quote(item.user_pass)}"
-    logger.info(f"Attempting Xtream API auth to {base_url}")
+    logger.debug(f"Attempting Xtream API auth to {base_url}")
 
     m3u_content = None
     num_records = 0
@@ -47,7 +47,7 @@ def do_fetch_m3u(item_id: int, db) -> tuple:
         response = requests.get(auth_url, headers=headers, timeout=30)
         response.raise_for_status()
         user_data = response.json()
-        logger.info(f"Xtream API auth response: {json.dumps(user_data, indent=2)[:500]}")
+        logger.debug(f"Xtream API auth response: {json.dumps(user_data, indent=2)[:500]}")
 
         if user_data.get('user_info', {}).get('auth', 0) != 1:
             logger.warning(f"Invalid Xtream Codes credentials for item {item_id}")
@@ -138,7 +138,7 @@ def do_fetch_m3u(item_id: int, db) -> tuple:
         with open(tmp_epg, "w", encoding="utf-8") as f:
             f.write(epg_resp.text)
         os.replace(tmp_epg, epg_path)
-        logger.info(f"Saved EPG for item {item_id}")
+        logger.debug(f"Saved EPG for item {item_id}")
     except requests.exceptions.RequestException as e:
         logger.warning(f"EPG fetch failed for item {item_id}: {e}")
 
@@ -173,7 +173,7 @@ def start_m3u_scheduler():
                         except FileNotFoundError:
                             continue  # never fetched — skip until user does it manually
                         if age_h >= interval_h:
-                            logger.info(
+                            logger.debug(
                                 f"Scheduler: refreshing M3U for item {item.id} "
                                 f"(age={age_h:.1f}h >= interval={interval_h}h)"
                             )

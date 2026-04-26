@@ -128,7 +128,7 @@ def load_channel_lineup(db: Session = Depends(get_db)) -> list:
     port = int(parsed.port) if parsed.port else 5005
     hdhomerun_emulator.update_device_id((ip, port))
 
-    logger.info(f"Loading channels from {len(items)} IPTV configuration(s)")
+    logger.debug(f"Loading channels from {len(items)} IPTV configuration(s)")
 
     # Helpers for name normalization
     import unicodedata
@@ -153,7 +153,7 @@ def load_channel_lineup(db: Session = Depends(get_db)) -> list:
             logger.warning(f"Filtered M3U not found for config '{item.name}' (ID {item.id})")
             continue
 
-        logger.info(f"Loading channels from '{item.name}' ({filtered_path})")
+        logger.debug(f"Loading channels from '{item.name}' ({filtered_path})")
 
         with open(filtered_path, 'r') as f:
             lines = f.readlines()
@@ -267,7 +267,7 @@ def load_channel_lineup(db: Session = Depends(get_db)) -> list:
             else:
                 i += 1
 
-        logger.info(f"  Loaded {config_channel_count} channels from '{item.name}'")
+        logger.debug(f"  Loaded {config_channel_count} channels from '{item.name}'")
 
     # Produce final channel list from dedup map
     channels = list(channels_by_name.values())
@@ -285,7 +285,7 @@ def load_channel_lineup(db: Session = Depends(get_db)) -> list:
         ch.pop("_ExplicitNumber", None)
         ch.pop("_SourceURL", None)
 
-    logger.info(f"Total: Loaded {len(channels)} channels for HDHomeRun lineup from {len(items)} configuration(s)")
+    logger.debug(f"Total: Loaded {len(channels)} channels for HDHomeRun lineup from {len(items)} configuration(s)")
 
     if channels:
         logger.debug("First channel example: %s", json.dumps(channels[0], indent=2))
@@ -322,8 +322,7 @@ async def stream_channel(channel_number: str, request: Request, db: Session = De
             detail=f"Session limit reached ({active_count}/{max_sessions} active streams)",
         )
 
-    logger.info(f"Stream request for channel {channel_number} method={request.method}")
-    logger.info(f"Proxying channel {channel_number} -> {source_url}")
+    logger.info(f"Stream start: channel {channel_number} → {source_url}")
 
     proxy_headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
@@ -375,7 +374,7 @@ async def stream_channel(channel_number: str, request: Request, db: Session = De
                     with _channel_source_urls_lock:
                         fresh = _channel_source_urls.get(channel_number)
                     if fresh and fresh != current_url[0]:
-                        logger.info(
+                        logger.debug(
                             f"Channel {channel_number}: URL changed since stream started, using refreshed URL"
                         )
                         current_url[0] = fresh
@@ -410,7 +409,7 @@ async def stream_channel(channel_number: str, request: Request, db: Session = De
 
                 try:
                     bytes_at_last_connect = bytes_sent
-                    logger.info(
+                    logger.debug(
                         f"Connecting upstream for channel {channel_number} "
                         f"(attempt={attempt} chunk={chunk_size//1024}KB prebuffer={prebuffer_kb}KB read_timeout={read_timeout}s)"
                     )
@@ -421,7 +420,7 @@ async def stream_channel(channel_number: str, request: Request, db: Session = De
                         timeout=(10, read_timeout),
                     ) as resp:
                         resp.raise_for_status()
-                        logger.info(
+                        logger.debug(
                             f"Upstream connected for channel {channel_number}: status={resp.status_code}"
                         )
 
@@ -435,7 +434,7 @@ async def stream_channel(channel_number: str, request: Request, db: Session = De
                                 prebuf.append(chunk)
                                 prebuf_size += len(chunk)
                                 if prebuf_size >= prebuffer_bytes:
-                                    logger.info(
+                                    logger.debug(
                                         f"Pre-buffer filled ({prebuf_size//1024}KB), "
                                         f"starting stream for channel {channel_number}"
                                     )
@@ -521,12 +520,12 @@ async def stream_channel(channel_number: str, request: Request, db: Session = De
             logger.error(f"Max retries ({effective_max_retries}) reached for channel {channel_number}, giving up")
 
         except GeneratorExit:
-            logger.info(f"Client disconnected for channel {channel_number} after {bytes_sent} bytes")
+            logger.debug(f"Client disconnected for channel {channel_number} after {bytes_sent} bytes")
         finally:
             with _active_streams_lock:
                 _active_streams.pop(session_id, None)
             session.close()
-            logger.info(f"Stream ended for channel {channel_number}, total bytes sent: {bytes_sent}")
+            logger.info(f"Stream ended: channel {channel_number}, {bytes_sent} bytes sent")
 
     return StreamingResponse(
         generate(),
@@ -565,7 +564,7 @@ async def refresh_epg():
 
 @router.on_event("startup")
 async def startup_event():
-    logger.info("HDHomeRun emulator lazy-start enabled (will start on first HDHR request)")
+    logger.debug("HDHomeRun emulator lazy-start enabled (will start on first HDHR request)")
     # Pre-populate channel lineup so lineup_status.json never needs a DB hit during Plex polling
     try:
         from models import SessionLocal
@@ -582,10 +581,10 @@ def ensure_emulator_started(force=False) -> bool:
     """
     try:
         if not hdhomerun_emulator.is_running():
-            logger.info("Starting HDHomeRun emulator thread on demand...")
+            logger.debug("Starting HDHomeRun emulator thread on demand...")
             result = hdhomerun_emulator.start(force=force)
             if result:
-                logger.info("HDHomeRun emulator thread started")
+                logger.debug("HDHomeRun emulator thread started")
             else:
                 logger.warning("HDHomeRun emulator thread failed to start (may be disabled)")
             return result

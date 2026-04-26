@@ -43,7 +43,7 @@ async def index(request: Request, db: Session = Depends(get_db), error: str = No
         "friendly_name": config.HDHR_FRIENDLY_NAME,
         "active_page": "dashboard",
     })
-    logger.info(f"Template render duration: {time.perf_counter() - start:.3f}s")
+    logger.debug(f"Template render duration: {time.perf_counter() - start:.3f}s")
     return HTMLResponse(content=rendered)
 
 
@@ -62,7 +62,7 @@ async def settings_page(request: Request, db: Session = Depends(get_db), error: 
         "error": error,
         "success": success,
     })
-    logger.info(f"Template render duration: {time.perf_counter() - start:.3f}s")
+    logger.debug(f"Template render duration: {time.perf_counter() - start:.3f}s")
     return HTMLResponse(content=rendered)
 
 
@@ -179,7 +179,7 @@ async def logs_page(request: Request):
     start = time.perf_counter()
     template = templates.get_template("logs.html")
     rendered = template.render({"request": request, "active_page": "tools"})
-    logger.info(f"Template render duration: {time.perf_counter() - start:.3f}s")
+    logger.debug(f"Template render duration: {time.perf_counter() - start:.3f}s")
     return HTMLResponse(content=rendered)
 
 
@@ -191,7 +191,7 @@ async def set_refresh_interval(item_id: int = Form(...), m3u_refresh_hours: int 
     item.m3u_refresh_hours = m3u_refresh_hours
     db.commit()
     db.refresh(item)
-    logger.info(f"Set m3u_refresh_hours={item.m3u_refresh_hours} for item {item_id}")
+    logger.debug(f"Set m3u_refresh_hours={item.m3u_refresh_hours} for item {item_id}")
     return JSONResponse({"ok": True, "m3u_refresh_hours": item.m3u_refresh_hours})
 
 
@@ -202,7 +202,7 @@ async def generate_m3u(background_tasks: BackgroundTasks, item_id: int = Form(..
         if not ok:
             return RedirectResponse(url=f"/settings?error={urllib.parse.quote(msg)}", status_code=303)
         background_tasks.add_task(_refresh_epg, True)
-        logger.info("EPG rebuild queued in background after M3U save")
+        logger.debug("EPG rebuild queued in background after M3U save")
         return RedirectResponse(url=f"/settings?success={urllib.parse.quote(msg)}", status_code=303)
     except Exception as e:
         logger.error(f"Failed to generate M3U for item {item_id}: {e}")
@@ -225,7 +225,7 @@ async def generate_filtered_m3u(background_tasks: BackgroundTasks, item_id: int 
             lines = f.read().splitlines()
 
         languages, includes_map, raw_includes, excludes, has_wildcard = build_filter_config(item)
-        logger.info(
+        logger.debug(
             f"Filtering item {item_id}: languages={languages} includes={raw_includes} "
             f"excludes={excludes} wildcard={has_wildcard}"
         )
@@ -253,7 +253,7 @@ async def generate_filtered_m3u(background_tasks: BackgroundTasks, item_id: int 
             f"Filtered {num_records} of {input_record_count} records ({total_lines} lines)"
         )
         background_tasks.add_task(_refresh_epg, True)
-        logger.info("EPG rebuild queued in background after filtered M3U save")
+        logger.debug("EPG rebuild queued in background after filtered M3U save")
         return RedirectResponse(url=f"/hdhomerun?success={success_msg}", status_code=303)
 
     except Exception as e:
@@ -478,7 +478,7 @@ async def hdhomerun_page(request: Request, db: Session = Depends(get_db), error:
         "error": error,
         "success": success,
     })
-    logger.info(f"Template render duration: {time.perf_counter() - start:.3f}s")
+    logger.debug(f"Template render duration: {time.perf_counter() - start:.3f}s")
     return HTMLResponse(content=rendered)
 
 
@@ -561,7 +561,7 @@ async def xtream_page(request: Request, db: Session = Depends(get_db), error: st
         "error": error,
         "success": success,
     })
-    logger.info(f"Template render duration: {time.perf_counter() - start:.3f}s")
+    logger.debug(f"Template render duration: {time.perf_counter() - start:.3f}s")
     return HTMLResponse(content=rendered)
 
 
@@ -722,7 +722,7 @@ async def tools_page(request: Request, db: Session = Depends(get_db), error: str
         "error": error,
         "success": success,
     })
-    logger.info(f"Template render duration: {time.perf_counter() - start:.3f}s")
+    logger.debug(f"Template render duration: {time.perf_counter() - start:.3f}s")
     return HTMLResponse(content=rendered)
 
 

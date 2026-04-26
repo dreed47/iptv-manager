@@ -167,7 +167,7 @@ def _fetch_epg_source(url: str):
     """
     tmp_path = None
     try:
-        logger.info(f"EPG: fetching {url}")
+        logger.debug(f"EPG: fetching {url}")
         resp = requests.get(url, timeout=90, stream=True, headers={'Accept-Encoding': 'gzip, deflate'})
         resp.raise_for_status()
         with tempfile.NamedTemporaryFile(delete=False, suffix='.xml') as tmp:
@@ -178,7 +178,7 @@ def _fetch_epg_source(url: str):
         root = ET.parse(tmp_path).getroot()
         channels = root.findall('channel')
         programmes = root.findall('programme')
-        logger.info(f"EPG:   got {len(channels)} channels, {len(programmes)} programmes from {url}")
+        logger.debug(f"EPG:   got {len(channels)} channels, {len(programmes)} programmes from {url}")
         return channels, programmes
     except Exception as exc:
         logger.warning(f"EPG: failed to fetch {url}: {exc}")
@@ -341,7 +341,7 @@ def build_epg_xml(our_channels: list[dict], epg_sources: list) -> str:
                 our_ch = _find_match(src_norm, our_by_norm)
                 if our_ch and our_ch['tvg_id'] not in matched:
                     matched[our_ch['tvg_id']] = {'our': our_ch, 'src_id': src_id}
-                    logger.info(
+                    logger.debug(
                         f"EPG match: '{our_ch['clean_name']}' <-> '{src_name}' (src_id={src_id})"
                     )
                     break  # stop trying more display-names for this source channel
@@ -359,7 +359,7 @@ def build_epg_xml(our_channels: list[dict], epg_sources: list) -> str:
             for ch in ch_list:
                 if ch['tvg_id'] not in matched:
                     matched[ch['tvg_id']] = {'our': ch, 'src_id': src_id_for_group}
-                    logger.info(f"EPG dup-match: '{ch['clean_name']}' reuses src_id={src_id_for_group}")
+                    logger.debug(f"EPG dup-match: '{ch['clean_name']}' reuses src_id={src_id_for_group}")
 
     # Build src_id -> list of our tvg_ids (one source can feed multiple dup channels)
     src_to_tvg_ids: dict[str, list[str]] = {}
@@ -411,7 +411,7 @@ def build_epg_xml(our_channels: list[dict], epg_sources: list) -> str:
         f"{prog_count} programmes"
     )
     if unmatched_sorted:
-        logger.info(f"EPG unmatched channels: {[ch['clean_name'] for ch in unmatched_sorted]}")
+        logger.debug(f"EPG unmatched channels: {[ch['clean_name'] for ch in unmatched_sorted]}")
 
     return '\n'.join(parts)
 
@@ -448,7 +448,7 @@ def get_epg(force_refresh: bool = False) -> str:
     if not force_refresh and os.path.exists(EPG_CACHE_PATH):
         age = time.time() - os.path.getmtime(EPG_CACHE_PATH)
         if age < EPG_CACHE_MAX_AGE:
-            logger.info(f"EPG: serving from cache (age {age / 3600:.1f}h)")
+            logger.debug(f"EPG: serving from cache (age {age / 3600:.1f}h)")
             with open(EPG_CACHE_PATH, 'r', encoding='utf-8') as f:
                 return f.read()
     return build_and_cache_epg()

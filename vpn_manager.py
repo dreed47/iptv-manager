@@ -163,7 +163,7 @@ def start_vpn(config_str: str, username: str, password: str) -> tuple[bool, str]
         # Capture Docker routing state before OpenVPN overwrites the default route
         gw_ip, gw_iface = _get_default_gw()
         docker_net = _get_iface_network(gw_iface) if gw_iface else None
-        logger.info(f"VPN: pre-VPN gateway={gw_ip} iface={gw_iface} docker_net={docker_net}")
+        logger.debug(f"VPN: pre-VPN gateway={gw_ip} iface={gw_iface} docker_net={docker_net}")
 
         os.makedirs(_VPN_DIR, exist_ok=True)
 
@@ -230,7 +230,7 @@ def start_vpn(config_str: str, username: str, password: str) -> tuple[bool, str]
                                 ["ip", "route", "replace", net, "via", gw_ip, "dev", gw_iface],
                                 check=True, capture_output=True,
                             )
-                            logger.info(f"VPN: preserved LAN route {net} via {gw_ip} dev {gw_iface}")
+                            logger.debug(f"VPN: preserved LAN route {net} via {gw_ip} dev {gw_iface}")
                         except Exception as e:
                             logger.warning(f"VPN: could not add route for {net}: {e}")
                     # Override: DNS servers bypass the VPN tunnel so name resolution keeps working
@@ -240,12 +240,12 @@ def start_vpn(config_str: str, username: str, password: str) -> tuple[bool, str]
                                 ["ip", "route", "replace", f"{dns_ip}/32", "via", gw_ip, "dev", gw_iface],
                                 check=True, capture_output=True,
                             )
-                            logger.info(f"VPN: DNS {dns_ip} routed via {gw_ip} (bypass tunnel)")
+                            logger.debug(f"VPN: DNS {dns_ip} routed via {gw_ip} (bypass tunnel)")
                         except Exception as e:
                             logger.warning(f"VPN: could not add DNS bypass route for {dns_ip}: {e}")
                 return True, "Connected"
             if i == 5:
-                logger.info(f"VPN: still waiting for tun… log: {_tail_log(3)}")
+                logger.debug(f"VPN: still waiting for tun… log: {_tail_log(3)}")
 
         hint = _tail_log()
         return False, f"tun interface did not appear within 20s. Last log: {hint or '(empty)'}"

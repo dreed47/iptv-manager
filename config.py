@@ -46,6 +46,11 @@ IPTV_USERNAME: str = os.getenv("IPTV_USERNAME", "iptv")
 IPTV_PASSWORD: str = os.getenv("IPTV_PASSWORD", "iptv")
 
 # ---------------------------------------------------------------------------
+# Logging
+# ---------------------------------------------------------------------------
+LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO").strip().upper()
+
+# ---------------------------------------------------------------------------
 # Feature flags
 # ---------------------------------------------------------------------------
 ALLOW_FULL_M3U_DOWNLOAD: bool = os.getenv("ALLOW_FULL_M3U_DOWNLOAD", "1").strip() == "1"
@@ -90,7 +95,7 @@ def _validate() -> None:
         errors.append(f"EPG_CACHE_HOURS must be >= 1 (got {EPG_CACHE_HOURS})")
     if errors:
         raise ValueError("Invalid configuration:\n" + "\n".join(f"  - {e}" for e in errors))
-    logger.info(
+    logger.debug(
         "Config loaded: base=%s tuners=%d ssdp_off=%s "
         "chunk=%dKB prebuf=%dKB retries=%d epg_cache=%dh",
         ADVERTISED_BASE_URL, HDHR_TUNER_COUNT, HDHR_DISABLE_SSDP,

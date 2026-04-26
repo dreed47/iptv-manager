@@ -593,7 +593,7 @@ def _fetch_vod_url(entry: StreamEntry, db: Session) -> Optional[str]:
             for k in list(_vod_url_cache)[: _CACHE_MAX // 2]:
                 del _vod_url_cache[k]
         _vod_url_cache[entry.stream_id] = url
-    logger.info(f"VOD {entry.stream_id} resolved extension: .{ext} → {url}")
+    logger.debug(f"VOD {entry.stream_id} resolved extension: .{ext} → {url}")
     return url
 
 
@@ -922,7 +922,7 @@ def _proxy_finite_stream(source_url: str, request: Request, media_type: str, str
         if val:
             forward_headers[hdr] = val
 
-    logger.info(
+    logger.debug(
         f"Proxying {source_url} → HTTP {resp.status_code} "
         f"content-type={forward_headers.get('Content-Type', 'unknown')} "
         f"upstream-length={resp.headers.get('Content-Length', 'unknown')} "
@@ -1056,7 +1056,7 @@ async def proxy_series(
     with _episode_cache_lock:
         upstream_url = _episode_cache.get(stream_id)
     if upstream_url:
-        logger.info(f"Series episode {stream_id} → {upstream_url}")
+        logger.debug(f"Series episode {stream_id} → {upstream_url}")
         return _proxy_finite_stream(upstream_url, request, "video/mp4", stream_label=f"Series:{stream_id}")
 
     # Episode not in cache — get_series_info hasn't been called yet for this series
