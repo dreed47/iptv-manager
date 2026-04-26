@@ -147,6 +147,9 @@ def _split_extinf(line: str):
     return line, ""
 
 
+_ATTR_RE = re.compile(r'(tvg-id|tvg-name|tvg-logo|group-title|tvg-chno)="([^"]*)"')
+
+
 def _parse_m3u_file(path: str) -> list:
     """Return a list of dicts: {tvg_id, tvg_name, logo, group_title, tvg_chno, display_name, url}."""
     entries = []
@@ -162,17 +165,13 @@ def _parse_m3u_file(path: str) -> list:
         if line.startswith("#EXTINF") and i + 1 < len(lines):
             url = lines[i + 1].strip()
             attrs_str, display_name = _split_extinf(line)
-
-            def _attr(key: str) -> str:
-                m = re.search(rf'{key}="([^"]*)"', attrs_str)
-                return m.group(1) if m else ""
-
+            attrs = dict(_ATTR_RE.findall(attrs_str))
             entries.append({
-                "tvg_id": _attr("tvg-id"),
-                "tvg_name": _attr("tvg-name"),
-                "logo": _attr("tvg-logo"),
-                "group_title": _attr("group-title"),
-                "tvg_chno": _attr("tvg-chno"),
+                "tvg_id": attrs.get("tvg-id", ""),
+                "tvg_name": attrs.get("tvg-name", ""),
+                "logo": attrs.get("tvg-logo", ""),
+                "group_title": attrs.get("group-title", ""),
+                "tvg_chno": attrs.get("tvg-chno", ""),
                 "display_name": display_name,
                 "url": url,
             })
@@ -219,6 +218,14 @@ def _build_cache(items: list, fingerprint: tuple) -> XtreamCache:
     stream_map = {}
     live_id_to_guide = {}
 
+    # Parse each file at most once per build.
+    _file_cache: dict = {}
+
+    def _parsed(path: str) -> list:
+        if path not in _file_cache:
+            _file_cache[path] = _parse_m3u_file(path)
+        return _file_cache[path]
+
     # ---- Live channels: parse filtered playlists, replicate guide-number logic ----
     used_guide_numbers: set = set()
     next_available = 1
@@ -226,7 +233,7 @@ def _build_cache(items: list, fingerprint: tuple) -> XtreamCache:
 
     for item in items:
         filtered_path = os.path.join(M3U_DIR, f"filtered_playlist_{item.id}.m3u")
-        for e in _parse_m3u_file(filtered_path):
+        for e in _parsed(filtered_path):
             display = (e["tvg_name"] or e["display_name"]).replace("_", " ").strip()
             norm = _strict_norm(display)
 
@@ -268,7 +275,7 @@ def _build_cache(items: list, fingerprint: tuple) -> XtreamCache:
     # ---- VOD + Series: parse full xtream playlists ----
     for item in items:
         full_path = os.path.join(M3U_DIR, f"xtream_playlist_{item.id}.m3u")
-        for e in _parse_m3u_file(full_path):
+        for e in _parsed(full_path):
             gt = e["group_title"]
             display = (e["tvg_name"] or e["display_name"]).strip()
             if not display:
@@ -316,26 +323,6 @@ def _build_cache(items: list, fingerprint: tuple) -> XtreamCache:
         s = s.lower()
         return re.sub(r'[^a-z0-9]+', ' ', s).strip()
 
-    def _xi_matches(pattern: str, display: str) -> bool:
-        """
-        *word*  → word-boundary match: 'mash' matches 'the mash show' but not 'mashing show'
-        other   → fnmatch on stripped string (no spaces)
-        """
-        norm_d = _xi_display_norm(display)
-        if pattern.startswith('*') and pattern.endswith('*') and pattern.count('*') == 2:
-            inner = _xi_display_norm(pattern[1:-1])
-            if not inner:
-                return False
-            # Build word-boundary regex: each word must match whole word, words joined by \s+
-            parts = inner.split()
-            regex = r'\b' + r'\s+'.join(re.escape(p) for p in parts) + r'\b'
-            return bool(re.search(regex, norm_d))
-        else:
-            # Fallback: fnmatch on fully-stripped string
-            stripped_d = re.sub(r'\s+', '', norm_d)
-            stripped_p = re.sub(r'[^a-z0-9*]+', '', pattern.lower())
-            return fnmatch.fnmatch(stripped_d, stripped_p)
-
     extra_channel_urls: dict = {}
     extra_channel_names: dict = {}
     for item in items:
@@ -344,9 +331,35 @@ def _build_cache(items: list, fingerprint: tuple) -> XtreamCache:
         if not patterns:
             continue
         logger.debug(f"Xtream extra: item={item.id} patterns={patterns}")
+
+        # Pre-compile each pattern into a callable matcher once, outside the entry loop.
+        compiled_patterns = []
+        for p in patterns:
+            if p.startswith('*') and p.endswith('*') and p.count('*') == 2:
+                inner = _xi_display_norm(p[1:-1])
+                if inner:
+                    parts = inner.split()
+                    rx = re.compile(r'\b' + r'\s+'.join(re.escape(w) for w in parts) + r'\b')
+                    compiled_patterns.append(('word', rx))
+            else:
+                stripped_p = re.sub(r'[^a-z0-9*]+', '', p.lower())
+                compiled_patterns.append(('fnmatch', stripped_p))
+
+        def _matches_compiled(display: str) -> bool:
+            norm_d = _xi_display_norm(display)
+            for kind, matcher in compiled_patterns:
+                if kind == 'word':
+                    if matcher.search(norm_d):
+                        return True
+                else:
+                    stripped_d = re.sub(r'\s+', '', norm_d)
+                    if fnmatch.fnmatch(stripped_d, matcher):
+                        return True
+            return False
+
         full_path = os.path.join(M3U_DIR, f"xtream_playlist_{item.id}.m3u")
         scanned = skipped_filtered = skipped_dedup = matched_count = 0
-        for e in _parse_m3u_file(full_path):
+        for e in _parsed(full_path):
             if e["group_title"] in ("VOD", "Series"):
                 continue
             scanned += 1
@@ -359,8 +372,7 @@ def _build_cache(items: list, fingerprint: tuple) -> XtreamCache:
             if norm_name in channels_by_name:
                 skipped_dedup += 1
                 continue
-            matched = any(_xi_matches(p, display) for p in patterns)
-            if not matched:
+            if not _matches_compiled(display):
                 continue
             matched_count += 1
             logger.debug(f"  Xtream extra match: '{display}'")
