@@ -687,7 +687,12 @@ async def vpn_disable(request: Request, db: Session = Depends(get_db)):
 async def vpn_status():
     import vpn_manager
     import asyncio
-    return JSONResponse(await asyncio.to_thread(vpn_manager.get_vpn_status))
+    status = await asyncio.to_thread(vpn_manager.get_vpn_status)
+    if status["running"]:
+        status["external_ip"] = await asyncio.to_thread(vpn_manager.get_external_ip)
+    else:
+        status["external_ip"] = None
+    return JSONResponse(status)
 
 
 @router.get("/settings/test_vpn", response_class=JSONResponse)

@@ -161,7 +161,8 @@
     if (_vpnRunning) {
       val.textContent = 'Connected';
       val.style.color = 'var(--success)';
-      sub.textContent = vpnData.interface || 'tun active';
+      var ipLabel = vpnData.external_ip ? ('Public IP: ' + vpnData.external_ip) : (vpnData.interface || 'tun active');
+      sub.textContent = ipLabel;
     } else {
       val.textContent = 'Off';
       val.style.color = '#94a3b8';

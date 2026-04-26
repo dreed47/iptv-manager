@@ -128,10 +128,10 @@ def get_vpn_status() -> dict:
     }
 
 
-def get_external_ip() -> str | None:
+def get_external_ip(timeout: int = 5) -> str | None:
     """Fetch current external IP via api.ipify.org."""
     try:
-        resp = _requests.get("https://api.ipify.org?format=json", timeout=10)
+        resp = _requests.get("https://api.ipify.org?format=json", timeout=timeout)
         resp.raise_for_status()
         return resp.json().get("ip")
     except Exception:
