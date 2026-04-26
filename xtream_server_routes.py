@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Form, Request
 from fastapi.responses import JSONResponse, StreamingResponse, RedirectResponse, Response
 from sqlalchemy.orm import Session
 from models import get_db, Item
-from hdhomerun_routes import register_extra_channels, _active_streams, _active_streams_lock, _SESSION_STALE_SECONDS, get_active_stream_count, is_ip_blocked, auto_replace_ip_session
+from hdhomerun_routes import register_extra_channels, _active_streams, _active_streams_lock, _SESSION_STALE_SECONDS, get_active_stream_count, is_ip_blocked, auto_replace_ip_session, KILL_BLOCK_SECONDS
 import asyncio
 import config
 import hashlib
@@ -1005,7 +1005,7 @@ async def proxy_vod(
 
     client_ip = request.client.host if request.client else "unknown"
     if is_ip_blocked(client_ip):
-        raise HTTPException(status_code=429, detail="Stream was terminated — reconnect blocked briefly")
+        raise HTTPException(status_code=429, detail="Stream was terminated — reconnect blocked briefly", headers={"Retry-After": str(KILL_BLOCK_SECONDS)})
 
     item = db.query(Item).first()
     max_sessions = int(item.max_sessions) if item and item.max_sessions is not None else 1
@@ -1014,6 +1014,7 @@ async def proxy_vod(
         raise HTTPException(
             status_code=429,
             detail=f"Session limit reached ({active_count}/{max_sessions} active streams)",
+            headers={"Retry-After": "30"},
         )
 
     # Check if we already have the correct URL (resolved extension from a prior get_vod_info call)
@@ -1053,7 +1054,7 @@ async def proxy_series(
 
     client_ip = request.client.host if request.client else "unknown"
     if is_ip_blocked(client_ip):
-        raise HTTPException(status_code=429, detail="Stream was terminated — reconnect blocked briefly")
+        raise HTTPException(status_code=429, detail="Stream was terminated — reconnect blocked briefly", headers={"Retry-After": str(KILL_BLOCK_SECONDS)})
 
     item = db.query(Item).first()
     max_sessions = int(item.max_sessions) if item and item.max_sessions is not None else 1
@@ -1062,6 +1063,7 @@ async def proxy_series(
         raise HTTPException(
             status_code=429,
             detail=f"Session limit reached ({active_count}/{max_sessions} active streams)",
+            headers={"Retry-After": "30"},
         )
 
     # Episode cache is populated when get_series_info is called; check it first

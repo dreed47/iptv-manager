@@ -308,7 +308,7 @@ async def stream_channel(channel_number: str, request: Request, db: Session = De
     client_ip = request.client.host if request.client else "unknown"
     if is_ip_blocked(client_ip):
         logger.warning(f"Stream reconnect blocked for {client_ip} (recently killed)")
-        raise HTTPException(status_code=429, detail="Stream was terminated — reconnect blocked briefly")
+        raise HTTPException(status_code=429, detail="Stream was terminated — reconnect blocked briefly", headers={"Retry-After": str(KILL_BLOCK_SECONDS)})
 
     item = db.query(Item).first()
     max_sessions = int(item.max_sessions) if item and item.max_sessions is not None else 1
@@ -320,6 +320,7 @@ async def stream_channel(channel_number: str, request: Request, db: Session = De
         raise HTTPException(
             status_code=429,
             detail=f"Session limit reached ({active_count}/{max_sessions} active streams)",
+            headers={"Retry-After": "30"},
         )
 
     logger.info(f"Stream start: channel {channel_number} → {source_url}")
