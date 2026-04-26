@@ -84,20 +84,20 @@ def auto_replace_ip_session(client_ip: str, new_channel: str) -> int:
     return sum(1 for s in _live_streams() if not s.get("killed"))
 
 
-def kill_stream(session_id: str) -> bool:
-    """Mark a session as killed and block its IP so reconnects are rejected for KILL_BLOCK_SECONDS."""
+def kill_stream(session_id: str, block_ip: bool = True) -> bool:
+    """Mark a session as killed. If block_ip=True, rejects reconnects from that IP for KILL_BLOCK_SECONDS."""
     with _active_streams_lock:
         s = _active_streams.get(session_id)
         if not s:
             return False
         s["killed"] = True
         client_ip = s.get("client_ip")
-    if client_ip and client_ip not in ("unknown", ""):
+    if block_ip and client_ip and client_ip not in ("unknown", ""):
         with _blocked_ips_lock:
             _blocked_ips[client_ip] = time.time() + KILL_BLOCK_SECONDS
         logger.info(f"Admin killed stream session={session_id} ip={client_ip} blocked for {KILL_BLOCK_SECONDS}s")
     else:
-        logger.info(f"Admin killed stream session={session_id} (no IP to block)")
+        logger.info(f"Killed stream session={session_id} (no IP block)")
     return True
 
 

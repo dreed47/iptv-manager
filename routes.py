@@ -215,7 +215,7 @@ async def _release_orphan_streams():
             # Kill oldest streams first until counts match
             to_kill = sorted(our_streams, key=lambda s: s.get("started_at", 0))
             for s in to_kill[:len(our_streams) - plex_live_count]:
-                kill_stream(s["session_id"])
+                kill_stream(s["session_id"], block_ip=False)
                 logger.info(
                     f"Plex webhook: released orphan stream {s['session_id']} "
                     f"channel='{s.get('channel_name', '?')}'"
