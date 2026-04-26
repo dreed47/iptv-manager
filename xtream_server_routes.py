@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Form, Request
 from fastapi.responses import JSONResponse, StreamingResponse, RedirectResponse, Response
 from sqlalchemy.orm import Session
 from models import get_db, Item
-from hdhomerun_routes import register_extra_channels, _active_streams, _active_streams_lock, _SESSION_STALE_SECONDS, get_active_stream_count, is_ip_blocked
+from hdhomerun_routes import register_extra_channels, _active_streams, _active_streams_lock, _SESSION_STALE_SECONDS, get_active_stream_count, is_ip_blocked, auto_replace_ip_session
 import asyncio
 import config
 import hashlib
@@ -997,7 +997,7 @@ async def proxy_vod(
 
     item = db.query(Item).first()
     max_sessions = int(item.max_sessions) if item and item.max_sessions is not None else 1
-    active_count = get_active_stream_count()
+    active_count = auto_replace_ip_session(client_ip, f"VOD:{entry.name}")
     if active_count >= max_sessions:
         raise HTTPException(
             status_code=429,
@@ -1045,7 +1045,7 @@ async def proxy_series(
 
     item = db.query(Item).first()
     max_sessions = int(item.max_sessions) if item and item.max_sessions is not None else 1
-    active_count = get_active_stream_count()
+    active_count = auto_replace_ip_session(client_ip, f"Series:{stream_id}")
     if active_count >= max_sessions:
         raise HTTPException(
             status_code=429,
