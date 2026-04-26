@@ -76,9 +76,13 @@ def create_app():
     # Initialize database in a background task to avoid blocking startup
     async def _warm_xtream_cache():
         try:
+            import time
+            logger.info("Xtream cache pre-warm starting...")
+            _start = time.monotonic()
             with SessionLocal() as db:
                 await get_xtream_cache(db)
-            logger.info("Xtream cache pre-warm complete")
+            elapsed = time.monotonic() - _start
+            logger.info(f"Xtream cache pre-warm complete in {elapsed:.2f}s")
         except Exception as exc:
             logger.warning(f"Xtream cache pre-warm failed: {exc}")
 
