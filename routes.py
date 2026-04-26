@@ -190,21 +190,22 @@ async def plex_webhook(payload: str = Form(None)):
         return JSONResponse({"ok": True})
 
     player = data.get("Player", {}).get("title", "?")
+    stop_time = time.time()
     logger.info(f"Plex webhook: media.stop live TV — player='{player}'")
     logger.debug(f"Plex webhook metadata: {json.dumps(data.get('Metadata', {}))}")
     if _pending_orphan_task and not _pending_orphan_task.done():
         _pending_orphan_task.cancel()
-    task = asyncio.create_task(_release_orphan_streams())
+    task = asyncio.create_task(_release_orphan_streams(stop_time))
     _pending_orphan_task = task
     _plex_bg_tasks.add(task)
     task.add_done_callback(_plex_bg_tasks.discard)
     return JSONResponse({"ok": True})
 
 
-async def _release_orphan_streams():
+async def _release_orphan_streams(stop_time: float):
     import asyncio, requests as _req
     logger.info("Plex: orphan check task started")
-    await asyncio.sleep(3)
+    await asyncio.sleep(5)
     logger.info("Plex: orphan check running after sleep")
     if not config.PLEX_URL or not config.PLEX_TOKEN:
         logger.warning("Plex: PLEX_URL or PLEX_TOKEN not set, skipping")
@@ -221,11 +222,19 @@ async def _release_orphan_streams():
         plex_sessions = resp.json().get("MediaContainer", {}).get("Metadata") or []
         plex_live_count = sum(1 for s in plex_sessions if s.get("live"))
         our_streams = get_active_streams()
-        logger.info(f"Plex session check: {plex_live_count} Plex live session(s), {len(our_streams)} active stream(s)")
-        if len(our_streams) > plex_live_count:
-            # Kill oldest streams first until counts match
-            to_kill = sorted(our_streams, key=lambda s: s.get("started_at", 0))
-            for s in to_kill[:len(our_streams) - plex_live_count]:
+        # Only consider streams that were started before the stop event — any stream
+        # that started after stop_time means Plex already reconnected (channel switch).
+        pre_stop_streams = [s for s in our_streams if s.get("started_at", 0) < stop_time]
+        post_stop_streams = len(our_streams) - len(pre_stop_streams)
+        logger.info(
+            f"Plex session check: {plex_live_count} Plex live session(s), "
+            f"{len(our_streams)} active stream(s) "
+            f"({len(pre_stop_streams)} pre-stop, {post_stop_streams} post-stop)"
+        )
+        orphan_count = len(pre_stop_streams) - plex_live_count
+        if orphan_count > 0:
+            to_kill = sorted(pre_stop_streams, key=lambda s: s.get("started_at", 0))
+            for s in to_kill[:orphan_count]:
                 kill_stream(s["session_id"], block_ip=False)
                 logger.info(
                     f"Plex webhook: released orphan stream {s['session_id']} "
