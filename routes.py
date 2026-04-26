@@ -163,10 +163,12 @@ async def kill_stream_api(session_id: str):
 
 
 _plex_bg_tasks: set = set()
+_pending_orphan_task: "asyncio.Task | None" = None
 
 
 @router.post("/api/plex/webhook")
 async def plex_webhook(payload: str = Form(None)):
+    global _pending_orphan_task
     if not payload:
         return JSONResponse({"ok": True})
     try:
@@ -174,17 +176,26 @@ async def plex_webhook(payload: str = Form(None)):
     except Exception:
         return JSONResponse({"ok": False}, status_code=400)
 
+    import asyncio
     event = data.get("event", "")
-    if event != "media.stop":
+    is_live = bool(data.get("Metadata", {}).get("live"))
+
+    if is_live and event in ("media.play", "media.resume"):
+        if _pending_orphan_task and not _pending_orphan_task.done():
+            _pending_orphan_task.cancel()
+            logger.info("Plex webhook: cancelled orphan check — new live session started")
         return JSONResponse({"ok": True})
-    if not data.get("Metadata", {}).get("live"):
+
+    if event != "media.stop" or not is_live:
         return JSONResponse({"ok": True})
 
     player = data.get("Player", {}).get("title", "?")
     logger.info(f"Plex webhook: media.stop live TV — player='{player}'")
     logger.debug(f"Plex webhook metadata: {json.dumps(data.get('Metadata', {}))}")
-    import asyncio
+    if _pending_orphan_task and not _pending_orphan_task.done():
+        _pending_orphan_task.cancel()
     task = asyncio.create_task(_release_orphan_streams())
+    _pending_orphan_task = task
     _plex_bg_tasks.add(task)
     task.add_done_callback(_plex_bg_tasks.discard)
     return JSONResponse({"ok": True})
