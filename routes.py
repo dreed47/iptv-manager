@@ -171,11 +171,15 @@ async def plex_webhook(payload: str = Form(None)):
     except Exception:
         return JSONResponse({"ok": False}, status_code=400)
 
-    if data.get("event") != "media.stop":
+    event = data.get("event", "")
+    if event != "media.stop":
         return JSONResponse({"ok": True})
     if not data.get("Metadata", {}).get("live"):
         return JSONResponse({"ok": True})
 
+    channel = data.get("Metadata", {}).get("grandparentTitle", "?")
+    player = data.get("Player", {}).get("title", "?")
+    logger.info(f"Plex webhook: media.stop live TV — channel='{channel}' player='{player}'")
     import asyncio
     asyncio.create_task(_release_orphan_streams())
     return JSONResponse({"ok": True})
