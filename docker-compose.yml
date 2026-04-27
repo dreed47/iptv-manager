@@ -28,6 +28,11 @@ services:
     volumes:
       - ./m3u_files:/app/m3u_files
       - ./data:/app/data
+    deploy:
+      resources:
+        limits:
+          memory: ${MEMORY_LIMIT:-512m}
+          cpus: '${CPU_LIMIT:-1.0}'
     restart: ${RESTART_POLICY:-unless-stopped}
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:5005/"]

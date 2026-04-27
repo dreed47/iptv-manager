@@ -97,6 +97,10 @@ class XtreamCache:
 _cache: dict[int, XtreamCache] = {}
 _cache_lock = asyncio.Lock()
 
+# Tracks last build failure time per item_id to prevent tight rebuild loops
+_build_failures: dict[int, float] = {}
+_BUILD_RETRY_COOLDOWN = 60.0  # seconds before retrying after a failed build
+
 
 # ---------------------------------------------------------------------------
 # Stream ID helpers
@@ -177,35 +181,46 @@ def _split_extinf(line: str):
 _ATTR_RE = re.compile(r'(tvg-id|tvg-name|tvg-logo|group-title|tvg-chno)="([^"]*)"')
 
 
-def _parse_m3u_file(path: str) -> list:
-    """Return list of dicts: {tvg_id, tvg_name, logo, group_title, tvg_chno, display_name, url}."""
-    entries = []
+def _stream_m3u_file(path: str):
+    """Stream M3U entries one at a time — O(1) memory regardless of file size."""
     try:
-        with open(path, "r", encoding="utf-8", errors="ignore") as f:
-            lines = f.readlines()
+        f = open(path, "r", encoding="utf-8", errors="ignore")
     except FileNotFoundError:
-        return entries
+        return
+    try:
+        prev_extinf = None
+        first = True
+        for raw in f:
+            line = raw.rstrip("\n")
+            if first:
+                first = False
+                if line.strip() == "#EXTM3U":
+                    continue
+            if line.startswith("#EXTINF"):
+                prev_extinf = line
+            elif prev_extinf is not None:
+                url = line.strip()
+                attrs_str, display_name = _split_extinf(prev_extinf)
+                attrs = dict(_ATTR_RE.findall(attrs_str))
+                yield {
+                    "tvg_id": attrs.get("tvg-id", ""),
+                    "tvg_name": attrs.get("tvg-name", ""),
+                    "logo": attrs.get("tvg-logo", ""),
+                    "group_title": attrs.get("group-title", ""),
+                    "tvg_chno": attrs.get("tvg-chno", ""),
+                    "display_name": display_name,
+                    "url": url,
+                }
+                prev_extinf = None
+    finally:
+        f.close()
 
-    i = 1 if lines and lines[0].strip() == "#EXTM3U" else 0
-    while i < len(lines):
-        line = lines[i].strip()
-        if line.startswith("#EXTINF") and i + 1 < len(lines):
-            url = lines[i + 1].strip()
-            attrs_str, display_name = _split_extinf(line)
-            attrs = dict(_ATTR_RE.findall(attrs_str))
-            entries.append({
-                "tvg_id": attrs.get("tvg-id", ""),
-                "tvg_name": attrs.get("tvg-name", ""),
-                "logo": attrs.get("tvg-logo", ""),
-                "group_title": attrs.get("group-title", ""),
-                "tvg_chno": attrs.get("tvg-chno", ""),
-                "display_name": display_name,
-                "url": url,
-            })
-            i += 2
-        else:
-            i += 1
-    return entries
+
+def _xi_display_norm(s: str) -> str:
+    s = unicodedata.normalize("NFKD", (s or ""))
+    s = "".join(c for c in s if not unicodedata.combining(c))
+    s = s.lower()
+    return re.sub(r"[^a-z0-9]+", " ", s).strip()
 
 
 # ---------------------------------------------------------------------------
@@ -285,21 +300,14 @@ def _build_cache(items: list, fingerprint: tuple) -> XtreamCache:  # noqa: C901
     vod_json_path = os.path.join(M3U_DIR, f"vod_cache_{db_key}.json")
     series_json_path = os.path.join(M3U_DIR, f"series_cache_{db_key}.json")
 
-    _file_cache: dict = {}
-
-    def _parsed(path: str) -> list:
-        if path not in _file_cache:
-            _file_cache[path] = _parse_m3u_file(path)
-        return _file_cache[path]
-
-    # ---- Live channels: parse filtered playlists ----
+    # ---- Live channels: stream filtered playlists (small files) ----
     used_guide_numbers: set = set()
     next_available = 1
     channels_by_name: dict = {}
 
     for item in items:
         filtered_path = os.path.join(M3U_DIR, f"filtered_playlist_{item.id}.m3u")
-        for e in _parsed(filtered_path):
+        for e in _stream_m3u_file(filtered_path):
             display = (e["tvg_name"] or e["display_name"]).replace("_", " ").strip()
             norm = _strict_norm(display)
 
@@ -337,10 +345,42 @@ def _build_cache(items: list, fingerprint: tuple) -> XtreamCache:  # noqa: C901
                 channels_by_name[norm] = (entry, explicit)
                 used_guide_numbers.add(guide_num)
 
-    # ---- VOD + Series: write to SQLite catalog and pre-built JSON files ----
+    # ---- Pre-build extra channel pattern matchers (one per item) ----
+    def _make_matcher(compiled_patterns):
+        def _matches(display: str) -> bool:
+            norm_d = _xi_display_norm(display)
+            for kind, matcher in compiled_patterns:
+                if kind == "word":
+                    if matcher.search(norm_d):
+                        return True
+                else:
+                    if fnmatch.fnmatch(re.sub(r"\s+", "", norm_d), matcher):
+                        return True
+            return False
+        return _matches
+
+    item_matchers = []  # list of (item, has_patterns, match_fn)
+    for item in items:
+        raw_xi = getattr(item, "xtream_includes", None) or ""
+        patterns = [p.strip() for p in raw_xi.split(",") if p.strip()]
+        if not patterns:
+            item_matchers.append((item, False, None))
+            continue
+        compiled = []
+        for p in patterns:
+            if p.startswith("*") and p.endswith("*") and p.count("*") == 2:
+                inner = _xi_display_norm(p[1:-1])
+                if inner:
+                    words = inner.split()
+                    rx = re.compile(r"\b" + r"\s+".join(re.escape(w) for w in words) + r"\b")
+                    compiled.append(("word", rx))
+            else:
+                compiled.append(("fnmatch", re.sub(r"[^a-z0-9*]+", "", p.lower())))
+        item_matchers.append((item, bool(compiled), _make_matcher(compiled)))
+
+    # ---- Single-pass streaming: VOD + Series → SQLite + JSON; live → extra channels ----
     vod_tmp = vod_json_path + ".tmp"
     series_tmp = series_json_path + ".tmp"
-    vod_series_sids: set = set()  # replaces old stream_map lookup in extra-channel logic
 
     conn = sqlite3.connect(db_path, check_same_thread=False)
     conn.execute("PRAGMA journal_mode=WAL")
@@ -361,15 +401,19 @@ def _build_cache(items: list, fingerprint: tuple) -> XtreamCache:  # noqa: C901
             )
             batch.clear()
 
+    extra_channel_urls: dict = {}
+    extra_channel_names: dict = {}
+
     with open(vod_tmp, "w", encoding="utf-8") as vod_f, \
          open(series_tmp, "w", encoding="utf-8") as series_f:
         vod_f.write("[")
         series_f.write("[")
         vod_first = series_first = True
 
-        for item in items:
+        for item, has_patterns, _matches in item_matchers:
             full_path = os.path.join(M3U_DIR, f"xtream_playlist_{item.id}.m3u")
-            for e in _parsed(full_path):
+
+            for e in _stream_m3u_file(full_path):
                 gt = e["group_title"]
                 display = (e["tvg_name"] or e["display_name"]).strip()
                 if not display:
@@ -377,7 +421,6 @@ def _build_cache(items: list, fingerprint: tuple) -> XtreamCache:  # noqa: C901
 
                 if gt == "VOD":
                     sid = _vod_id(item.id, e["tvg_id"])
-                    vod_series_sids.add(sid)
                     batch.append((sid, e["tvg_id"], display, e["logo"] or "",
                                   "VOD", "1", e["url"] or "", "movie", item.id))
                     if len(batch) >= BATCH_SIZE:
@@ -397,7 +440,6 @@ def _build_cache(items: list, fingerprint: tuple) -> XtreamCache:  # noqa: C901
 
                 elif gt == "Series":
                     sid = _series_id(item.id, e["tvg_id"])
-                    vod_series_sids.add(sid)
                     batch.append((sid, e["tvg_id"], display, e["logo"] or "",
                                   "Series", "1", e["url"] or "", "series", item.id))
                     if len(batch) >= BATCH_SIZE:
@@ -417,6 +459,33 @@ def _build_cache(items: list, fingerprint: tuple) -> XtreamCache:  # noqa: C901
                     series_f.write(json.dumps(obj, ensure_ascii=False))
                     series_first = False
 
+                elif has_patterns:
+                    # Extra channel candidate — live channel not in filtered playlist
+                    disp = display.replace("_", " ").strip()
+                    norm_name = _strict_norm(disp)
+                    if norm_name in channels_by_name:
+                        continue
+                    if not _matches(disp):
+                        continue
+                    sid = _live_id(item.id, e["tvg_id"])
+                    guide_num = e["tvg_id"]
+                    entry = StreamEntry(
+                        stream_id=sid,
+                        name=disp,
+                        logo=e["logo"],
+                        category_name=gt or "Live",
+                        category_id="",
+                        url=e["url"],
+                        stream_type="live",
+                        guide_number=guide_num,
+                        tvg_id=e["tvg_id"],
+                        item_id=item.id,
+                    )
+                    channels_by_name[norm_name] = (entry, False)
+                    used_guide_numbers.add(guide_num)
+                    extra_channel_urls[guide_num] = e["url"]
+                    extra_channel_names[guide_num] = disp
+
         vod_f.write("]")
         series_f.write("]")
 
@@ -426,86 +495,6 @@ def _build_cache(items: list, fingerprint: tuple) -> XtreamCache:  # noqa: C901
 
     os.replace(vod_tmp, vod_json_path)
     os.replace(series_tmp, series_json_path)
-
-    # ---- Xtream extra channels (xtream_includes patterns) ----
-    def _xi_display_norm(s: str) -> str:
-        s = unicodedata.normalize('NFKD', (s or ""))
-        s = ''.join(c for c in s if not unicodedata.combining(c))
-        s = s.lower()
-        return re.sub(r'[^a-z0-9]+', ' ', s).strip()
-
-    extra_channel_urls: dict = {}
-    extra_channel_names: dict = {}
-    for item in items:
-        raw_xi = getattr(item, 'xtream_includes', None) or ""
-        patterns = [p.strip() for p in raw_xi.split(",") if p.strip()]
-        if not patterns:
-            continue
-        logger.debug(f"Xtream extra: item={item.id} patterns={patterns}")
-
-        compiled_patterns = []
-        for p in patterns:
-            if p.startswith('*') and p.endswith('*') and p.count('*') == 2:
-                inner = _xi_display_norm(p[1:-1])
-                if inner:
-                    parts = inner.split()
-                    rx = re.compile(r'\b' + r'\s+'.join(re.escape(w) for w in parts) + r'\b')
-                    compiled_patterns.append(('word', rx))
-            else:
-                stripped_p = re.sub(r'[^a-z0-9*]+', '', p.lower())
-                compiled_patterns.append(('fnmatch', stripped_p))
-
-        def _matches_compiled(display: str) -> bool:
-            norm_d = _xi_display_norm(display)
-            for kind, matcher in compiled_patterns:
-                if kind == 'word':
-                    if matcher.search(norm_d):
-                        return True
-                else:
-                    stripped_d = re.sub(r'\s+', '', norm_d)
-                    if fnmatch.fnmatch(stripped_d, matcher):
-                        return True
-            return False
-
-        full_path = os.path.join(M3U_DIR, f"xtream_playlist_{item.id}.m3u")
-        scanned = skipped_filtered = skipped_dedup = matched_count = 0
-        for e in _parsed(full_path):
-            if e["group_title"] in ("VOD", "Series"):
-                continue
-            scanned += 1
-            display = (e["tvg_name"] or e["display_name"]).replace("_", " ").strip()
-            sid = _live_id(item.id, e["tvg_id"])
-            if sid in vod_series_sids:
-                skipped_filtered += 1
-                continue
-            norm_name = _strict_norm(display)
-            if norm_name in channels_by_name:
-                skipped_dedup += 1
-                continue
-            if not _matches_compiled(display):
-                continue
-            matched_count += 1
-            guide_num = e["tvg_id"]
-            entry = StreamEntry(
-                stream_id=sid,
-                name=display,
-                logo=e["logo"],
-                category_name=e["group_title"] or "Live",
-                category_id="",
-                url=e["url"],
-                stream_type="live",
-                guide_number=guide_num,
-                tvg_id=e["tvg_id"],
-                item_id=item.id,
-            )
-            channels_by_name[norm_name] = (entry, False)
-            used_guide_numbers.add(guide_num)
-            extra_channel_urls[guide_num] = e["url"]
-            extra_channel_names[guide_num] = display
-        logger.debug(
-            f"Xtream extra: item={item.id} patterns={patterns} scanned={scanned} "
-            f"skipped_dedup={skipped_dedup} matched={matched_count}"
-        )
 
     # ---- Assemble live streams ----
     live_streams = []
@@ -523,9 +512,6 @@ def _build_cache(items: list, fingerprint: tuple) -> XtreamCache:  # noqa: C901
     vod_cats = [{"category_id": "1", "category_name": "VOD", "parent_id": 0}]
     series_cats = [{"category_id": "1", "category_name": "Series", "parent_id": 0}]
 
-    # Release raw M3U parse data before returning
-    del _file_cache
-    del vod_series_sids
     gc.collect()
 
     try:
@@ -573,7 +559,30 @@ async def get_xtream_cache(db: Session, item: Item) -> XtreamCache:
                     and os.path.exists(cached.vod_json_path)
                     and os.path.exists(cached.series_json_path)):
                 return cached
-        new_cache = await asyncio.to_thread(_build_cache, [item], fingerprint)
+
+        # Enforce cooldown after build failures to prevent tight rebuild loops
+        last_fail = _build_failures.get(item.id, 0.0)
+        if time.time() - last_fail < _BUILD_RETRY_COOLDOWN:
+            logger.warning(
+                f"Xtream cache build cooldown active for item {item.id} "
+                f"({_BUILD_RETRY_COOLDOWN - (time.time() - last_fail):.0f}s remaining) — "
+                f"returning {'stale cache' if cached else 'error'}"
+            )
+            if cached:
+                return cached
+            raise HTTPException(status_code=503, detail="Cache unavailable — build failed recently, try again shortly")
+
+        try:
+            new_cache = await asyncio.to_thread(_build_cache, [item], fingerprint)
+        except Exception as exc:
+            _build_failures[item.id] = time.time()
+            logger.error(f"Xtream cache build failed for item {item.id}: {exc}", exc_info=True)
+            if cached:
+                logger.warning(f"Xtream cache: returning stale cache for item {item.id} after build failure")
+                return cached
+            raise HTTPException(status_code=503, detail=f"Cache build failed: {exc}")
+
+        _build_failures.pop(item.id, None)
         _cache[item.id] = new_cache
         if new_cache.extra_channel_urls:
             register_extra_channels(new_cache.extra_channel_urls, new_cache.extra_channel_names)
