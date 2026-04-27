@@ -38,7 +38,7 @@ def do_fetch_m3u(item_id: int, db) -> tuple:
 
     base_url = f"{item.server_url.rstrip('/')}/player_api.php"
     auth_url = f"{base_url}?username={urllib.parse.quote(item.username)}&password={urllib.parse.quote(item.user_pass)}"
-    logger.debug(f"Attempting Xtream API auth to {base_url}")
+    logger.warning(f"M3U fetch starting for '{item.name}' ({item.server_url})")
 
     m3u_content = None
     num_records = 0
@@ -53,14 +53,15 @@ def do_fetch_m3u(item_id: int, db) -> tuple:
             logger.warning(f"Invalid Xtream Codes credentials for item {item_id}")
             raise ValueError("Invalid credentials")
 
-        logger.info(f"Authenticated with Xtream Codes for user {item.username}")
-
-        live_streams = requests.get(f"{auth_url}&action=get_live_streams", headers=headers, timeout=30).json()
-        vod_streams  = requests.get(f"{auth_url}&action=get_vod_streams",  headers=headers, timeout=30).json()
-        series       = requests.get(f"{auth_url}&action=get_series",        headers=headers, timeout=30).json()
+        logger.warning(f"M3U fetch [{item.name}]: auth OK, fetching live streams…")
+        live_streams = requests.get(f"{auth_url}&action=get_live_streams", headers=headers, timeout=120).json()
+        logger.warning(f"M3U fetch [{item.name}]: {len(live_streams)} live — fetching VOD…")
+        vod_streams  = requests.get(f"{auth_url}&action=get_vod_streams",  headers=headers, timeout=120).json()
+        logger.warning(f"M3U fetch [{item.name}]: {len(vod_streams)} VOD — fetching series…")
+        series       = requests.get(f"{auth_url}&action=get_series",        headers=headers, timeout=120).json()
+        logger.warning(f"M3U fetch [{item.name}]: {len(series)} series — building M3U…")
 
         num_records = len(live_streams) + len(vod_streams) + len(series)
-        logger.info(f"Fetched {len(live_streams)} live, {len(vod_streams)} VOD, {len(series)} series")
 
         base = item.server_url.rstrip('/')
         m3u_content = "#EXTM3U\n"
@@ -122,7 +123,7 @@ def do_fetch_m3u(item_id: int, db) -> tuple:
     os.replace(tmp_m3u, m3u_path)
 
     total_lines = len(m3u_content.splitlines())
-    logger.info(f"Saved {source} playlist for item {item_id} ({num_records} records, {total_lines} lines)")
+    logger.warning(f"M3U fetch [{item.name}]: saved {num_records} records ({total_lines} lines) via {source}")
 
     # Fetch provider EPG
     epg_url = (

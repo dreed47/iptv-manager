@@ -24,8 +24,10 @@ router = APIRouter()
 M3U_DIR = config.M3U_DIR
 
 
-def verify_credentials(username: str, password: str) -> bool:
-    return username == config.IPTV_USERNAME and password == config.IPTV_PASSWORD
+def verify_credentials(username: str, password: str, item: Item) -> bool:
+    expected_user = item.proxy_username or "iptv"
+    expected_pass = item.proxy_password or "iptv"
+    return username == expected_user and password == expected_pass
 
 
 def _unauthorized() -> JSONResponse:
@@ -34,6 +36,18 @@ def _unauthorized() -> JSONResponse:
 
 def _get_base_url() -> str:
     return config.ADVERTISED_BASE_URL
+
+
+async def get_item_for_slug(provider_slug: str, db: Session = Depends(get_db)) -> Item:
+    item = db.query(Item).filter(Item.slug == provider_slug).first()
+    if not item:
+        all_items = db.query(Item).all()
+        available = [f"/{i.slug}/" for i in all_items if i.slug]
+        raise HTTPException(
+            status_code=404,
+            detail={"error": "Provider not found", "available_providers": available},
+        )
+    return item
 
 
 # ---------------------------------------------------------------------------
@@ -68,14 +82,14 @@ class XtreamCache:
     extra_channel_names: dict   # guide_number (str) -> display name for 24/7 channels
 
 
-_cache: Optional[XtreamCache] = None
+# Per-item cache: item_id -> XtreamCache
+_cache: dict[int, XtreamCache] = {}
 _cache_lock = asyncio.Lock()  # async lock — never blocks the event loop
 
 
 # ---------------------------------------------------------------------------
 # Stream ID helpers
 # Each item gets a 100M-wide namespace; type offsets keep live/vod/series apart.
-# Real-world Xtream tvg-ids are <2M so there's ample headroom.
 # ---------------------------------------------------------------------------
 def _make_id(item_id: int, tvg_id_str: str, type_offset: int) -> int:
     base = item_id * 100_000_000 + type_offset
@@ -98,7 +112,6 @@ def _series_id(item_id: int, tvg_id: str) -> int:
 
 
 def _episode_id(item_id: int, upstream_ep_id: int) -> int:
-    # Episodes use a 1B-wide namespace per item, separate from the 100M series namespace.
     return item_id * 1_000_000_000 + upstream_ep_id
 
 
@@ -110,7 +123,7 @@ _episode_cache_lock = threading.Lock()
 _vod_url_cache: dict = {}
 _vod_url_cache_lock = threading.Lock()
 
-_CACHE_MAX = 10_000  # max entries per cache before evicting oldest half
+_CACHE_MAX = 10_000
 
 _UPSTREAM_HEADERS = {
     "User-Agent": (
@@ -218,7 +231,6 @@ def _build_cache(items: list, fingerprint: tuple) -> XtreamCache:
     stream_map = {}
     live_id_to_guide = {}
 
-    # Parse each file at most once per build.
     _file_cache: dict = {}
 
     def _parsed(path: str) -> list:
@@ -226,10 +238,10 @@ def _build_cache(items: list, fingerprint: tuple) -> XtreamCache:
             _file_cache[path] = _parse_m3u_file(path)
         return _file_cache[path]
 
-    # ---- Live channels: parse filtered playlists, replicate guide-number logic ----
+    # ---- Live channels: parse filtered playlists ----
     used_guide_numbers: set = set()
     next_available = 1
-    channels_by_name: dict = {}  # strict_norm -> (StreamEntry, explicit_bool)
+    channels_by_name: dict = {}
 
     for item in items:
         filtered_path = os.path.join(M3U_DIR, f"filtered_playlist_{item.id}.m3u")
@@ -254,7 +266,7 @@ def _build_cache(items: list, fingerprint: tuple) -> XtreamCache:
                 name=display,
                 logo=e["logo"],
                 category_name=e["group_title"] or "Live",
-                category_id="",   # filled after category build
+                category_id="",
                 url=e["url"],
                 stream_type="live",
                 guide_number=guide_num,
@@ -267,7 +279,6 @@ def _build_cache(items: list, fingerprint: tuple) -> XtreamCache:
                 channels_by_name[norm] = (entry, explicit)
                 used_guide_numbers.add(guide_num)
             elif not existing[1] and explicit:
-                # Replace non-explicit with explicit (mirrors hdhomerun_routes logic)
                 used_guide_numbers.discard(existing[0].guide_number)
                 channels_by_name[norm] = (entry, explicit)
                 used_guide_numbers.add(guide_num)
@@ -315,9 +326,8 @@ def _build_cache(items: list, fingerprint: tuple) -> XtreamCache:
                 series_streams.append(entry)
                 stream_map[sid] = entry
 
-    # ---- Xtream extra channels: wildcard patterns from xtream_includes, not written to filtered playlist ----
+    # ---- Xtream extra channels (xtream_includes patterns) ----
     def _xi_display_norm(s: str) -> str:
-        """Lowercase + collapse non-alphanumeric to single space (preserves word boundaries)."""
         s = unicodedata.normalize('NFKD', (s or ""))
         s = ''.join(c for c in s if not unicodedata.combining(c))
         s = s.lower()
@@ -332,7 +342,6 @@ def _build_cache(items: list, fingerprint: tuple) -> XtreamCache:
             continue
         logger.debug(f"Xtream extra: item={item.id} patterns={patterns}")
 
-        # Pre-compile each pattern into a callable matcher once, outside the entry loop.
         compiled_patterns = []
         for p in patterns:
             if p.startswith('*') and p.endswith('*') and p.count('*') == 2:
@@ -375,7 +384,6 @@ def _build_cache(items: list, fingerprint: tuple) -> XtreamCache:
             if not _matches_compiled(display):
                 continue
             matched_count += 1
-            logger.debug(f"  Xtream extra match: '{display}'")
             guide_num = e["tvg_id"]
             entry = StreamEntry(
                 stream_id=sid,
@@ -393,9 +401,11 @@ def _build_cache(items: list, fingerprint: tuple) -> XtreamCache:
             used_guide_numbers.add(guide_num)
             extra_channel_urls[guide_num] = e["url"]
             extra_channel_names[guide_num] = display
-        logger.debug(f"Xtream extra: item={item.id} patterns={patterns} scanned={scanned} skipped_dedup={skipped_dedup} matched={matched_count}")
+        logger.debug(
+            f"Xtream extra: item={item.id} patterns={patterns} scanned={scanned} "
+            f"skipped_dedup={skipped_dedup} matched={matched_count}"
+        )
 
-    # Build live_streams from the filtered channels dedup map
     live_streams = []
     live_id_to_guide = {}
     stream_map = {k: v for k, v in stream_map.items() if v.stream_type != "live"}
@@ -404,7 +414,6 @@ def _build_cache(items: list, fingerprint: tuple) -> XtreamCache:
         stream_map[entry.stream_id] = entry
         live_id_to_guide[entry.stream_id] = entry.guide_number
 
-    # ---- Assign category IDs ----
     live_cats, live_cat_map = _build_categories(live_streams)
     vod_cats, vod_cat_map = _build_categories(vod_streams)
     series_cats, series_cat_map = _build_categories(series_streams)
@@ -416,8 +425,9 @@ def _build_cache(items: list, fingerprint: tuple) -> XtreamCache:
     for s in series_streams:
         s.category_id = series_cat_map.get(s.category_name, "1")
 
+    provider_label = ", ".join(f"'{i.name}'" for i in items)
     logger.info(
-        f"Xtream cache built: {len(live_streams)} live "
+        f"Xtream cache built [{provider_label}]: {len(live_streams)} live "
         f"({len(extra_channel_urls)} xtream extras), "
         f"{len(vod_streams)} VOD, {len(series_streams)} series"
     )
@@ -437,19 +447,18 @@ def _build_cache(items: list, fingerprint: tuple) -> XtreamCache:
     )
 
 
-async def get_xtream_cache(db: Session) -> XtreamCache:
+async def get_xtream_cache(db: Session, item: Item) -> XtreamCache:
     global _cache
-    items = db.query(Item).all()
-    fingerprint = _compute_fingerprint(items)
+    fingerprint = _compute_fingerprint([item])
     async with _cache_lock:
-        if _cache and _cache.fingerprint == fingerprint:
-            return _cache
-        # Run the CPU/IO-bound build in a thread pool so the event loop stays free.
-        new_cache = await asyncio.to_thread(_build_cache, items, fingerprint)
-        _cache = new_cache
-        if _cache.extra_channel_urls:
-            register_extra_channels(_cache.extra_channel_urls, _cache.extra_channel_names)
-        return _cache
+        cached = _cache.get(item.id)
+        if cached and cached.fingerprint == fingerprint:
+            return cached
+        new_cache = await asyncio.to_thread(_build_cache, [item], fingerprint)
+        _cache[item.id] = new_cache
+        if new_cache.extra_channel_urls:
+            register_extra_channels(new_cache.extra_channel_urls, new_cache.extra_channel_names)
+        return new_cache
 
 
 # ---------------------------------------------------------------------------
@@ -486,7 +495,6 @@ def _stream_to_json(entry: StreamEntry) -> dict:
             "custom_sid": "",
             "direct_source": "",
         }
-    # series
     return {
         "num": entry.stream_id,
         "name": entry.name,
@@ -508,8 +516,7 @@ def _stream_to_json(entry: StreamEntry) -> dict:
     }
 
 
-def _auth_response(base_url: str) -> dict:
-    # Parse host and port from base_url for server_info
+def _auth_response(base_url: str, item: Item) -> dict:
     try:
         from urllib.parse import urlparse
         parsed = urlparse(base_url)
@@ -521,8 +528,8 @@ def _auth_response(base_url: str) -> dict:
 
     return {
         "user_info": {
-            "username": config.IPTV_USERNAME,
-            "password": config.IPTV_PASSWORD,
+            "username": item.proxy_username or "iptv",
+            "password": item.proxy_password or "iptv",
             "message": "",
             "auth": 1,
             "status": "Active",
@@ -575,7 +582,6 @@ def _vod_info_response(entry: StreamEntry) -> dict:
 
 
 def _fetch_vod_url(entry: StreamEntry, db: Session) -> Optional[str]:
-    """Call get_vod_info upstream to get the correct container extension, cache and return the URL."""
     item = db.query(Item).filter(Item.id == entry.item_id).first()
     if not item:
         return None
@@ -605,12 +611,10 @@ def _fetch_vod_url(entry: StreamEntry, db: Session) -> Optional[str]:
             for k in list(_vod_url_cache)[: _CACHE_MAX // 2]:
                 del _vod_url_cache[k]
         _vod_url_cache[entry.stream_id] = url
-    logger.debug(f"VOD {entry.stream_id} resolved extension: .{ext} → {url}")
     return url
 
 
 def _fetch_series_info(entry: StreamEntry, db: Session) -> dict:
-    """Call the upstream Xtream API for series info, cache episode URLs, return API response."""
     item = db.query(Item).filter(Item.id == entry.item_id).first()
     if not item:
         return _series_info_fallback(entry)
@@ -634,7 +638,6 @@ def _fetch_series_info(entry: StreamEntry, db: Session) -> dict:
         logger.warning(f"Upstream get_series_info failed for series {entry.tvg_id}: {exc}")
         return _series_info_fallback(entry)
 
-    # Rewrite episode IDs to our namespaced local IDs and cache their upstream URLs
     episodes_out = {}
     for season_num, episodes in data.get("episodes", {}).items():
         season_list = []
@@ -667,7 +670,6 @@ def _fetch_series_info(entry: StreamEntry, db: Session) -> dict:
 
 
 def _series_info_fallback(entry: StreamEntry) -> dict:
-    """Minimal series info when the upstream API is unavailable."""
     return {
         "info": {
             "name": entry.name,
@@ -688,7 +690,7 @@ def _series_info_fallback(entry: StreamEntry) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Xtream API endpoint  (GET and POST)
+# Xtream API endpoint
 # ---------------------------------------------------------------------------
 async def _handle_player_api(
     username: str,
@@ -697,15 +699,16 @@ async def _handle_player_api(
     vod_id: Optional[str],
     series_id: Optional[str],
     db: Session,
+    item: Item,
 ) -> Response:
-    if not verify_credentials(username, password):
+    if not verify_credentials(username, password, item):
         return _unauthorized()
 
     base_url = _get_base_url()
-    cache = await get_xtream_cache(db)
+    cache = await get_xtream_cache(db, item)
 
     if action is None:
-        return JSONResponse(_auth_response(base_url))
+        return JSONResponse(_auth_response(base_url, item))
 
     if action == "get_live_categories":
         return JSONResponse(cache.live_categories)
@@ -742,51 +745,55 @@ async def _handle_player_api(
     return JSONResponse({"error": "Unknown action"}, status_code=400)
 
 
-@router.get("/player_api.php")
+@router.get("/{provider_slug}/player_api.php")
 async def player_api_get(
+    provider_slug: str,
     username: str = Query(...),
     password: str = Query(...),
     action: Optional[str] = Query(None),
     vod_id: Optional[str] = Query(None),
     series_id: Optional[str] = Query(None),
     db: Session = Depends(get_db),
+    item: Item = Depends(get_item_for_slug),
 ):
-    return await _handle_player_api(username, password, action, vod_id, series_id, db)
+    return await _handle_player_api(username, password, action, vod_id, series_id, db, item)
 
 
-@router.post("/player_api.php")
+@router.post("/{provider_slug}/player_api.php")
 async def player_api_post(
+    provider_slug: str,
     username: str = Form(...),
     password: str = Form(...),
     action: Optional[str] = Form(None),
     vod_id: Optional[str] = Form(None),
     series_id: Optional[str] = Form(None),
     db: Session = Depends(get_db),
+    item: Item = Depends(get_item_for_slug),
 ):
-    return await _handle_player_api(username, password, action, vod_id, series_id, db)
+    return await _handle_player_api(username, password, action, vod_id, series_id, db, item)
 
 
 # ---------------------------------------------------------------------------
 # M3U playlist endpoints
 # ---------------------------------------------------------------------------
-def _m3u_generator(cache: XtreamCache, base_url: str, username: str, password: str):
+def _m3u_generator(cache: XtreamCache, base_url: str, username: str, password: str, slug: str):
     yield "#EXTM3U\n"
     for s in cache.live_streams:
-        url = f"{base_url}/live/{username}/{password}/{s.stream_id}.ts"
+        url = f"{base_url}/{slug}/live/{username}/{password}/{s.stream_id}.ts"
         yield (
             f'#EXTINF:-1 tvg-id="{s.tvg_id}" tvg-name="{s.name}" '
             f'tvg-logo="{s.logo}" group-title="{s.category_name}",{s.name}\n'
             f"{url}\n"
         )
     for s in cache.vod_streams:
-        url = f"{base_url}/movie/{username}/{password}/{s.stream_id}.mp4"
+        url = f"{base_url}/{slug}/movie/{username}/{password}/{s.stream_id}.mp4"
         yield (
             f'#EXTINF:-1 tvg-id="{s.tvg_id}" tvg-name="{s.name}" '
             f'tvg-logo="{s.logo}" group-title="{s.category_name}",{s.name}\n'
             f"{url}\n"
         )
     for s in cache.series_streams:
-        url = f"{base_url}/series/{username}/{password}/{s.stream_id}.m3u8"
+        url = f"{base_url}/{slug}/series/{username}/{password}/{s.stream_id}.m3u8"
         yield (
             f'#EXTINF:-1 tvg-id="{s.tvg_id}" tvg-name="{s.name}" '
             f'tvg-logo="{s.logo}" group-title="{s.category_name}",{s.name}\n'
@@ -794,53 +801,61 @@ def _m3u_generator(cache: XtreamCache, base_url: str, username: str, password: s
         )
 
 
-@router.get("/get.php")
+@router.get("/{provider_slug}/get.php")
 async def get_m3u_xtream(
+    provider_slug: str,
     username: str = Query(...),
     password: str = Query(...),
     type: str = Query("m3u_plus"),
     output: str = Query("ts"),
     db: Session = Depends(get_db),
+    item: Item = Depends(get_item_for_slug),
 ):
-    if not verify_credentials(username, password):
+    if not verify_credentials(username, password, item):
         return Response("Unauthorized", status_code=401)
     base_url = _get_base_url()
-    cache = await get_xtream_cache(db)
+    cache = await get_xtream_cache(db, item)
     return StreamingResponse(
-        _m3u_generator(cache, base_url, username, password),
+        _m3u_generator(cache, base_url, username, password, provider_slug),
         media_type="application/x-mpegurl",
         headers={"Content-Disposition": 'attachment; filename="playlist.m3u"'},
     )
 
 
-@router.get("/iptv/playlist.m3u")
+@router.get("/{provider_slug}/iptv/playlist.m3u")
 async def get_m3u_simple(
+    provider_slug: str,
     username: Optional[str] = Query(None),
     password: Optional[str] = Query(None),
     db: Session = Depends(get_db),
+    item: Item = Depends(get_item_for_slug),
 ):
-    if username and password and not verify_credentials(username, password):
+    proxy_user = item.proxy_username or "iptv"
+    proxy_pass = item.proxy_password or "iptv"
+    if username and password and not verify_credentials(username, password, item):
         return Response("Unauthorized", status_code=401)
-    u = username or config.IPTV_USERNAME
-    p = password or config.IPTV_PASSWORD
+    u = username or proxy_user
+    p = password or proxy_pass
     base_url = _get_base_url()
-    cache = await get_xtream_cache(db)
+    cache = await get_xtream_cache(db, item)
     return StreamingResponse(
-        _m3u_generator(cache, base_url, u, p),
+        _m3u_generator(cache, base_url, u, p, provider_slug),
         media_type="application/x-mpegurl",
         headers={"Content-Disposition": 'attachment; filename="playlist.m3u"'},
     )
 
 
 # ---------------------------------------------------------------------------
-# EPG redirect (some apps call /xmltv.php)
+# EPG redirect
 # ---------------------------------------------------------------------------
-@router.get("/xmltv.php")
+@router.get("/{provider_slug}/xmltv.php")
 async def xmltv_redirect(
+    provider_slug: str,
     username: str = Query(...),
     password: str = Query(...),
+    item: Item = Depends(get_item_for_slug),
 ):
-    if not verify_credentials(username, password):
+    if not verify_credentials(username, password, item):
         return _unauthorized()
     return RedirectResponse(url="/epg.xml", status_code=302)
 
@@ -849,14 +864,82 @@ async def xmltv_redirect(
 # Stream proxy endpoints
 # ---------------------------------------------------------------------------
 
-@router.get("/live/{username}/{password}/{stream_id_ext:path}")
+def _stream_live_direct(source_url: str, channel_name: str, client_ip: str,
+                        user_agent: str, session_id: str, max_sessions: int,
+                        item_id: int | None = None):
+    """Generator that proxies a live stream directly from source_url with retry."""
+    chunk_size = config.STREAM_CHUNK_KB * 1024
+    max_retries = config.STREAM_MAX_RETRIES
+    retry_delay = config.STREAM_RETRY_DELAY
+    read_timeout = config.STREAM_READ_TIMEOUT
+    proxy_headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Accept": "*/*",
+        "Connection": "keep-alive",
+    }
+
+    with _active_streams_lock:
+        _active_streams[session_id] = {
+            "session_id": session_id,
+            "channel": channel_name,
+            "channel_name": channel_name,
+            "item_id": item_id,
+            "client_ip": client_ip,
+            "user_agent": user_agent,
+            "started_at": time.time(),
+            "last_chunk_at": time.time(),
+            "bytes_sent": 0,
+            "killed": False,
+        }
+
+    bytes_sent = 0
+    attempt = 0
+    session = requests.Session()
+    try:
+        while attempt <= max_retries:
+            if attempt > 0:
+                logger.warning(f"Live reconnect {attempt}/{max_retries} for '{channel_name}' after {bytes_sent} bytes")
+                time.sleep(retry_delay)
+            attempt += 1
+            try:
+                resp = session.get(source_url, headers=proxy_headers, stream=True,
+                                   timeout=(10, read_timeout))
+                resp.raise_for_status()
+            except Exception as exc:
+                logger.warning(f"Live upstream error for '{channel_name}': {exc}")
+                continue
+            try:
+                for chunk in resp.iter_content(chunk_size=chunk_size):
+                    if chunk:
+                        if _active_streams.get(session_id, {}).get("killed"):
+                            logger.info(f"Live stream {session_id} ('{channel_name}') killed by admin")
+                            return
+                        bytes_sent += len(chunk)
+                        _active_streams[session_id]["bytes_sent"] = bytes_sent
+                        _active_streams[session_id]["last_chunk_at"] = time.time()
+                        yield chunk
+                # Clean end-of-stream — don't retry
+                break
+            except Exception as exc:
+                logger.warning(f"Live read error for '{channel_name}': {exc}")
+            finally:
+                resp.close()
+    finally:
+        logger.info(f"Live stream ended: '{channel_name}', {bytes_sent} bytes sent")
+        _active_streams.pop(session_id, None)
+
+
+@router.get("/{provider_slug}/live/{username}/{password}/{stream_id_ext:path}")
 async def proxy_live(
+    provider_slug: str,
     username: str,
     password: str,
     stream_id_ext: str,
+    request: Request,
     db: Session = Depends(get_db),
+    item: Item = Depends(get_item_for_slug),
 ):
-    if not verify_credentials(username, password):
+    if not verify_credentials(username, password, item):
         raise HTTPException(status_code=401, detail="Unauthorized")
 
     stream_id_str = stream_id_ext.split(".")[0]
@@ -865,15 +948,35 @@ async def proxy_live(
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid stream ID")
 
-    cache = await get_xtream_cache(db)
-    guide_number = cache.live_id_to_guide.get(stream_id)
-    if not guide_number:
+    cache = await get_xtream_cache(db, item)
+    entry = cache.stream_map.get(stream_id)
+    if not entry or entry.stream_type != "live":
+        logger.warning(f"proxy_live [{item.name}]: stream_id {stream_id} not in cache "
+                       f"(cache has {len(cache.live_streams)} live streams)")
         raise HTTPException(status_code=404, detail=f"Live stream {stream_id} not found")
 
-    return RedirectResponse(url=f"/auto/v{guide_number}", status_code=307)
+    client_ip = request.client.host if request.client else "unknown"
+    if is_ip_blocked(client_ip):
+        raise HTTPException(status_code=429, detail="Stream was terminated — reconnect blocked briefly")
+
+    max_sessions = int(item.max_sessions) if item.max_sessions is not None else 1
+    active_count = auto_replace_ip_session(client_ip, entry.name, item_id=item.id)
+    if active_count >= max_sessions:
+        raise HTTPException(status_code=429,
+                            detail=f"Session limit reached ({active_count}/{max_sessions} active streams)")
+
+    session_id = str(uuid.uuid4())
+    logger.info(f"proxy_live [{item.name}]: '{entry.name}' → direct stream from {entry.url}")
+    return StreamingResponse(
+        _stream_live_direct(entry.url, entry.name, client_ip,
+                            request.headers.get("user-agent", "unknown"),
+                            session_id, max_sessions, item_id=item.id),
+        media_type="video/mp2t",
+        headers={"Cache-Control": "no-cache"},
+    )
 
 
-def _proxy_finite_stream(source_url: str, request: Request, media_type: str, stream_label: str = "VOD"):
+def _proxy_finite_stream(source_url: str, request: Request, media_type: str, stream_label: str = "VOD", item_id: int = 0):
     """Proxy a finite stream (VOD/series) with Range support for seeking."""
     chunk_size = config.STREAM_CHUNK_KB * 1024
     proxy_headers = {
@@ -881,15 +984,8 @@ def _proxy_finite_stream(source_url: str, request: Request, media_type: str, str
         "Accept": "*/*",
     }
     range_header = request.headers.get("range")
-    # Always send a Range header — many providers require it for VOD/series.
-    # Use the client's Range if present, otherwise request the full file.
     proxy_headers["Range"] = range_header or "bytes=0-"
 
-    # Open the upstream connection before committing to a StreamingResponse so
-    # we can return a proper HTTP error if the upstream rejects the request.
-    # NOTE: We return a JSONResponse on error rather than raising HTTPException
-    # to avoid triggering the get_db generator cleanup bug (its bare except
-    # catches HTTPException and attempts a second yield, causing RuntimeError).
     try:
         resp = requests.get(
             source_url,
@@ -919,12 +1015,6 @@ def _proxy_finite_stream(source_url: str, request: Request, media_type: str, str
         logger.warning(f"Upstream connection failed for {source_url}: {exc}")
         return JSONResponse({"error": f"Upstream connection failed: {exc}"}, status_code=502)
 
-    # Forward headers the client needs to seek and buffer correctly.
-    # Content-Length is intentionally NOT forwarded: if the upstream drops mid-transfer
-    # (IncompleteRead) we will have committed a byte count we can't fulfil, causing h11
-    # to raise LocalProtocolError.  Omitting it uses chunked transfer encoding instead,
-    # which ends cleanly when the upstream connection closes.
-    # Content-Range still carries the total file size so players can seek.
     forward_headers = {
         "Cache-Control": "no-cache",
         "Accept-Ranges": "bytes",
@@ -934,13 +1024,6 @@ def _proxy_finite_stream(source_url: str, request: Request, media_type: str, str
         if val:
             forward_headers[hdr] = val
 
-    logger.debug(
-        f"Proxying {source_url} → HTTP {resp.status_code} "
-        f"content-type={forward_headers.get('Content-Type', 'unknown')} "
-        f"upstream-length={resp.headers.get('Content-Length', 'unknown')} "
-        f"content-range={forward_headers.get('Content-Range', 'none')}"
-    )
-
     client_ip = request.client.host if request.client else "unknown"
     user_agent = request.headers.get("user-agent", "unknown")
     session_id = str(uuid.uuid4())
@@ -949,6 +1032,7 @@ def _proxy_finite_stream(source_url: str, request: Request, media_type: str, str
         _active_streams[session_id] = {
             "session_id": session_id,
             "channel": stream_label,
+            "item_id": item_id,
             "client_ip": client_ip,
             "user_agent": user_agent,
             "started_at": time.time(),
@@ -981,15 +1065,17 @@ def _proxy_finite_stream(source_url: str, request: Request, media_type: str, str
     )
 
 
-@router.get("/movie/{username}/{password}/{stream_id_ext:path}")
+@router.get("/{provider_slug}/movie/{username}/{password}/{stream_id_ext:path}")
 async def proxy_vod(
+    provider_slug: str,
     username: str,
     password: str,
     stream_id_ext: str,
     request: Request,
     db: Session = Depends(get_db),
+    item: Item = Depends(get_item_for_slug),
 ):
-    if not verify_credentials(username, password):
+    if not verify_credentials(username, password, item):
         raise HTTPException(status_code=401, detail="Unauthorized")
 
     stream_id_str = stream_id_ext.split(".")[0]
@@ -998,17 +1084,21 @@ async def proxy_vod(
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid stream ID")
 
-    cache = await get_xtream_cache(db)
+    cache = await get_xtream_cache(db, item)
     entry = cache.stream_map.get(stream_id)
     if not entry or entry.stream_type != "movie":
         raise HTTPException(status_code=404, detail=f"VOD stream {stream_id} not found")
 
     client_ip = request.client.host if request.client else "unknown"
     if is_ip_blocked(client_ip):
-        raise HTTPException(status_code=429, detail="Stream was terminated — reconnect blocked briefly", headers={"Retry-After": str(KILL_BLOCK_SECONDS)})
+        raise HTTPException(
+            status_code=429,
+            detail="Stream was terminated — reconnect blocked briefly",
+            headers={"Retry-After": str(KILL_BLOCK_SECONDS)},
+        )
 
-    item = db.query(Item).first()
-    max_sessions = int(item.max_sessions) if item and item.max_sessions is not None else 1
+    provider_item = db.query(Item).filter(Item.id == entry.item_id).first()
+    max_sessions = int(provider_item.max_sessions) if provider_item and provider_item.max_sessions is not None else 1
     active_count = auto_replace_ip_session(client_ip, f"VOD:{entry.name}")
     if active_count >= max_sessions:
         raise HTTPException(
@@ -1017,17 +1107,14 @@ async def proxy_vod(
             headers={"Retry-After": "30"},
         )
 
-    # Check if we already have the correct URL (resolved extension from a prior get_vod_info call)
     with _vod_url_cache_lock:
         resolved_url = _vod_url_cache.get(stream_id)
 
     if resolved_url is None:
-        # First play: fetch correct extension from upstream, fall back to M3U URL on failure
         resolved_url = await asyncio.to_thread(_fetch_vod_url, entry, db) or entry.url
 
-    result = _proxy_finite_stream(resolved_url, request, "video/mp4", stream_label=f"VOD:{entry.name}")
+    result = _proxy_finite_stream(resolved_url, request, "video/mp4", stream_label=f"VOD:{entry.name}", item_id=entry.item_id)
 
-    # If the resolved URL also fails (551 etc.), invalidate cache so next request retries
     if isinstance(result, JSONResponse) and result.status_code == 502:
         with _vod_url_cache_lock:
             _vod_url_cache.pop(stream_id, None)
@@ -1035,15 +1122,17 @@ async def proxy_vod(
     return result
 
 
-@router.get("/series/{username}/{password}/{stream_id_ext:path}")
+@router.get("/{provider_slug}/series/{username}/{password}/{stream_id_ext:path}")
 async def proxy_series(
+    provider_slug: str,
     username: str,
     password: str,
     stream_id_ext: str,
     request: Request,
     db: Session = Depends(get_db),
+    item: Item = Depends(get_item_for_slug),
 ):
-    if not verify_credentials(username, password):
+    if not verify_credentials(username, password, item):
         raise HTTPException(status_code=401, detail="Unauthorized")
 
     stream_id_str = stream_id_ext.split(".")[0]
@@ -1054,10 +1143,13 @@ async def proxy_series(
 
     client_ip = request.client.host if request.client else "unknown"
     if is_ip_blocked(client_ip):
-        raise HTTPException(status_code=429, detail="Stream was terminated — reconnect blocked briefly", headers={"Retry-After": str(KILL_BLOCK_SECONDS)})
+        raise HTTPException(
+            status_code=429,
+            detail="Stream was terminated — reconnect blocked briefly",
+            headers={"Retry-After": str(KILL_BLOCK_SECONDS)},
+        )
 
-    item = db.query(Item).first()
-    max_sessions = int(item.max_sessions) if item and item.max_sessions is not None else 1
+    max_sessions = int(item.max_sessions) if item.max_sessions is not None else 1
     active_count = auto_replace_ip_session(client_ip, f"Series:{stream_id}")
     if active_count >= max_sessions:
         raise HTTPException(
@@ -1066,19 +1158,60 @@ async def proxy_series(
             headers={"Retry-After": "30"},
         )
 
-    # Episode cache is populated when get_series_info is called; check it first
     with _episode_cache_lock:
         upstream_url = _episode_cache.get(stream_id)
+
     if upstream_url:
         logger.debug(f"Series episode {stream_id} → {upstream_url}")
-        return _proxy_finite_stream(upstream_url, request, "video/mp4", stream_label=f"Series:{stream_id}")
+        return _proxy_finite_stream(upstream_url, request, "video/mp4", stream_label=f"Series:{stream_id}", item_id=item.id)
 
-    # Episode not in cache — get_series_info hasn't been called yet for this series
-    logger.warning(f"Series episode {stream_id} not in episode cache (get_series_info not yet called?)")
-    cache = await get_xtream_cache(db)
+    logger.warning(f"Series episode {stream_id} not in episode cache")
+    cache = await get_xtream_cache(db, item)
     entry = cache.stream_map.get(stream_id)
     if not entry or entry.stream_type != "series":
-        logger.warning(f"Series stream {stream_id} not found in stream_map either")
         return JSONResponse({"error": f"Series stream {stream_id} not found"}, status_code=404)
 
-    return _proxy_finite_stream(entry.url, request, "application/vnd.apple.mpegurl", stream_label=f"Series:{entry.name}")
+    return _proxy_finite_stream(
+        entry.url, request, "application/vnd.apple.mpegurl", stream_label=f"Series:{entry.name}", item_id=entry.item_id
+    )
+
+
+# ---------------------------------------------------------------------------
+# Backward-compat: old root-level Xtream paths return a helpful error
+# ---------------------------------------------------------------------------
+def _provider_not_found_response(db: Session) -> JSONResponse:
+    all_items = db.query(Item).all()
+    available = [f"/{i.slug}/" for i in all_items if i.slug]
+    return JSONResponse(
+        {
+            "error": "Provider path required. Reconfigure your IPTV app to use a provider-specific URL.",
+            "available_providers": available,
+            "example": f"{available[0]}player_api.php" if available else "/provider-slug/player_api.php",
+        },
+        status_code=404,
+    )
+
+
+@router.get("/player_api.php")
+async def player_api_legacy(db: Session = Depends(get_db)):
+    return _provider_not_found_response(db)
+
+
+@router.post("/player_api.php")
+async def player_api_legacy_post(db: Session = Depends(get_db)):
+    return _provider_not_found_response(db)
+
+
+@router.get("/get.php")
+async def get_m3u_legacy(db: Session = Depends(get_db)):
+    return _provider_not_found_response(db)
+
+
+@router.get("/iptv/playlist.m3u")
+async def playlist_legacy(db: Session = Depends(get_db)):
+    return _provider_not_found_response(db)
+
+
+@router.get("/xmltv.php")
+async def xmltv_legacy(db: Session = Depends(get_db)):
+    return _provider_not_found_response(db)

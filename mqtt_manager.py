@@ -19,6 +19,19 @@ logger = logging.getLogger(__name__)
 _manager: "MqttManager | None" = None
 _manager_lock = threading.Lock()
 
+# Per-provider publish targets: [{"item_id": int, "prefix": str, "device_name": str}]
+_provider_configs: list[dict] = []
+
+
+def set_provider_configs(configs: list[dict]) -> None:
+    """Set the list of providers that should receive MQTT state publishes.
+    Each entry: {"item_id": int, "prefix": str, "device_name": str}.
+    Entries with a blank prefix are silently ignored.
+    """
+    global _provider_configs
+    _provider_configs = [c for c in configs if c.get("prefix", "").strip()]
+    logger.info(f"MQTT: provider configs updated ({len(_provider_configs)} provider(s) active)")
+
 POLL_INTERVAL = 10      # seconds between state polls
 HEARTBEAT_INTERVAL = 60 # seconds between forced publishes regardless of change
 RECONNECT_DELAY = 30    # seconds to wait before first reconnect attempt after disconnect
@@ -58,6 +71,42 @@ def get_mqtt_status() -> dict:
         if _manager is None:
             return {"connected": False, "broker": None}
         return _manager.get_status()
+
+
+def retract_ha_discovery(prefix: str) -> bool:
+    """Publish empty retained payloads to remove a device from HA discovery."""
+    with _manager_lock:
+        if _manager is None or not _manager._connected:
+            return False
+        _manager.unpublish_ha_discovery(prefix)
+        return True
+
+
+def publish_ha_discovery_for(prefix: str, device_name: str) -> bool:
+    """Publish HA discovery payloads for any prefix/device_name pair."""
+    with _manager_lock:
+        if _manager is None or not _manager._connected:
+            return False
+        _manager.publish_ha_discovery_for(prefix, device_name)
+        return True
+
+
+def update_device_identity(prefix: str, device_name: str) -> bool:
+    """Update the running manager's prefix/device_name and republish everything."""
+    with _manager_lock:
+        if _manager is None or not _manager._connected:
+            return False
+        _manager.update_device_identity(prefix, device_name)
+        return True
+
+
+def force_publish_state() -> None:
+    """Reset poll state so the next tick immediately republishes streams/VPN to all prefixes."""
+    with _manager_lock:
+        if _manager is not None:
+            _manager._prev_stream_count = -1
+            _manager._prev_vpn_running = None
+            _manager._last_heartbeat = 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -131,8 +180,10 @@ class MqttManager:
             client.loop_stop()
             return False, f"Connected to {self._host}:{self._port} but no CONNACK received within 5s"
 
-        # Publish initial state now that the CONNACK exchange is fully settled
-        self._publish(lwt_topic, "online", retain=True)
+        # Publish online status to all configured provider prefixes
+        for prefix in self._active_prefixes():
+            self._publish(f"{prefix}/status", "online", retain=True)
+        self.publish_ha_discovery()
 
         # Start polling thread
         self._stop_event.clear()
@@ -147,7 +198,8 @@ class MqttManager:
         if self._client:
             if self._connected:
                 try:
-                    self._publish(f"{self._prefix}/status", "offline", retain=True)
+                    for prefix in self._active_prefixes():
+                        self._publish(f"{prefix}/status", "offline", retain=True)
                     self._client.disconnect()
                 except Exception:
                     pass
@@ -211,6 +263,9 @@ class MqttManager:
         self._just_reconnected = False
         force = reconnected or (now - self._last_heartbeat) >= HEARTBEAT_INTERVAL
 
+        if reconnected:
+            self.publish_ha_discovery()
+
         stream_count = len(streams)
         vpn_running = vpn.get("running", False)
 
@@ -226,7 +281,8 @@ class MqttManager:
             self._prev_vpn_running = vpn_running
 
         if force:
-            self._publish(f"{self._prefix}/status", "online", retain=True)
+            for prefix in self._active_prefixes():
+                self._publish(f"{prefix}/status", "online", retain=True)
             self._last_heartbeat = now
 
     # ------------------------------------------------------------------
@@ -237,9 +293,14 @@ class MqttManager:
         if self._client and self._connected:
             self._client.publish(topic, payload=payload, qos=qos, retain=retain)
 
-    def _publish_streams(self, streams: list):
+    def _active_prefixes(self) -> list[str]:
+        """All prefixes that should receive publishes; falls back to self._prefix."""
+        configs = list(_provider_configs)
+        return [c["prefix"] for c in configs] if configs else [self._prefix]
+
+    def _format_streams(self, streams: list) -> list:
         now = time.time()
-        formatted = []
+        result = []
         for s in streams:
             elapsed = int(now - s.get("started_at", now))
             hours, rem = divmod(elapsed, 3600)
@@ -253,7 +314,7 @@ class MqttManager:
                 if channel_name and channel_name != channel_num
                 else channel_num
             )
-            formatted.append({
+            result.append({
                 "session_id": s.get("session_id", ""),
                 "channel": channel_display,
                 "channel_number": channel_num,
@@ -265,43 +326,70 @@ class MqttManager:
                 "mb_sent": mb,
                 "started_at": int(s.get("started_at", now)),
             })
+        return result
 
-        count = len(formatted)
-        self._publish(f"{self._prefix}/streams/count", str(count), retain=True)
-        self._publish(
-            f"{self._prefix}/streams/attributes",
-            json.dumps({"count": count, "streams": formatted}),
-            retain=True,
-        )
+    def _publish_streams(self, streams: list):
+        configs = list(_provider_configs)
+        if configs:
+            # Publish each provider's own stream count to its own prefix
+            for cfg in configs:
+                provider_streams = [s for s in streams if s.get("item_id") == cfg["item_id"]]
+                formatted = self._format_streams(provider_streams)
+                count = len(formatted)
+                prefix = cfg["prefix"]
+                self._publish(f"{prefix}/streams/count", str(count), retain=True)
+                self._publish(f"{prefix}/streams/attributes", json.dumps({"count": count, "streams": formatted}), retain=True)
+        else:
+            formatted = self._format_streams(streams)
+            count = len(formatted)
+            self._publish(f"{self._prefix}/streams/count", str(count), retain=True)
+            self._publish(f"{self._prefix}/streams/attributes", json.dumps({"count": count, "streams": formatted}), retain=True)
 
     def _publish_vpn(self, vpn: dict):
         running = vpn.get("running", False)
         state = "ON" if running else "OFF"
-        self._publish(f"{self._prefix}/vpn/state", state, retain=True)
-        self._publish(
-            f"{self._prefix}/vpn/attributes",
-            json.dumps({
-                "connected": running,
-                "interface": vpn.get("interface"),
-            }),
-            retain=True,
-        )
+        attrs = json.dumps({"connected": running, "interface": vpn.get("interface")})
+        for prefix in self._active_prefixes():
+            self._publish(f"{prefix}/vpn/state", state, retain=True)
+            self._publish(f"{prefix}/vpn/attributes", attrs, retain=True)
 
     # ------------------------------------------------------------------
     # Home Assistant auto-discovery
     # ------------------------------------------------------------------
 
-    def publish_ha_discovery(self):
-        prefix = self._prefix
-        # Sanitise prefix for use in unique_id / object_id (no slashes or hyphens)
+    def update_device_identity(self, prefix: str, device_name: str):
+        """Swap prefix/device_name in-place, publish online status, and republish discovery."""
+        self._prefix = prefix.rstrip("/")
+        self._device_name = device_name
+        self._publish(f"{self._prefix}/status", "online", retain=True)
+        # Reset poll state so streams/vpn are republished to the new prefix on the next tick
+        self._prev_stream_count = -1
+        self._prev_vpn_running = None
+        self._last_heartbeat = 0.0
+        self.publish_ha_discovery()
+
+    def _discovery_topics(self, prefix: str) -> list[str]:
         uid_base = prefix.replace("/", "_").replace("-", "_")
-        device = {"name": self._device_name, "identifiers": [uid_base]}
+        return [
+            f"homeassistant/sensor/{uid_base}_streams/config",
+            f"homeassistant/binary_sensor/{uid_base}_vpn/config",
+            f"homeassistant/binary_sensor/{uid_base}_online/config",
+        ]
+
+    def unpublish_ha_discovery(self, prefix: str):
+        """Retract all HA discovery entities for the given prefix (empty retained payload)."""
+        for topic in self._discovery_topics(prefix):
+            self._publish(topic, "", retain=True)
+        logger.info(f"MQTT: retracted HA discovery for prefix={prefix}")
+
+    def publish_ha_discovery_for(self, prefix: str, device_name: str):
+        uid_base = prefix.replace("/", "_").replace("-", "_")
+        device = {"name": device_name or prefix, "identifiers": [uid_base]}
         avail = {
             "availability_topic": f"{prefix}/status",
             "payload_available": "online",
             "payload_not_available": "offline",
         }
-
         entities = [
             (
                 f"homeassistant/sensor/{uid_base}_streams/config",
@@ -344,11 +432,17 @@ class MqttManager:
                 },
             ),
         ]
-
         for topic, payload in entities:
             self._publish(topic, json.dumps(payload), retain=True)
-
         logger.info(f"MQTT: published HA discovery for {len(entities)} entities (prefix={prefix})")
+
+    def publish_ha_discovery(self):
+        configs = list(_provider_configs)
+        if configs:
+            for cfg in configs:
+                self.publish_ha_discovery_for(cfg["prefix"], cfg["device_name"])
+        else:
+            self.publish_ha_discovery_for(self._prefix, self._device_name)
 
 
 # ---------------------------------------------------------------------------

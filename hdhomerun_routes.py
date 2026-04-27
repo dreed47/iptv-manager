@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse, RedirectResponse, Response, HTMLResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
-from models import get_db, Item
+from models import get_db, Item, get_app_config
 from hdhomerun_emulator import HDHomeRunEmulator
 import config
 import logging
@@ -23,10 +23,17 @@ templates = Jinja2Templates(directory="templates")
 # Create emulator instance but don't start it yet
 hdhomerun_emulator = HDHomeRunEmulator()
 
-# Module-level caches: guide_number -> source URL / display name (populated by load_channel_lineup)
+# Module-level caches: guide_number -> source URL / display name / item_id (populated by load_channel_lineup)
 _channel_source_urls: dict = {}
 _channel_names: dict = {}
+_channel_item_id: dict = {}   # guide_number -> item_id (for per-provider max_sessions)
+_source_url_to_guide: dict = {}  # reverse: source_url -> guide_number
 _channel_source_urls_lock = threading.Lock()
+
+
+def get_guide_for_source_url(url: str) -> str | None:
+    with _channel_source_urls_lock:
+        return _source_url_to_guide.get(url)
 
 # Active proxy streams — keyed by session UUID, value is session info dict
 _active_streams: dict[str, dict] = {}
@@ -67,13 +74,14 @@ def is_ip_blocked(ip: str) -> bool:
         return False
 
 
-def auto_replace_ip_session(client_ip: str, new_channel: str) -> int:
-    """Kill any non-killed active sessions from client_ip (channel/content switch).
-    No IP block is added. Returns the count of non-killed live streams after the replacement."""
+def auto_replace_ip_session(client_ip: str, new_channel: str, item_id: int | None = None) -> int:
+    """Kill any non-killed active sessions from client_ip on the same provider (channel switch).
+    No IP block is added. Returns the count of non-killed live streams for this provider after replacement."""
     with _active_streams_lock:
         existing = [
             (sid, s) for sid, s in _active_streams.items()
             if s.get("client_ip") == client_ip and not s.get("killed")
+            and (item_id is None or s.get("item_id") == item_id)
         ]
     for sid, s in existing:
         old_ch = s.get("channel_name") or s.get("channel", "?")
@@ -81,7 +89,10 @@ def auto_replace_ip_session(client_ip: str, new_channel: str) -> int:
             if sid in _active_streams:
                 _active_streams[sid]["killed"] = True
         logger.info(f"Auto-replaced session {sid}: IP {client_ip} switched from '{old_ch}' to '{new_channel}'")
-    return sum(1 for s in _live_streams() if not s.get("killed"))
+    return sum(
+        1 for s in _live_streams()
+        if not s.get("killed") and (item_id is None or s.get("item_id") == item_id)
+    )
 
 
 def kill_stream(session_id: str, block_ip: bool = True) -> bool:
@@ -101,12 +112,15 @@ def kill_stream(session_id: str, block_ip: bool = True) -> bool:
     return True
 
 
-def register_extra_channels(url_map: dict, name_map: dict | None = None):
+def register_extra_channels(url_map: dict, name_map: dict | None = None, item_id_map: dict | None = None):
     """Register source URLs (and optionally display names) for extra channels."""
     with _channel_source_urls_lock:
         _channel_source_urls.update(url_map)
+        _source_url_to_guide.update({v: k for k, v in url_map.items()})
         if name_map:
             _channel_names.update(name_map)
+        if item_id_map:
+            _channel_item_id.update(item_id_map)
 
 def get_advertised_base_url() -> str:
     return config.ADVERTISED_BASE_URL
@@ -114,8 +128,16 @@ def get_advertised_base_url() -> str:
 def load_channel_lineup(db: Session = Depends(get_db)) -> list:
     """Load and merge channels from all filtered M3U files with de-duplication and explicit numbering preference"""
     channels = []
-    # Get ALL items, not just the first one
-    items = db.query(Item).all()
+    # Check if a specific provider is selected for HDHomeRun
+    hdhr_provider_id = get_app_config(db, "hdhr_provider_id")
+    if hdhr_provider_id:
+        try:
+            selected = db.query(Item).filter(Item.id == int(hdhr_provider_id)).first()
+            items = [selected] if selected else db.query(Item).all()
+        except (ValueError, TypeError):
+            items = db.query(Item).all()
+    else:
+        items = db.query(Item).all()
     if not items:
         logger.warning("No IPTV configurations found")
         return channels
@@ -234,6 +256,7 @@ def load_channel_lineup(db: Session = Depends(get_db)) -> list:
                             # Internal fields stripped before returning lineup
                             "_ExplicitNumber": 1 if explicit_number else 0,
                             "_SourceURL": url,
+                            "_ItemId": item.id,
                         }
                         if logo:
                             channel_data["ImageURL"] = logo
@@ -275,15 +298,20 @@ def load_channel_lineup(db: Session = Depends(get_db)) -> list:
     # Update module-level caches before stripping internal fields
     new_urls = {ch["GuideNumber"]: ch["_SourceURL"] for ch in channels if "_SourceURL" in ch}
     new_names = {ch["GuideNumber"]: ch.get("GuideName", ch["GuideNumber"]) for ch in channels}
-    global _channel_source_urls, _channel_names
+    new_item_ids = {ch["GuideNumber"]: ch["_ItemId"] for ch in channels if "_ItemId" in ch}
+    new_reverse = {v: k for k, v in new_urls.items()}
+    global _channel_source_urls, _channel_names, _channel_item_id, _source_url_to_guide
     with _channel_source_urls_lock:
         _channel_source_urls = new_urls
         _channel_names = new_names
+        _channel_item_id = new_item_ids
+        _source_url_to_guide = new_reverse
 
     # Remove internal flags
     for ch in channels:
         ch.pop("_ExplicitNumber", None)
         ch.pop("_SourceURL", None)
+        ch.pop("_ItemId", None)
 
     logger.debug(f"Total: Loaded {len(channels)} channels for HDHomeRun lineup from {len(items)} configuration(s)")
 
@@ -310,9 +338,25 @@ async def stream_channel(channel_number: str, request: Request, db: Session = De
         logger.warning(f"Stream reconnect blocked for {client_ip} (recently killed)")
         raise HTTPException(status_code=429, detail="Stream was terminated — reconnect blocked briefly", headers={"Retry-After": str(KILL_BLOCK_SECONDS)})
 
-    item = db.query(Item).first()
-    max_sessions = int(item.max_sessions) if item and item.max_sessions is not None else 1
-    active_count = auto_replace_ip_session(client_ip, f"ch {channel_number}")
+    with _channel_source_urls_lock:
+        channel_item_id = _channel_item_id.get(channel_number)
+
+    # Use the explicit streaming provider if configured, otherwise fall back to the channel's own provider
+    hdhr_stream_provider_id = get_app_config(db, "hdhr_stream_provider_id")
+    if hdhr_stream_provider_id:
+        try:
+            session_item_id = int(hdhr_stream_provider_id)
+        except (ValueError, TypeError):
+            session_item_id = channel_item_id
+    else:
+        session_item_id = channel_item_id
+
+    if session_item_id:
+        provider = db.query(Item).filter(Item.id == session_item_id).first()
+    else:
+        provider = db.query(Item).first()
+    max_sessions = int(provider.max_sessions) if provider and provider.max_sessions is not None else 1
+    active_count = auto_replace_ip_session(client_ip, f"ch {channel_number}", item_id=session_item_id)
     if active_count >= max_sessions:
         logger.warning(
             f"Stream rejected for channel {channel_number}: {active_count}/{max_sessions} sessions active"
@@ -357,6 +401,7 @@ async def stream_channel(channel_number: str, request: Request, db: Session = De
                 "session_id": session_id,
                 "channel": channel_number,
                 "channel_name": channel_name,
+                "item_id": session_item_id,
                 "client_ip": client_ip,
                 "user_agent": user_agent,
                 "started_at": time.time(),

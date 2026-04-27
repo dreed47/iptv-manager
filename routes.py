@@ -1,10 +1,11 @@
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Form, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, FileResponse, Response
 from fastapi.templating import Jinja2Templates
+import asyncio
 import time
 from sqlalchemy.orm import Session
-from models import get_db, Item
-from services import create_item, update_item, get_item_context
+from models import get_db, Item, AppConfig, get_app_config, set_app_config
+from services import create_item, update_item, get_item_context, get_all_item_contexts, get_item_by_slug, generate_slug
 import config
 import logging
 import os
@@ -28,13 +29,16 @@ def get_base_url(request: Request) -> str:
 @router.get("/", response_class=HTMLResponse)
 async def index(request: Request, db: Session = Depends(get_db), error: str = None, success: str = None):
     base_url = get_base_url(request)
-    item = get_item_context(db, base_url, config.M3U_DIR)
+    items = get_all_item_contexts(db, base_url, config.M3U_DIR)
+    # Keep single `item` for templates that still expect it (VPN quick actions etc.)
+    item = items[0] if items else None
     ssdp_disabled_by_env = hdhomerun_emulator.is_env_disabled()
     start = time.perf_counter()
     template = templates.get_template("dashboard.html")
     rendered = template.render({
         "request": request,
         "item": item,
+        "items": items,
         "error": error,
         "success": success,
         "base_url": base_url,
@@ -47,23 +51,12 @@ async def index(request: Request, db: Session = Depends(get_db), error: str = No
     return HTMLResponse(content=rendered)
 
 
-@router.get("/settings", response_class=HTMLResponse)
-async def settings_page(request: Request, db: Session = Depends(get_db), error: str = None, success: str = None):
-    base_url = get_base_url(request)
-    item = get_item_context(db, base_url, config.M3U_DIR)
-    start = time.perf_counter()
-    template = templates.get_template("settings.html")
-    rendered = template.render({
-        "request": request,
-        "item": item,
-        "friendly_name": config.HDHR_FRIENDLY_NAME,
-        "active_page": "settings",
-        "allow_full_m3u_download": config.ALLOW_FULL_M3U_DOWNLOAD,
-        "error": error,
-        "success": success,
-    })
-    logger.debug(f"Template render duration: {time.perf_counter() - start:.3f}s")
-    return HTMLResponse(content=rendered)
+@router.get("/settings", response_class=RedirectResponse)
+async def settings_page(db: Session = Depends(get_db)):
+    first = db.query(Item).first()
+    if first:
+        return RedirectResponse(url=f"/providers/{first.id}", status_code=302)
+    return RedirectResponse(url="/providers", status_code=302)
 
 
 @router.post("/settings", response_class=RedirectResponse)
@@ -79,22 +72,16 @@ async def handle_settings_form(
 ):
     existing = db.query(Item).first()
     if existing:
-        result = update_item(db, existing.id, name, server_url, username, user_pass, None, None, None, m3u_refresh_hours=m3u_refresh_hours, max_sessions=max_sessions)
+        result = update_item(db, existing.id, name=name, server_url=server_url, username=username, user_pass=user_pass, m3u_refresh_hours=m3u_refresh_hours, max_sessions=max_sessions)
     else:
-        result = create_item(db, name, server_url, username, user_pass, None, None, None, max_sessions=max_sessions)
-        if result:
-            update_item(db, result.id, None, None, None, None, None, None, None, m3u_refresh_hours, max_sessions=max_sessions)
+        result = create_item(db, name, server_url, username, user_pass, None, None, None, m3u_refresh_hours=m3u_refresh_hours, max_sessions=max_sessions)
     if not result:
-        return RedirectResponse(url="/settings?error=Failed to save provider", status_code=303)
-    return RedirectResponse(url="/settings?success=Provider saved successfully", status_code=303)
+        return RedirectResponse(url="/providers?error=Failed+to+save+provider", status_code=303)
+    return RedirectResponse(url=f"/providers/{result.id}?success=Provider+saved+successfully", status_code=303)
 
-@router.get("/settings/test_connection", response_class=JSONResponse)
-async def test_connection(request: Request, db: Session = Depends(get_db)):
+async def _test_provider_connection(item, db):
     import requests as _requests
     import asyncio
-    item = db.query(Item).first()
-    if not item:
-        return JSONResponse({"ok": False, "error": "No provider configured"})
     url = f"{item.server_url.rstrip('/')}/player_api.php"
     params = {"username": item.username, "password": item.user_pass}
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36"}
@@ -127,12 +114,29 @@ async def test_connection(request: Request, db: Session = Depends(get_db)):
         return JSONResponse({"ok": False, "error": f"{type(e).__name__}: {e}"})
 
 
+@router.get("/settings/test_connection", response_class=JSONResponse)
+async def test_connection(request: Request, db: Session = Depends(get_db)):
+    item = db.query(Item).first()
+    if not item:
+        return JSONResponse({"ok": False, "error": "No provider configured"})
+    return await _test_provider_connection(item, db)
+
+
+@router.get("/providers/{item_id}/test_connection", response_class=JSONResponse)
+async def test_provider_connection(item_id: int, db: Session = Depends(get_db)):
+    item = db.query(Item).filter(Item.id == item_id).first()
+    if not item:
+        return JSONResponse({"ok": False, "error": "Provider not found"})
+    return await _test_provider_connection(item, db)
+
+
 @router.get("/api/active_streams", response_class=JSONResponse)
 async def api_active_streams(db: Session = Depends(get_db)):
     import math
     streams = get_active_streams()
-    item = db.query(Item).first()
-    max_sessions = int(item.max_sessions) if item and item.max_sessions is not None else 1
+    all_items = db.query(Item).all()
+    max_sessions = sum(int(it.max_sessions or 1) for it in all_items) if all_items else 1
+    item_names = {it.id: it.name for it in all_items}
     out = []
     now = time.time()
     for s in streams:
@@ -144,12 +148,14 @@ async def api_active_streams(db: Session = Depends(get_db)):
         channel_num = s.get("channel", "?")
         channel_name = s.get("channel_name", "")
         channel_display = f"{channel_num} — {channel_name}" if channel_name and channel_name != channel_num else channel_num
+        provider_name = item_names.get(s.get("item_id"), "")
         out.append({
             "session_id": s.get("session_id", ""),
             "channel": channel_display,
             "client_ip": s.get("client_ip", "?"),
             "duration": duration,
             "mb_sent": round(mb, 1),
+            "provider": provider_name,
         })
     return JSONResponse({"streams": out, "max_sessions": max_sessions})
 
@@ -198,17 +204,20 @@ async def set_refresh_interval(item_id: int = Form(...), m3u_refresh_hours: int 
 
 
 @router.post("/generate_m3u", response_class=RedirectResponse)
-async def generate_m3u(background_tasks: BackgroundTasks, item_id: int = Form(...), db: Session = Depends(get_db)):
+async def generate_m3u(background_tasks: BackgroundTasks, item_id: int = Form(...)):
+    def _fetch():
+        from models import SessionLocal
+        with SessionLocal() as thread_db:
+            return do_fetch_m3u(item_id, thread_db)
     try:
-        ok, msg, _ = do_fetch_m3u(item_id, db)
+        ok, msg, _ = await asyncio.to_thread(_fetch)
         if not ok:
-            return RedirectResponse(url=f"/settings?error={urllib.parse.quote(msg)}", status_code=303)
+            return RedirectResponse(url=f"/providers/{item_id}?error={urllib.parse.quote(msg)}", status_code=303)
         background_tasks.add_task(_refresh_epg, True)
-        logger.debug("EPG rebuild queued in background after M3U save")
-        return RedirectResponse(url=f"/settings?success={urllib.parse.quote(msg)}", status_code=303)
+        return RedirectResponse(url=f"/providers/{item_id}?success={urllib.parse.quote(msg)}", status_code=303)
     except Exception as e:
         logger.error(f"Failed to generate M3U for item {item_id}: {e}")
-        return RedirectResponse(url=f"/settings?error=Failed to fetch M3U: {urllib.parse.quote(str(e))}", status_code=303)
+        return RedirectResponse(url=f"/providers/{item_id}?error={urllib.parse.quote(f'Failed to fetch M3U: {e}')}", status_code=303)
 
 @router.post("/generate_filtered_m3u", response_class=RedirectResponse)
 async def generate_filtered_m3u(background_tasks: BackgroundTasks, item_id: int = Form(...), db: Session = Depends(get_db)):
@@ -216,12 +225,12 @@ async def generate_filtered_m3u(background_tasks: BackgroundTasks, item_id: int 
         item = db.query(Item).filter(Item.id == item_id).first()
         if not item:
             logger.warning(f"Item with id {item_id} not found for filtered M3U generation")
-            return RedirectResponse(url="/hdhomerun?error=Item not found", status_code=303)
+            return RedirectResponse(url="/providers?error=Item+not+found", status_code=303)
 
         m3u_path = os.path.join(config.M3U_DIR, f"xtream_playlist_{item_id}.m3u")
         if not os.path.exists(m3u_path):
             logger.warning(f"M3U file not found for item {item_id} at {m3u_path}")
-            return RedirectResponse(url="/hdhomerun?error=M3U file not found, fetch M3U first", status_code=303)
+            return RedirectResponse(url=f"/providers/{item_id}?error=M3U+file+not+found%2C+fetch+M3U+first", status_code=303)
 
         with open(m3u_path, "r", encoding="utf-8") as f:
             lines = f.read().splitlines()
@@ -238,7 +247,7 @@ async def generate_filtered_m3u(background_tasks: BackgroundTasks, item_id: int 
 
         if num_records == 0:
             logger.warning(f"No records matched filter for item {item_id}")
-            return RedirectResponse(url="/hdhomerun?error=No records matched the filter criteria.", status_code=303)
+            return RedirectResponse(url=f"/providers/{item_id}?error=No+records+matched+the+filter+criteria.", status_code=303)
 
         os.makedirs(config.M3U_DIR, exist_ok=True)
         filtered_path = os.path.join(config.M3U_DIR, f"filtered_playlist_{item_id}.m3u")
@@ -256,11 +265,11 @@ async def generate_filtered_m3u(background_tasks: BackgroundTasks, item_id: int 
         )
         background_tasks.add_task(_refresh_epg, True)
         logger.debug("EPG rebuild queued in background after filtered M3U save")
-        return RedirectResponse(url=f"/hdhomerun?success={success_msg}", status_code=303)
+        return RedirectResponse(url=f"/providers/{item_id}?success={success_msg}", status_code=303)
 
     except Exception as e:
         logger.error(f"Failed to generate filtered M3U for item {item_id}: {str(e)}")
-        return RedirectResponse(url=f"/hdhomerun?error=Failed to save filtered M3U file: {str(e)}", status_code=303)
+        return RedirectResponse(url=f"/providers/{item_id}?error=Failed+to+save+filtered+M3U+file%3A+{urllib.parse.quote(str(e))}", status_code=303)
 
 @router.get("/download_m3u/{item_id}", response_class=FileResponse)
 async def download_m3u(item_id: int, db: Session = Depends(get_db)):
@@ -508,13 +517,23 @@ async def m3u_browser_data(
 @router.get("/hdhomerun", response_class=HTMLResponse)
 async def hdhomerun_page(request: Request, db: Session = Depends(get_db), error: str = None, success: str = None):
     base_url = get_base_url(request)
-    item = get_item_context(db, base_url, config.M3U_DIR)
+    items = get_all_item_contexts(db, base_url, config.M3U_DIR)
+    hdhr_provider_id = get_app_config(db, "hdhr_provider_id")
+    hdhr_stream_provider_id = get_app_config(db, "hdhr_stream_provider_id")
+    # Resolve the selected provider for the channel filter form
+    if hdhr_provider_id:
+        selected_item = get_item_context(db, base_url, config.M3U_DIR, db.query(Item).filter(Item.id == int(hdhr_provider_id)).first())
+    else:
+        selected_item = items[0] if items else None
     ssdp_disabled_by_env = hdhomerun_emulator.is_env_disabled()
     start = time.perf_counter()
     template = templates.get_template("hdhomerun.html")
     rendered = template.render({
         "request": request,
-        "item": item,
+        "item": selected_item,
+        "items": items,
+        "hdhr_provider_id": hdhr_provider_id,
+        "hdhr_stream_provider_id": hdhr_stream_provider_id,
         "friendly_name": config.HDHR_FRIENDLY_NAME,
         "active_page": "hdhomerun",
         "hdhr_running": hdhomerun_emulator.is_running(),
@@ -525,6 +544,17 @@ async def hdhomerun_page(request: Request, db: Session = Depends(get_db), error:
     })
     logger.debug(f"Template render duration: {time.perf_counter() - start:.3f}s")
     return HTMLResponse(content=rendered)
+
+
+@router.post("/hdhomerun/select_provider", response_class=RedirectResponse)
+async def hdhomerun_select_provider(
+    provider_id: str = Form(""),
+    stream_provider_id: str = Form(""),
+    db: Session = Depends(get_db),
+):
+    set_app_config(db, "hdhr_provider_id", provider_id or None)
+    set_app_config(db, "hdhr_stream_provider_id", stream_provider_id or None)
+    return RedirectResponse(url="/hdhomerun?success=Provider+selection+saved", status_code=303)
 
 
 @router.post("/hdhomerun", response_class=RedirectResponse)
@@ -589,77 +619,31 @@ async def handle_hdhomerun_form(
     return RedirectResponse(url="/hdhomerun", status_code=303)
 
 
-@router.get("/xtream", response_class=HTMLResponse)
-async def xtream_page(request: Request, db: Session = Depends(get_db), error: str = None, success: str = None):
-    base_url = get_base_url(request)
-    item = get_item_context(db, base_url, config.M3U_DIR)
-    start = time.perf_counter()
-    template = templates.get_template("xtream.html")
-    rendered = template.render({
-        "request": request,
-        "item": item,
-        "friendly_name": config.HDHR_FRIENDLY_NAME,
-        "active_page": "xtream",
-        "iptv_username": config.IPTV_USERNAME,
-        "iptv_password": config.IPTV_PASSWORD,
-        "base_url": base_url,
-        "error": error,
-        "success": success,
-    })
-    logger.debug(f"Template render duration: {time.perf_counter() - start:.3f}s")
-    return HTMLResponse(content=rendered)
+@router.get("/xtream", response_class=RedirectResponse)
+async def xtream_page(db: Session = Depends(get_db)):
+    first = db.query(Item).first()
+    if first:
+        return RedirectResponse(url=f"/providers/{first.id}", status_code=302)
+    return RedirectResponse(url="/providers", status_code=302)
 
 
 @router.post("/xtream", response_class=RedirectResponse)
 async def handle_xtream_form(
     request: Request,
-    save_credentials: str = Form(None),
     save_xtream_filters: str = Form(None),
-    iptv_username: str = Form(None),
-    iptv_password: str = Form(None),
     item_id: int = Form(None),
     new_xtream_includes: str = Form(None),
     db: Session = Depends(get_db),
 ):
-    if save_credentials:
-        env_file = os.path.join(os.getcwd(), '.env')
-        try:
-            env_lines = []
-            if os.path.exists(env_file):
-                with open(env_file, 'r') as f:
-                    env_lines = f.readlines()
-            updated_user = updated_pass = False
-            for i, line in enumerate(env_lines):
-                if line.startswith('IPTV_USERNAME='):
-                    env_lines[i] = f'IPTV_USERNAME={iptv_username}\n'
-                    updated_user = True
-                elif line.startswith('IPTV_PASSWORD='):
-                    env_lines[i] = f'IPTV_PASSWORD={iptv_password}\n'
-                    updated_pass = True
-            if not updated_user:
-                env_lines.append(f'IPTV_USERNAME={iptv_username}\n')
-            if not updated_pass:
-                env_lines.append(f'IPTV_PASSWORD={iptv_password}\n')
-            tmp_env = env_file + ".tmp"
-            with open(tmp_env, 'w') as f:
-                f.writelines(env_lines)
-            os.replace(tmp_env, env_file)
-            config.IPTV_USERNAME = iptv_username
-            config.IPTV_PASSWORD = iptv_password
-            return RedirectResponse(url="/xtream?success=Credentials saved successfully", status_code=303)
-        except Exception as e:
-            logger.error(f"Failed to save Xtream credentials: {e}")
-            return RedirectResponse(url="/xtream?error=Failed to save credentials", status_code=303)
-
-    elif save_xtream_filters and item_id:
+    if save_xtream_filters and item_id:
         if new_xtream_includes and '\n' in new_xtream_includes:
             new_xtream_includes = ','.join([x.strip() for x in new_xtream_includes.split('\n') if x.strip()])
-        result = update_item(db, item_id, None, None, None, None, None, None, None, new_xtream_includes, None)
+        result = update_item(db, item_id, xtream_includes=new_xtream_includes)
         if not result:
-            return RedirectResponse(url="/xtream?error=Failed to save Xtream filters", status_code=303)
-        return RedirectResponse(url="/xtream?success=Xtream filters saved successfully", status_code=303)
-
-    return RedirectResponse(url="/xtream", status_code=303)
+            return RedirectResponse(url=f"/providers/{item_id}?error=Failed+to+save+Xtream+filters", status_code=303)
+        return RedirectResponse(url=f"/providers/{item_id}?success=Xtream+filters+saved", status_code=303)
+    first = db.query(Item).first()
+    return RedirectResponse(url=f"/providers/{first.id}" if first else "/providers", status_code=303)
 
 
 # ---------------------------------------------------------------------------
@@ -671,11 +655,12 @@ async def save_vpn_settings(
     vpn_config: str = Form(""),
     vpn_username: str = Form(""),
     vpn_password: str = Form(""),
+    item_id: int = Form(0),
     db: Session = Depends(get_db),
 ):
     item = db.query(Item).first()
     if not item:
-        return RedirectResponse(url="/settings?error=No provider configured", status_code=303)
+        return RedirectResponse(url="/providers?error=No+provider+configured", status_code=303)
     if vpn_config.strip():
         item.vpn_config = vpn_config.strip()
     if vpn_username.strip():
@@ -683,17 +668,19 @@ async def save_vpn_settings(
     if vpn_password.strip():
         item.vpn_password = vpn_password.strip()
     db.commit()
-    return RedirectResponse(url="/settings?success=VPN settings saved", status_code=303)
+    redirect_id = item_id if item_id else item.id
+    return RedirectResponse(url=f"/providers/{redirect_id}?success=VPN+settings+saved", status_code=303)
 
 
 @router.post("/vpn/enable", response_class=RedirectResponse)
 async def vpn_enable(request: Request, db: Session = Depends(get_db)):
     import vpn_manager
     import asyncio
-    next_url = (await request.form()).get("next", "/settings")
+    form = await request.form()
+    next_url = form.get("next") or "/"
     item = db.query(Item).first()
     if not item:
-        return RedirectResponse(url="/settings?error=No provider configured", status_code=303)
+        return RedirectResponse(url="/providers?error=No+provider+configured", status_code=303)
     if not (item.vpn_config and item.vpn_username and item.vpn_password):
         return RedirectResponse(
             url=f"{next_url}?error=VPN settings incomplete — save .ovpn config and credentials first",
@@ -715,7 +702,8 @@ async def vpn_enable(request: Request, db: Session = Depends(get_db)):
 async def vpn_disable(request: Request, db: Session = Depends(get_db)):
     import vpn_manager
     import asyncio
-    next_url = (await request.form()).get("next", "/settings")
+    form = await request.form()
+    next_url = form.get("next") or "/"
     ok, msg = await asyncio.to_thread(vpn_manager.stop_vpn)
     item = db.query(Item).first()
     if item:
@@ -758,8 +746,13 @@ async def test_vpn():
 
 @router.get("/tools", response_class=HTMLResponse)
 async def tools_page(request: Request, db: Session = Depends(get_db), error: str = None, success: str = None):
+    import vpn_manager
     base_url = get_base_url(request)
     item = get_item_context(db, base_url, config.M3U_DIR)
+    all_items = db.query(Item).all()
+    provider_count = len(all_items)
+    mqtt_device_count = sum(1 for it in all_items if it.mqtt_topic_prefix and it.mqtt_topic_prefix.strip())
+    vpn_status = await asyncio.to_thread(vpn_manager.get_vpn_status)
     start = time.perf_counter()
     template = templates.get_template("tools.html")
     rendered = template.render({
@@ -769,11 +762,45 @@ async def tools_page(request: Request, db: Session = Depends(get_db), error: str
         "active_page": "tools",
         "base_url": base_url,
         "hdhr_running": hdhomerun_emulator.is_running(),
+        "provider_count": provider_count,
+        "mqtt_device_count": mqtt_device_count,
+        "timezone": os.getenv("TZ", "UTC"),
+        "container_name": os.getenv("CONTAINER_NAME", ""),
+        "vpn_running": vpn_status.get("running", False),
+        "vpn_interface": vpn_status.get("interface", ""),
         "error": error,
         "success": success,
     })
     logger.debug(f"Template render duration: {time.perf_counter() - start:.3f}s")
     return HTMLResponse(content=rendered)
+
+
+async def _save_mqtt_to_item(item, db, mqtt_enabled, mqtt_host, mqtt_port, mqtt_username, mqtt_password, redirect_base: str):
+    import mqtt_manager as _mqtt
+    enabled = mqtt_enabled.lower() in ("1", "true", "on", "yes")
+    item.mqtt_enabled = enabled
+    item.mqtt_host = mqtt_host.strip() or None
+    item.mqtt_port = mqtt_port
+    item.mqtt_username = mqtt_username.strip() or None
+    if mqtt_password:
+        item.mqtt_password = mqtt_password
+    db.commit()
+    cfg = {
+        "mqtt_host": item.mqtt_host,
+        "mqtt_port": item.mqtt_port,
+        "mqtt_username": item.mqtt_username,
+        "mqtt_password": item.mqtt_password,
+        "mqtt_topic_prefix": item.mqtt_topic_prefix,
+        "mqtt_device_name": item.mqtt_device_name,
+    }
+    _sync_provider_mqtt_configs(db)
+    if enabled and item.mqtt_host:
+        ok, msg = _mqtt.start_mqtt(cfg)
+        if not ok:
+            return RedirectResponse(url=f"{redirect_base}?error={urllib.parse.quote('MQTT saved but connect failed: ' + msg)}", status_code=303)
+    else:
+        _mqtt.stop_mqtt()
+    return RedirectResponse(url=f"{redirect_base}?success=MQTT+settings+saved", status_code=303)
 
 
 @router.post("/mqtt/settings", response_class=RedirectResponse)
@@ -785,42 +812,67 @@ async def save_mqtt_settings(
     mqtt_port: int = Form(1883),
     mqtt_username: str = Form(""),
     mqtt_password: str = Form(""),
-    mqtt_topic_prefix: str = Form("iptv-manager"),
-    mqtt_device_name: str = Form("IPTV Manager"),
 ):
-    import mqtt_manager as _mqtt
     item = db.query(Item).first()
     if not item:
-        return RedirectResponse(url="/tools?error=No provider configured", status_code=303)
+        return RedirectResponse(url="/tools?error=No+provider+configured", status_code=303)
+    return await _save_mqtt_to_item(item, db, mqtt_enabled, mqtt_host, mqtt_port, mqtt_username, mqtt_password, "/tools")
 
-    enabled = mqtt_enabled.lower() in ("1", "true", "on", "yes")
 
-    item.mqtt_enabled = enabled
-    item.mqtt_host = mqtt_host.strip() or None
-    item.mqtt_port = mqtt_port
-    item.mqtt_username = mqtt_username.strip() or None
-    if mqtt_password:
-        item.mqtt_password = mqtt_password
-    item.mqtt_topic_prefix = mqtt_topic_prefix.strip() or "iptv-manager"
-    item.mqtt_device_name = mqtt_device_name.strip() or "IPTV Manager"
+def _sync_provider_mqtt_configs(db) -> None:
+    """Push all providers' MQTT prefix configs to the running manager."""
+    import mqtt_manager as _mqtt
+    all_items = db.query(Item).all()
+    configs = [
+        {"item_id": it.id, "prefix": it.mqtt_topic_prefix, "device_name": it.mqtt_device_name or ""}
+        for it in all_items
+        if it.mqtt_topic_prefix and it.mqtt_topic_prefix.strip()
+    ]
+    _mqtt.set_provider_configs(configs)
+
+
+def _discovery_transition(old_prefix: str | None, new_prefix: str | None, new_device_name: str):
+    """Background task: retract old HA discovery, wait, then republish and push state."""
+    import time
+    import mqtt_manager as _mqtt
+    if old_prefix and old_prefix != new_prefix:
+        _mqtt.retract_ha_discovery(old_prefix)
+        time.sleep(2)
+    if new_prefix:
+        _mqtt.publish_ha_discovery_for(new_prefix, new_device_name or new_prefix)
+        _mqtt.force_publish_state()
+
+
+@router.post("/providers/{item_id}/mqtt", response_class=RedirectResponse)
+async def save_provider_mqtt(
+    item_id: int,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+    mqtt_topic_prefix: str = Form(""),
+    mqtt_device_name: str = Form(""),
+):
+    item = db.query(Item).filter(Item.id == item_id).first()
+    if not item:
+        return RedirectResponse(url="/providers?error=Provider+not+found", status_code=303)
+
+    old_prefix = item.mqtt_topic_prefix
+    old_device_name = item.mqtt_device_name
+    new_prefix = mqtt_topic_prefix.strip() or None
+    new_device_name = mqtt_device_name.strip() or None
+
+    item.mqtt_topic_prefix = new_prefix
+    item.mqtt_device_name = new_device_name
     db.commit()
 
-    cfg = {
-        "mqtt_host": item.mqtt_host,
-        "mqtt_port": item.mqtt_port,
-        "mqtt_username": item.mqtt_username,
-        "mqtt_password": item.mqtt_password,
-        "mqtt_topic_prefix": item.mqtt_topic_prefix,
-        "mqtt_device_name": item.mqtt_device_name,
-    }
-    if enabled and item.mqtt_host:
-        ok, msg = _mqtt.start_mqtt(cfg)
-        if not ok:
-            return RedirectResponse(url=f"/tools?error={urllib.parse.quote('MQTT saved but connect failed: ' + msg)}", status_code=303)
-    else:
-        _mqtt.stop_mqtt()
+    import mqtt_manager as _mqtt
+    _sync_provider_mqtt_configs(db)
 
-    return RedirectResponse(url="/tools?success=MQTT settings saved", status_code=303)
+    prefix_changed = old_prefix != new_prefix
+    name_changed = old_device_name != new_device_name
+    if (prefix_changed or name_changed) and _mqtt.get_mqtt_status().get("connected"):
+        background_tasks.add_task(_discovery_transition, old_prefix, new_prefix, new_device_name or "")
+
+    return RedirectResponse(url=f"/providers/{item_id}?success=MQTT+identity+saved", status_code=303)
 
 
 @router.get("/mqtt/status", response_class=JSONResponse)
@@ -830,19 +882,30 @@ async def mqtt_status():
 
 
 @router.post("/mqtt/ha_discovery", response_class=JSONResponse)
-async def mqtt_ha_discovery():
+async def mqtt_ha_discovery(db: Session = Depends(get_db)):
     import mqtt_manager as _mqtt
-    status = _mqtt.get_mqtt_status()
-    if not status.get("connected"):
+    if not _mqtt.get_mqtt_status().get("connected"):
         return JSONResponse({"ok": False, "error": "MQTT not connected — connect first"})
-    mgr = _mqtt._manager
-    if mgr is None:
-        return JSONResponse({"ok": False, "error": "No active MQTT manager"})
-    try:
-        mgr.publish_ha_discovery()
-        return JSONResponse({"ok": True, "message": "Discovery payloads published"})
-    except Exception as exc:
-        return JSONResponse({"ok": False, "error": str(exc)})
+    items = db.query(Item).filter(Item.mqtt_topic_prefix != None, Item.mqtt_topic_prefix != "").all()
+    if not items:
+        return JSONResponse({"ok": False, "error": "No providers have a topic prefix configured"})
+    count = sum(
+        1 for it in items
+        if _mqtt.publish_ha_discovery_for(it.mqtt_topic_prefix, it.mqtt_device_name or "")
+    )
+    return JSONResponse({"ok": True, "message": f"Published discovery for {count} device(s)"})
+
+
+@router.post("/mqtt/ha_discovery/remove", response_class=JSONResponse)
+async def mqtt_ha_discovery_remove(db: Session = Depends(get_db)):
+    import mqtt_manager as _mqtt
+    if not _mqtt.get_mqtt_status().get("connected"):
+        return JSONResponse({"ok": False, "error": "MQTT not connected — connect first"})
+    items = db.query(Item).filter(Item.mqtt_topic_prefix != None, Item.mqtt_topic_prefix != "").all()
+    if not items:
+        return JSONResponse({"ok": False, "error": "No providers have a topic prefix configured"})
+    count = sum(1 for it in items if _mqtt.retract_ha_discovery(it.mqtt_topic_prefix))
+    return JSONResponse({"ok": True, "message": f"Removed discovery for {count} device(s)"})
 
 
 @router.post("/mqtt/test", response_class=JSONResponse)
@@ -865,4 +928,217 @@ async def mqtt_test(
     }
     ok, msg = await asyncio.to_thread(_mqtt.test_mqtt_connection, cfg)
     return JSONResponse({"ok": ok, "message": msg})
+
+
+# ---------------------------------------------------------------------------
+# Providers CRUD
+# ---------------------------------------------------------------------------
+
+@router.get("/providers", response_class=HTMLResponse)
+async def providers_list(request: Request, db: Session = Depends(get_db), error: str = None, success: str = None):
+    base_url = get_base_url(request)
+    items = get_all_item_contexts(db, base_url, config.M3U_DIR)
+    template = templates.get_template("providers.html")
+    rendered = template.render({
+        "request": request,
+        "items": items,
+        "base_url": base_url,
+        "friendly_name": config.HDHR_FRIENDLY_NAME,
+        "active_page": "providers",
+        "error": error,
+        "success": success,
+    })
+    return HTMLResponse(content=rendered)
+
+
+@router.get("/providers/new", response_class=HTMLResponse)
+async def provider_new_form(request: Request, db: Session = Depends(get_db), error: str = None):
+    template = templates.get_template("provider_edit.html")
+    rendered = template.render({
+        "request": request,
+        "item": None,
+        "friendly_name": config.HDHR_FRIENDLY_NAME,
+        "active_page": "providers",
+        "is_new": True,
+        "error": error,
+    })
+    return HTMLResponse(content=rendered)
+
+
+@router.post("/providers/new", response_class=RedirectResponse)
+async def provider_create(
+    request: Request,
+    name: str = Form(...),
+    slug: str = Form(""),
+    server_url: str = Form(...),
+    username: str = Form(...),
+    user_pass: str = Form(...),
+    proxy_username: str = Form("iptv"),
+    proxy_password: str = Form("iptv"),
+    m3u_refresh_hours: int = Form(0),
+    max_sessions: int = Form(1),
+    db: Session = Depends(get_db),
+):
+    slug = slug.strip() or None
+    if slug:
+        existing = db.query(Item).filter(Item.slug == slug).first()
+        if existing:
+            return RedirectResponse(url=f"/providers/new?error=Slug+'{slug}'+already+in+use", status_code=303)
+    result = create_item(
+        db, name, server_url, username, user_pass,
+        languages=None, includes=None, excludes=None,
+        m3u_refresh_hours=m3u_refresh_hours, max_sessions=max_sessions,
+        slug=slug,
+        proxy_username=proxy_username or "iptv",
+        proxy_password=proxy_password or "iptv",
+    )
+    if not result:
+        return RedirectResponse(url="/providers/new?error=Failed+to+create+provider", status_code=303)
+    return RedirectResponse(url=f"/providers/{result.id}?success=Provider+created+successfully", status_code=303)
+
+
+@router.get("/providers/{item_id}", response_class=HTMLResponse)
+async def provider_edit_form(
+    item_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+    error: str = None,
+    success: str = None,
+):
+    base_url = get_base_url(request)
+    db_item = db.query(Item).filter(Item.id == item_id).first()
+    if not db_item:
+        return RedirectResponse(url="/providers?error=Provider+not+found", status_code=302)
+    item = get_item_context(db, base_url, config.M3U_DIR, db_item)
+    template = templates.get_template("provider_edit.html")
+    rendered = template.render({
+        "request": request,
+        "item": item,
+        "friendly_name": config.HDHR_FRIENDLY_NAME,
+        "active_page": "providers",
+        "is_new": False,
+        "allow_full_m3u_download": config.ALLOW_FULL_M3U_DOWNLOAD,
+        "base_url": base_url,
+        "error": error,
+        "success": success,
+    })
+    return HTMLResponse(content=rendered)
+
+
+@router.post("/providers/{item_id}", response_class=RedirectResponse)
+async def provider_save(
+    item_id: int,
+    request: Request,
+    name: str = Form(...),
+    slug: str = Form(""),
+    server_url: str = Form(...),
+    username: str = Form(...),
+    user_pass: str = Form(...),
+    proxy_username: str = Form("iptv"),
+    proxy_password: str = Form("iptv"),
+    m3u_refresh_hours: int = Form(0),
+    max_sessions: int = Form(1),
+    db: Session = Depends(get_db),
+):
+    slug = slug.strip() or None
+    if slug:
+        conflict = db.query(Item).filter(Item.slug == slug, Item.id != item_id).first()
+        if conflict:
+            return RedirectResponse(url=f"/providers/{item_id}?error=Slug+'{slug}'+already+in+use+by+another+provider", status_code=303)
+    result = update_item(
+        db, item_id,
+        name=name, slug=slug, server_url=server_url,
+        username=username, user_pass=user_pass,
+        proxy_username=proxy_username or "iptv",
+        proxy_password=proxy_password or "iptv",
+        m3u_refresh_hours=m3u_refresh_hours,
+        max_sessions=max_sessions,
+    )
+    if not result:
+        return RedirectResponse(url=f"/providers/{item_id}?error=Failed+to+save+provider", status_code=303)
+    return RedirectResponse(url=f"/providers/{item_id}?success=Provider+saved+successfully", status_code=303)
+
+
+@router.post("/providers/{item_id}/filters", response_class=RedirectResponse)
+async def provider_save_filters(
+    item_id: int,
+    background_tasks: BackgroundTasks,
+    new_includes: str = Form(""),
+    excludes: str = Form(""),
+    languages: str = Form(""),
+    new_xtream_includes: str = Form(""),
+    db: Session = Depends(get_db),
+):
+    if new_includes and '\n' in new_includes:
+        new_includes = ','.join([x.strip() for x in new_includes.split('\n') if x.strip()])
+    if new_xtream_includes and '\n' in new_xtream_includes:
+        new_xtream_includes = ','.join([x.strip() for x in new_xtream_includes.split('\n') if x.strip()])
+    result = update_item(
+        db, item_id,
+        includes=new_includes or None,
+        excludes=excludes or None,
+        languages=languages or None,
+        xtream_includes=new_xtream_includes or None,
+    )
+    if not result:
+        return RedirectResponse(url=f"/providers/{item_id}?error=Failed+to+save+filters", status_code=303)
+
+    m3u_path = os.path.join(config.M3U_DIR, f"xtream_playlist_{item_id}.m3u")
+    if not os.path.exists(m3u_path):
+        return RedirectResponse(
+            url=f"/providers/{item_id}?success=Filters+saved+%E2%80%94+fetch+M3U+first+to+apply",
+            status_code=303,
+        )
+
+    try:
+        item = db.query(Item).filter(Item.id == item_id).first()
+        with open(m3u_path, "r", encoding="utf-8", errors="replace") as f:
+            lines = f.read().splitlines()
+        languages_cfg, includes_map, raw_includes, excludes_cfg, has_wildcard = build_filter_config(item)
+        filtered_content, num_records, input_count = apply_m3u_filter(
+            lines, languages_cfg, includes_map, excludes_cfg, has_wildcard
+        )
+        if num_records == 0:
+            return RedirectResponse(
+                url=f"/providers/{item_id}?error=Filters+saved+but+no+channels+matched",
+                status_code=303,
+            )
+        filtered_path = os.path.join(config.M3U_DIR, f"filtered_playlist_{item_id}.m3u")
+        tmp_path = filtered_path + ".tmp"
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            f.write(filtered_content)
+        os.replace(tmp_path, filtered_path)
+        background_tasks.add_task(_refresh_epg, True)
+        msg = urllib.parse.quote(f"Filters saved — {num_records} of {input_count} channels matched")
+        return RedirectResponse(url=f"/providers/{item_id}?success={msg}", status_code=303)
+    except Exception as e:
+        logger.error(f"Failed to apply filters for item {item_id}: {e}")
+        return RedirectResponse(
+            url=f"/providers/{item_id}?error=Filters+saved+but+filtering+failed", status_code=303
+        )
+
+
+@router.post("/providers/{item_id}/delete", response_class=RedirectResponse)
+async def provider_delete(item_id: int, db: Session = Depends(get_db)):
+    total = db.query(Item).count()
+    if total <= 1:
+        return RedirectResponse(url=f"/providers/{item_id}?error=Cannot+delete+the+only+provider", status_code=303)
+    item = db.query(Item).filter(Item.id == item_id).first()
+    if not item:
+        return RedirectResponse(url="/providers?error=Provider+not+found", status_code=303)
+
+    # Retract HA discovery before losing the provider's prefix
+    if item.mqtt_topic_prefix:
+        import mqtt_manager as _mqtt
+        if _mqtt.get_mqtt_status().get("connected"):
+            _mqtt.retract_ha_discovery(item.mqtt_topic_prefix)
+
+    # Reset HDHomeRun selection if this provider was selected
+    hdhr_sel = get_app_config(db, "hdhr_provider_id")
+    if hdhr_sel and int(hdhr_sel) == item_id:
+        set_app_config(db, "hdhr_provider_id", None)
+    db.delete(item)
+    db.commit()
+    _sync_provider_mqtt_configs(db)
+    return RedirectResponse(url="/providers?success=Provider+deleted", status_code=303)
 

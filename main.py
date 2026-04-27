@@ -77,12 +77,16 @@ def create_app():
     async def _warm_xtream_cache():
         try:
             import time
+            from models import Item as _Item
             logger.info("Xtream cache pre-warm starting...")
             _start = time.monotonic()
             with SessionLocal() as db:
-                await get_xtream_cache(db)
+                items = db.query(_Item).all()
+                for item in items:
+                    logger.info(f"Xtream cache pre-warm: provider '{item.name}' (id={item.id})")
+                    await get_xtream_cache(db, item)
             elapsed = time.monotonic() - _start
-            logger.info(f"Xtream cache pre-warm complete in {elapsed:.2f}s")
+            logger.info(f"Xtream cache pre-warm complete ({len(items)} provider(s)) in {elapsed:.2f}s")
         except Exception as exc:
             logger.warning(f"Xtream cache pre-warm failed: {exc}")
 
@@ -149,6 +153,19 @@ def create_app():
         logger.info("Database initialized")
         start_m3u_scheduler()
         logger.info("M3U scheduler started")
+        try:
+            from models import Item
+            import mqtt_manager
+            with SessionLocal() as db:
+                all_items = db.query(Item).all()
+                configs = [
+                    {"item_id": it.id, "prefix": it.mqtt_topic_prefix, "device_name": it.mqtt_device_name or ""}
+                    for it in all_items
+                    if it.mqtt_topic_prefix and it.mqtt_topic_prefix.strip()
+                ]
+                mqtt_manager.set_provider_configs(configs)
+        except Exception as exc:
+            logger.warning(f"Could not initialize MQTT provider configs: {exc}")
         asyncio.create_task(_autostart_vpn())
         asyncio.create_task(_autostart_mqtt())
         # Warm the Xtream cache in the background so the first stream request

@@ -1,0 +1,334 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="page-header">
+  <div class="flex flex-center" style="justify-content: space-between; flex-wrap: wrap; gap: 12px;">
+    <div>
+      <h1>{% if is_new %}Add Provider{% else %}{{ item.name if item else 'Provider' }}{% endif %}</h1>
+      <p><a href="/providers" style="color: var(--text-muted); text-decoration: none;">← All Providers</a></p>
+    </div>
+    {% if item and not is_new %}
+    <div class="flex gap-12 flex-wrap flex-center">
+      {% if item.provider_status %}
+      <span class="badge {{ 'badge-success' if item.provider_status|lower == 'active' else 'badge-danger' }}">{{ item.provider_status }}</span>
+      {% endif %}
+      {% if item.provider_exp_date %}
+      <span class="text-sm text-muted">Expires {{ item.provider_exp_date }}</span>
+      {% endif %}
+    </div>
+    {% endif %}
+  </div>
+</div>
+
+{% if success %}<div class="flash flash-success">✓ {{ success }}</div>{% endif %}
+{% if error %}<div class="flash flash-error">✗ {{ error }}</div>{% endif %}
+
+{% if item and not is_new %}
+<form id="form-fetch-m3u" method="POST" action="/generate_m3u" style="display:none;">
+  <input type="hidden" name="item_id" value="{{ item.id }}" />
+</form>
+{% endif %}
+
+<!-- Provider Info -->
+<div class="card">
+  <div class="card-title">Provider Credentials</div>
+  <form method="POST" action="{% if is_new %}/providers/new{% else %}/providers/{{ item.id }}{% endif %}">
+
+    <div class="grid-2">
+      <div class="form-group">
+        <label class="form-label">Provider Name</label>
+        <input type="text" name="name" value="{{ item.name if item else '' }}"
+          placeholder="My IPTV Service" class="form-input" required />
+      </div>
+      <div class="form-group">
+        <label class="form-label">
+          URL Slug
+          <span class="text-muted" style="font-weight:400; letter-spacing:0; text-transform:none;"> — used in proxy URLs</span>
+        </label>
+        <input type="text" name="slug" value="{{ item.slug if item else '' }}"
+          placeholder="my-provider" class="form-input"
+          pattern="[a-z0-9\-]+" title="Lowercase letters, numbers and hyphens only" />
+        <p class="form-help">e.g. <code>my-provider</code> → clients use <code>/my-provider/player_api.php</code></p>
+      </div>
+    </div>
+
+    <div class="form-group">
+      <label class="form-label">Server URL</label>
+      <input type="text" name="server_url" value="{{ item.server_url if item else '' }}"
+        placeholder="http://your-iptv-server:8080" class="form-input" required />
+    </div>
+
+    <div class="form-group">
+      <button type="button" onclick="togglePanel('credPanel', this, '🔐 Hide Upstream Credentials', '🔐 {% if item %}Edit{% else %}Enter{% endif %} Upstream Credentials')"
+        class="btn btn-outline btn-sm">
+        🔐 {% if item %}Edit{% else %}Enter{% endif %} Upstream Credentials
+      </button>
+      <div id="credPanel" style="display: {% if not item %}block{% else %}none{% endif %}; margin-top: 12px; padding: 14px; background: var(--bg); border: 1px solid var(--border); border-radius: 6px;">
+        <p class="form-help" style="margin-bottom: 10px;">Your IPTV provider's Xtream Codes credentials (the upstream service you subscribe to).</p>
+        <div class="grid-2">
+          <div class="form-group" style="margin-bottom: 0;">
+            <label class="form-label">Username</label>
+            <input type="text" name="username" value="{{ item.username if item else '' }}"
+              class="form-input" {% if not item %}required{% endif %} />
+          </div>
+          <div class="form-group" style="margin-bottom: 0;">
+            <label class="form-label">Password</label>
+            <input type="password" name="user_pass" value="{{ item.user_pass if item else '' }}"
+              class="form-input" {% if not item %}required{% endif %} />
+          </div>
+        </div>
+      </div>
+    </div>
+
+    {% if item %}
+    <div class="grid-2">
+      <div class="form-group">
+        <label class="form-label">
+          Auto-refresh M3U
+          {% if item.m3u_last_fetched_ts %}
+          <span style="text-transform:none; font-weight:400; letter-spacing:0;" data-ts="{{ item.m3u_last_fetched_ts }}">
+            — Last: <span class="last-fetch-time">…</span>
+          </span>
+          {% endif %}
+        </label>
+        {% set rh = item.m3u_refresh_hours | int %}
+        <select name="m3u_refresh_hours" class="form-select">
+          <option value="0"   {% if rh == 0   %}selected{% endif %}>Disabled</option>
+          <option value="6"   {% if rh == 6   %}selected{% endif %}>Every 6 hours</option>
+          <option value="12"  {% if rh == 12  %}selected{% endif %}>Every 12 hours</option>
+          <option value="24"  {% if rh == 24  %}selected{% endif %}>Every 24 hours</option>
+          <option value="48"  {% if rh == 48  %}selected{% endif %}>Every 48 hours</option>
+          <option value="168" {% if rh == 168 %}selected{% endif %}>Every week</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Max Concurrent Streams</label>
+        {% set ms = item.max_sessions | int %}
+        <select name="max_sessions" class="form-select">
+          <option value="1" {% if ms == 1 %}selected{% endif %}>1 stream</option>
+          <option value="2" {% if ms == 2 %}selected{% endif %}>2 streams</option>
+          <option value="3" {% if ms == 3 %}selected{% endif %}>3 streams</option>
+          <option value="4" {% if ms == 4 %}selected{% endif %}>4 streams</option>
+          <option value="5" {% if ms == 5 %}selected{% endif %}>5 streams</option>
+          <option value="10" {% if ms == 10 %}selected{% endif %}>10 streams</option>
+          <option value="99" {% if ms >= 99 %}selected{% endif %}>Unlimited</option>
+        </select>
+      </div>
+    </div>
+    {% endif %}
+
+    <div class="flex flex-center flex-wrap gap-12">
+      <button type="submit" class="btn btn-primary">
+        💾 {% if is_new %}Add Provider{% else %}Save Changes{% endif %}
+      </button>
+      {% if item and not is_new %}
+      {% if allow_full_m3u_download %}
+      <button type="button" onclick="submitForm(this, 'form-fetch-m3u', 'Fetching M3U…')" class="btn btn-warning">
+        Fetch M3U
+      </button>
+      {% endif %}
+      {% if item.has_m3u %}
+      <a href="/m3u_browser/{{ item.id }}" target="_blank" class="btn btn-outline">Browse M3U</a>
+      {% endif %}
+      <button type="button" id="testBtn" onclick="testConnection()" class="btn btn-success">
+        🔌 Test Connection
+      </button>
+      <span id="testResult" class="text-sm"></span>
+      {% endif %}
+    </div>
+  </form>
+</div>
+
+{% if item and not is_new %}
+
+<!-- Proxy Credentials -->
+<div class="card">
+  <div class="card-title">Proxy Credentials</div>
+  <p class="text-muted text-sm mb-12">
+    Credentials IPTV apps use to connect to <em>this</em> proxy at
+    <code>{{ base_url }}/{{ item.slug }}/player_api.php</code>
+  </p>
+  <form method="POST" action="/providers/{{ item.id }}">
+    <input type="hidden" name="name" value="{{ item.name }}" />
+    <input type="hidden" name="slug" value="{{ item.slug }}" />
+    <input type="hidden" name="server_url" value="{{ item.server_url }}" />
+    <input type="hidden" name="username" value="{{ item.username }}" />
+    <input type="hidden" name="user_pass" value="{{ item.user_pass }}" />
+    <input type="hidden" name="m3u_refresh_hours" value="{{ item.m3u_refresh_hours }}" />
+    <input type="hidden" name="max_sessions" value="{{ item.max_sessions }}" />
+    <div class="grid-2" style="max-width: 420px;">
+      <div class="form-group">
+        <label class="form-label">Username</label>
+        <input type="text" name="proxy_username" value="{{ item.proxy_username }}" class="form-input" required />
+      </div>
+      <div class="form-group">
+        <label class="form-label">Password</label>
+        <input type="text" name="proxy_password" value="{{ item.proxy_password }}" class="form-input" required />
+      </div>
+    </div>
+    <button type="submit" class="btn btn-primary btn-sm">💾 Save Proxy Credentials</button>
+  </form>
+
+  <hr class="divider" />
+
+  <div class="card-title" style="font-size: 13px; margin-bottom: 8px;">Connection Info</div>
+  <table class="table">
+    <tr><th>Proxy URL</th><td><code>{{ base_url }}/{{ item.slug }}</code></td></tr>
+    <tr><th>player_api.php</th><td><code>{{ base_url }}/{{ item.slug }}/player_api.php</code></td></tr>
+    <tr><th>M3U Playlist</th><td><code>{{ base_url }}/{{ item.slug }}/get.php?username={{ item.proxy_username }}&amp;password={{ item.proxy_password }}&amp;type=m3u_plus</code></td></tr>
+  </table>
+</div>
+
+<!-- Provider Status -->
+<div class="card">
+  <div class="card-title">Provider Status</div>
+  <div class="flex flex-wrap gap-16">
+    <span class="status-item">
+      <span class="status-dot {{ 'dot-on' if item.has_m3u else 'dot-off' }}"></span>Full M3U
+    </span>
+    <span class="status-item">
+      <span class="status-dot {{ 'dot-on' if item.has_filtered else 'dot-off' }}"></span>Filtered Playlist
+    </span>
+    <span class="status-item">
+      <span class="status-dot {{ 'dot-on' if item.has_epg else 'dot-off' }}"></span>EPG
+    </span>
+  </div>
+</div>
+
+<!-- Live Channel Filters (Xtream / TiviMate) -->
+<div class="card">
+  <div class="card-title collapsible" id="xtreamFilterTitle" onclick="toggleCard('xtreamFilterTitle','xtreamFilterBody','xtreamFilterChevron')">
+    Live Channel Filters (IPTV Apps)
+    <span class="chevron" id="xtreamFilterChevron">▶</span>
+  </div>
+  <div id="xtreamFilterBody" style="display:none;">
+    <form method="POST" action="/providers/{{ item.id }}/filters">
+      <input type="hidden" name="new_includes" value="{{ item.includes or '' }}" />
+      <input type="hidden" name="excludes" value="{{ item.excludes or '' }}" />
+      <input type="hidden" name="languages" value="{{ item.languages or '' }}" />
+      <div class="form-group">
+        <label class="form-label">
+          Live Channels
+          <span style="text-transform:none; font-weight:400; letter-spacing:0;">(TiviMate, IPTV Smarters, etc.)</span>
+        </label>
+        <textarea name="new_xtream_includes" class="form-textarea"
+          placeholder="One per line&#10;*MASH*&#10;*NFL*&#10;24/7: CNN"
+          maxlength="10000">{{ (item.xtream_includes or '') | replace(',', '\n') }}</textarea>
+        <p class="form-help">Wildcards OK (e.g. <code>*NFL*</code>). Filters live channels for Xtream-compatible apps. Does not affect Plex/Jellyfin/Emby (those use HDHomeRun filters).</p>
+      </div>
+      <button type="submit" class="btn btn-primary btn-sm">Save Live Filters</button>
+    </form>
+  </div>
+</div>
+
+<!-- MQTT — Per-provider identity -->
+<div class="card">
+  <div class="card-title collapsible" id="mqttCardTitle" onclick="toggleCard('mqttCardTitle','mqttCardBody','mqttCardChevron')">
+    MQTT / Home Assistant Identity
+    <span class="chevron" id="mqttCardChevron">▶</span>
+  </div>
+  <div id="mqttCardBody" style="display:none;">
+    <p class="text-muted text-sm mb-12">
+      Set the topic prefix and device name this provider uses when publishing to MQTT.
+      Must be unique across providers. Global broker settings are on the <a href="/tools" style="color:var(--primary);">Tools</a> page.
+    </p>
+    <div class="flash flash-neutral" style="margin-bottom:12px; padding:8px 12px; background:var(--bg); border:1px solid var(--border); border-radius:6px; font-size:12px; color:var(--text-muted);">
+      Leave both fields blank to disable MQTT publishing for this provider. When blank, no stream events will be sent to MQTT for this provider.
+    </div>
+    <form method="POST" action="/providers/{{ item.id }}/mqtt">
+      <div class="grid-2">
+        <div class="form-group">
+          <label class="form-label">Topic Prefix</label>
+          <input type="text" name="mqtt_topic_prefix" value="{{ item.mqtt_topic_prefix }}"
+            placeholder="e.g. iptv-manager (blank to disable)" class="form-input" />
+          <p class="form-help">e.g. <code>{{ item.mqtt_topic_prefix or 'iptv-manager' }}/streams/count</code></p>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Device / Sensor Name</label>
+          <input type="text" name="mqtt_device_name" value="{{ item.mqtt_device_name }}"
+            placeholder="e.g. IPTV Manager (blank to disable)" class="form-input" />
+          <p class="form-help">Unique name for Home Assistant (e.g. "IPTV Provider 1").</p>
+        </div>
+      </div>
+      <button type="submit" class="btn btn-primary btn-sm">💾 Save</button>
+    </form>
+  </div>
+</div>
+
+{% endif %}
+
+<script>
+  function togglePanel(id, btn, labelShow, labelHide) {
+    var panel = document.getElementById(id);
+    if (panel.style.display === 'none') {
+      panel.style.display = 'block';
+      if (btn) btn.textContent = labelShow;
+    } else {
+      panel.style.display = 'none';
+      if (btn) btn.textContent = labelHide;
+    }
+  }
+
+  function toggleCard(titleId, bodyId, chevronId) {
+    var body    = document.getElementById(bodyId);
+    var title   = document.getElementById(titleId);
+    var chevron = document.getElementById(chevronId);
+    if (body.style.display === 'none') {
+      body.style.display = 'block';
+      title.classList.add('open');
+      chevron.textContent = '▼';
+      localStorage.setItem(bodyId + 'Open', '1');
+    } else {
+      body.style.display = 'none';
+      title.classList.remove('open');
+      chevron.textContent = '▶';
+      localStorage.setItem(bodyId + 'Open', '0');
+    }
+  }
+
+  function testConnection() {
+    var btn = document.getElementById('testBtn');
+    var result = document.getElementById('testResult');
+    btn.disabled = true;
+    btn.textContent = 'Testing…';
+    result.textContent = '';
+    {% if item %}
+    fetch('/providers/{{ item.id }}/test_connection')
+    {% else %}
+    fetch('/settings/test_connection')
+    {% endif %}
+      .then(function(r) { return r.json(); })
+      .then(function(data) {
+        result.textContent = (data.ok ? '✓ ' : '✗ ') + (data.message || data.error);
+        result.style.color = data.ok ? 'var(--success)' : 'var(--danger)';
+      })
+      .catch(function() { result.textContent = '✗ Request failed'; result.style.color = 'var(--danger)'; })
+      .finally(function() { btn.disabled = false; btn.textContent = '🔌 Test Connection'; });
+  }
+
+  document.addEventListener('DOMContentLoaded', function() {
+    document.querySelectorAll('[data-ts]').forEach(function(el) {
+      var ts = parseInt(el.getAttribute('data-ts'), 10);
+      if (!ts) return;
+      var d = new Date(ts * 1000);
+      el.querySelector('.last-fetch-time').textContent = d.toLocaleString(undefined, {
+        month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit'
+      });
+    });
+    // Restore collapsed card state
+    ['xtreamFilterBody', 'mqttCardBody'].forEach(function(id) {
+      if (localStorage.getItem(id + 'Open') === '1') {
+        var prefix = id.replace('Body', '');
+        var body    = document.getElementById(id);
+        var title   = document.getElementById(prefix + 'Title');
+        var chevron = document.getElementById(prefix + 'Chevron');
+        if (body) {
+          body.style.display = 'block';
+          if (title) title.classList.add('open');
+          if (chevron) chevron.textContent = '▼';
+        }
+      }
+    });
+  });
+</script>
+{% endblock %}
