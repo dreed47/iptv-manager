@@ -132,12 +132,14 @@ def do_fetch_m3u(item_id: int, db) -> tuple:
         f"&password={urllib.parse.quote(item.user_pass)}"
     )
     try:
-        epg_resp = requests.get(epg_url, headers=headers, timeout=30)
+        epg_resp = requests.get(epg_url, headers=headers, timeout=30, stream=True)
         epg_resp.raise_for_status()
         epg_path = os.path.join(config.M3U_DIR, f"epg_{item_id}.xml")
         tmp_epg  = epg_path + ".tmp"
-        with open(tmp_epg, "w", encoding="utf-8") as f:
-            f.write(epg_resp.text)
+        with open(tmp_epg, "wb") as f:
+            for chunk in epg_resp.iter_content(chunk_size=65536):
+                if chunk:
+                    f.write(chunk)
         os.replace(tmp_epg, epg_path)
         logger.debug(f"Saved EPG for item {item_id}")
     except requests.exceptions.RequestException as e:

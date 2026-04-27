@@ -1,22 +1,25 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, Form, Request
-from fastapi.responses import JSONResponse, StreamingResponse, RedirectResponse, Response
+from fastapi.responses import JSONResponse, StreamingResponse, RedirectResponse, Response, FileResponse
 from sqlalchemy.orm import Session
 from models import get_db, Item
 from hdhomerun_routes import register_extra_channels, _active_streams, _active_streams_lock, _SESSION_STALE_SECONDS, get_active_stream_count, is_ip_blocked, auto_replace_ip_session, KILL_BLOCK_SECONDS
 import asyncio
 import config
+import gc
 import hashlib
+import json
 import logging
 import os
 import re
 import fnmatch
+import sqlite3
 import time
 import threading
 import uuid
 import unicodedata
-import gc
 import requests
-from dataclasses import dataclass, field
+from contextlib import contextmanager
+from dataclasses import dataclass
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -24,6 +27,10 @@ router = APIRouter()
 
 M3U_DIR = config.M3U_DIR
 
+
+# ---------------------------------------------------------------------------
+# Credentials
+# ---------------------------------------------------------------------------
 
 def verify_credentials(username: str, password: str, item: Item) -> bool:
     expected_user = item.proxy_username or "iptv"
@@ -52,8 +59,9 @@ async def get_item_for_slug(provider_slug: str, db: Session = Depends(get_db)) -
 
 
 # ---------------------------------------------------------------------------
-# Data model
+# Data models
 # ---------------------------------------------------------------------------
+
 @dataclass(slots=True)
 class StreamEntry:
     stream_id: int
@@ -62,36 +70,38 @@ class StreamEntry:
     category_name: str
     category_id: str
     url: str            # actual upstream URL — never exposed to clients
-    stream_type: str    # "live" | "movie" | "series"
-    guide_number: str   # only populated for live streams
-    tvg_id: str         # raw tvg-id from M3U
-    item_id: int = 0    # DB item ID — needed to look up provider credentials
+    stream_type: str    # "live" only (VOD/series are in SQLite)
+    guide_number: str
+    tvg_id: str
+    item_id: int = 0
 
 
-@dataclass
+@dataclass(slots=True)
 class XtreamCache:
     fingerprint: tuple
-    live_streams: list
-    vod_streams: list
-    series_streams: list
+    live_streams: list           # StreamEntry list — live channels only (~100–200 entries)
+    live_stream_map: dict        # stream_id -> StreamEntry (live only)
     live_categories: list
     vod_categories: list
     series_categories: list
-    stream_map: dict            # stream_id (int) -> StreamEntry (all types)
-    live_id_to_guide: dict      # live stream_id (int) -> guide_number (str)
-    extra_channel_urls: dict    # guide_number (str) -> source_url for 24/7 channels
-    extra_channel_names: dict   # guide_number (str) -> display name for 24/7 channels
+    live_id_to_guide: dict
+    extra_channel_urls: dict
+    extra_channel_names: dict
+    db_path: str                 # SQLite catalog (VOD + Series rows)
+    vod_json_path: str           # pre-built JSON array for get_vod_streams
+    series_json_path: str        # pre-built JSON array for get_series
+    item_id: int                 # primary provider item id
 
 
 # Per-item cache: item_id -> XtreamCache
 _cache: dict[int, XtreamCache] = {}
-_cache_lock = asyncio.Lock()  # async lock — never blocks the event loop
+_cache_lock = asyncio.Lock()
 
 
 # ---------------------------------------------------------------------------
 # Stream ID helpers
-# Each item gets a 100M-wide namespace; type offsets keep live/vod/series apart.
 # ---------------------------------------------------------------------------
+
 def _make_id(item_id: int, tvg_id_str: str, type_offset: int) -> int:
     base = item_id * 100_000_000 + type_offset
     try:
@@ -116,11 +126,13 @@ def _episode_id(item_id: int, upstream_ep_id: int) -> int:
     return item_id * 1_000_000_000 + upstream_ep_id
 
 
-# episode stream_id -> upstream provider URL (populated lazily by get_series_info calls)
+# ---------------------------------------------------------------------------
+# Lazy URL caches (populated on first play)
+# ---------------------------------------------------------------------------
+
 _episode_cache: dict = {}
 _episode_cache_lock = threading.Lock()
 
-# vod stream_id -> correct upstream URL (populated lazily on first play via get_vod_info)
 _vod_url_cache: dict = {}
 _vod_url_cache_lock = threading.Lock()
 
@@ -139,6 +151,7 @@ _UPSTREAM_HEADERS = {
 # ---------------------------------------------------------------------------
 # M3U parsing helpers
 # ---------------------------------------------------------------------------
+
 def _normalize(s: str) -> str:
     s = (s or "").lower().strip()
     s = unicodedata.normalize("NFKD", s)
@@ -165,7 +178,7 @@ _ATTR_RE = re.compile(r'(tvg-id|tvg-name|tvg-logo|group-title|tvg-chno)="([^"]*)
 
 
 def _parse_m3u_file(path: str) -> list:
-    """Return a list of dicts: {tvg_id, tvg_name, logo, group_title, tvg_chno, display_name, url}."""
+    """Return list of dicts: {tvg_id, tvg_name, logo, group_title, tvg_chno, display_name, url}."""
     entries = []
     try:
         with open(path, "r", encoding="utf-8", errors="ignore") as f:
@@ -196,8 +209,48 @@ def _parse_m3u_file(path: str) -> list:
 
 
 # ---------------------------------------------------------------------------
+# SQLite catalog helpers
+# ---------------------------------------------------------------------------
+
+_CATALOG_SCHEMA = """
+CREATE TABLE IF NOT EXISTS streams (
+    stream_id   INTEGER PRIMARY KEY,
+    tvg_id      TEXT    NOT NULL DEFAULT '',
+    name        TEXT    NOT NULL DEFAULT '',
+    logo        TEXT    NOT NULL DEFAULT '',
+    category_name TEXT  NOT NULL DEFAULT '',
+    category_id TEXT    NOT NULL DEFAULT '1',
+    url         TEXT    NOT NULL DEFAULT '',
+    stream_type TEXT    NOT NULL,
+    item_id     INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_item_type ON streams(item_id, stream_type);
+"""
+
+
+@contextmanager
+def _catalog_conn(db_path: str):
+    conn = sqlite3.connect(db_path, check_same_thread=False)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA synchronous=NORMAL")
+    conn.row_factory = sqlite3.Row
+    try:
+        yield conn
+    finally:
+        conn.close()
+
+
+def _catalog_lookup(db_path: str, stream_id: int):
+    with _catalog_conn(db_path) as conn:
+        return conn.execute(
+            "SELECT * FROM streams WHERE stream_id=?", (stream_id,)
+        ).fetchone()
+
+
+# ---------------------------------------------------------------------------
 # Cache fingerprint + build
 # ---------------------------------------------------------------------------
+
 def _compute_fingerprint(items: list) -> tuple:
     parts = []
     for item in items:
@@ -225,12 +278,12 @@ def _build_categories(streams: list) -> tuple:
     return cat_list, seen
 
 
-def _build_cache(items: list, fingerprint: tuple) -> XtreamCache:
-    live_streams = []
-    vod_streams = []
-    series_streams = []
-    stream_map = {}
-    live_id_to_guide = {}
+def _build_cache(items: list, fingerprint: tuple) -> XtreamCache:  # noqa: C901
+    primary_item_id = items[0].id
+    db_key = "_".join(str(i.id) for i in items)
+    db_path = os.path.join(M3U_DIR, f"catalog_{db_key}.db")
+    vod_json_path = os.path.join(M3U_DIR, f"vod_cache_{db_key}.json")
+    series_json_path = os.path.join(M3U_DIR, f"series_cache_{db_key}.json")
 
     _file_cache: dict = {}
 
@@ -284,48 +337,95 @@ def _build_cache(items: list, fingerprint: tuple) -> XtreamCache:
                 channels_by_name[norm] = (entry, explicit)
                 used_guide_numbers.add(guide_num)
 
-    # ---- VOD + Series: parse full xtream playlists ----
-    for item in items:
-        full_path = os.path.join(M3U_DIR, f"xtream_playlist_{item.id}.m3u")
-        for e in _parsed(full_path):
-            gt = e["group_title"]
-            display = (e["tvg_name"] or e["display_name"]).strip()
-            if not display:
-                continue
+    # ---- VOD + Series: write to SQLite catalog and pre-built JSON files ----
+    vod_tmp = vod_json_path + ".tmp"
+    series_tmp = series_json_path + ".tmp"
+    vod_series_sids: set = set()  # replaces old stream_map lookup in extra-channel logic
 
-            if gt == "VOD":
-                sid = _vod_id(item.id, e["tvg_id"])
-                entry = StreamEntry(
-                    stream_id=sid,
-                    name=display,
-                    logo=e["logo"],
-                    category_name=gt,
-                    category_id="",
-                    url=e["url"],
-                    stream_type="movie",
-                    guide_number="",
-                    tvg_id=e["tvg_id"],
-                    item_id=item.id,
-                )
-                vod_streams.append(entry)
-                stream_map[sid] = entry
+    conn = sqlite3.connect(db_path, check_same_thread=False)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA synchronous=NORMAL")
+    conn.executescript(_CATALOG_SCHEMA)
+    conn.execute("DELETE FROM streams")
 
-            elif gt == "Series":
-                sid = _series_id(item.id, e["tvg_id"])
-                entry = StreamEntry(
-                    stream_id=sid,
-                    name=display,
-                    logo=e["logo"],
-                    category_name=gt,
-                    category_id="",
-                    url=e["url"],
-                    stream_type="series",
-                    guide_number="",
-                    tvg_id=e["tvg_id"],
-                    item_id=item.id,
-                )
-                series_streams.append(entry)
-                stream_map[sid] = entry
+    batch: list = []
+    BATCH_SIZE = 2000
+
+    def _flush():
+        if batch:
+            conn.executemany(
+                "INSERT OR REPLACE INTO streams "
+                "(stream_id,tvg_id,name,logo,category_name,category_id,url,stream_type,item_id) "
+                "VALUES (?,?,?,?,?,?,?,?,?)",
+                batch,
+            )
+            batch.clear()
+
+    with open(vod_tmp, "w", encoding="utf-8") as vod_f, \
+         open(series_tmp, "w", encoding="utf-8") as series_f:
+        vod_f.write("[")
+        series_f.write("[")
+        vod_first = series_first = True
+
+        for item in items:
+            full_path = os.path.join(M3U_DIR, f"xtream_playlist_{item.id}.m3u")
+            for e in _parsed(full_path):
+                gt = e["group_title"]
+                display = (e["tvg_name"] or e["display_name"]).strip()
+                if not display:
+                    continue
+
+                if gt == "VOD":
+                    sid = _vod_id(item.id, e["tvg_id"])
+                    vod_series_sids.add(sid)
+                    batch.append((sid, e["tvg_id"], display, e["logo"] or "",
+                                  "VOD", "1", e["url"] or "", "movie", item.id))
+                    if len(batch) >= BATCH_SIZE:
+                        _flush()
+                    obj = {
+                        "num": sid, "name": display, "stream_type": "movie",
+                        "stream_id": sid, "stream_icon": e["logo"] or "",
+                        "rating": "0", "added": "0",
+                        "category_id": "1", "category_name": "VOD",
+                        "container_extension": "mp4", "custom_sid": "",
+                        "direct_source": "",
+                    }
+                    if not vod_first:
+                        vod_f.write(",")
+                    vod_f.write(json.dumps(obj, ensure_ascii=False))
+                    vod_first = False
+
+                elif gt == "Series":
+                    sid = _series_id(item.id, e["tvg_id"])
+                    vod_series_sids.add(sid)
+                    batch.append((sid, e["tvg_id"], display, e["logo"] or "",
+                                  "Series", "1", e["url"] or "", "series", item.id))
+                    if len(batch) >= BATCH_SIZE:
+                        _flush()
+                    obj = {
+                        "num": sid, "name": display, "series_id": sid,
+                        "stream_icon": e["logo"] or "",
+                        "rating": "0", "added": "0",
+                        "category_id": "1", "category_name": "Series",
+                        "cover": e["logo"] or "", "plot": "", "cast": "",
+                        "director": "", "genre": "", "release_date": "",
+                        "last_modified": "0", "episode_run_time": "0",
+                        "youtube_trailer": "",
+                    }
+                    if not series_first:
+                        series_f.write(",")
+                    series_f.write(json.dumps(obj, ensure_ascii=False))
+                    series_first = False
+
+        vod_f.write("]")
+        series_f.write("]")
+
+    _flush()
+    conn.commit()
+    conn.close()
+
+    os.replace(vod_tmp, vod_json_path)
+    os.replace(series_tmp, series_json_path)
 
     # ---- Xtream extra channels (xtream_includes patterns) ----
     def _xi_display_norm(s: str) -> str:
@@ -375,7 +475,7 @@ def _build_cache(items: list, fingerprint: tuple) -> XtreamCache:
             scanned += 1
             display = (e["tvg_name"] or e["display_name"]).replace("_", " ").strip()
             sid = _live_id(item.id, e["tvg_id"])
-            if sid in stream_map:
+            if sid in vod_series_sids:
                 skipped_filtered += 1
                 continue
             norm_name = _strict_norm(display)
@@ -407,48 +507,58 @@ def _build_cache(items: list, fingerprint: tuple) -> XtreamCache:
             f"skipped_dedup={skipped_dedup} matched={matched_count}"
         )
 
+    # ---- Assemble live streams ----
     live_streams = []
+    live_stream_map = {}
     live_id_to_guide = {}
-    stream_map = {k: v for k, v in stream_map.items() if v.stream_type != "live"}
     for entry, _ in channels_by_name.values():
         live_streams.append(entry)
-        stream_map[entry.stream_id] = entry
+        live_stream_map[entry.stream_id] = entry
         live_id_to_guide[entry.stream_id] = entry.guide_number
 
     live_cats, live_cat_map = _build_categories(live_streams)
-    vod_cats, vod_cat_map = _build_categories(vod_streams)
-    series_cats, series_cat_map = _build_categories(series_streams)
-
     for s in live_streams:
         s.category_id = live_cat_map.get(s.category_name, "1")
-    for s in vod_streams:
-        s.category_id = vod_cat_map.get(s.category_name, "1")
-    for s in series_streams:
-        s.category_id = series_cat_map.get(s.category_name, "1")
+
+    vod_cats = [{"category_id": "1", "category_name": "VOD", "parent_id": 0}]
+    series_cats = [{"category_id": "1", "category_name": "Series", "parent_id": 0}]
+
+    # Release raw M3U parse data before returning
+    del _file_cache
+    del vod_series_sids
+    gc.collect()
+
+    try:
+        with _catalog_conn(db_path) as conn:
+            vod_count = conn.execute(
+                "SELECT COUNT(*) FROM streams WHERE stream_type='movie'"
+            ).fetchone()[0]
+            series_count = conn.execute(
+                "SELECT COUNT(*) FROM streams WHERE stream_type='series'"
+            ).fetchone()[0]
+    except Exception:
+        vod_count = series_count = 0
 
     provider_label = ", ".join(f"'{i.name}'" for i in items)
     logger.info(
-        f"Xtream cache built [{provider_label}]: {len(live_streams)} live "
-        f"({len(extra_channel_urls)} xtream extras), "
-        f"{len(vod_streams)} VOD, {len(series_streams)} series"
+        f"Xtream cache built [{provider_label}]: {len(live_streams)} live, "
+        f"{vod_count} VOD, {series_count} series → {db_path}"
     )
-
-    # Release the raw parsed M3U dicts before returning the built cache.
-    del _file_cache
-    gc.collect()
 
     return XtreamCache(
         fingerprint=fingerprint,
         live_streams=live_streams,
-        vod_streams=vod_streams,
-        series_streams=series_streams,
+        live_stream_map=live_stream_map,
         live_categories=live_cats,
         vod_categories=vod_cats,
         series_categories=series_cats,
-        stream_map=stream_map,
         live_id_to_guide=live_id_to_guide,
         extra_channel_urls=extra_channel_urls,
         extra_channel_names=extra_channel_names,
+        db_path=db_path,
+        vod_json_path=vod_json_path,
+        series_json_path=series_json_path,
+        item_id=primary_item_id,
     )
 
 
@@ -458,7 +568,11 @@ async def get_xtream_cache(db: Session, item: Item) -> XtreamCache:
     async with _cache_lock:
         cached = _cache.get(item.id)
         if cached and cached.fingerprint == fingerprint:
-            return cached
+            # Verify catalog files still exist (could be deleted externally)
+            if (os.path.exists(cached.db_path)
+                    and os.path.exists(cached.vod_json_path)
+                    and os.path.exists(cached.series_json_path)):
+                return cached
         new_cache = await asyncio.to_thread(_build_cache, [item], fingerprint)
         _cache[item.id] = new_cache
         if new_cache.extra_channel_urls:
@@ -469,55 +583,22 @@ async def get_xtream_cache(db: Session, item: Item) -> XtreamCache:
 # ---------------------------------------------------------------------------
 # JSON serialization helpers
 # ---------------------------------------------------------------------------
+
 def _stream_to_json(entry: StreamEntry) -> dict:
-    if entry.stream_type == "live":
-        return {
-            "num": entry.stream_id,
-            "name": entry.name,
-            "stream_type": "live",
-            "stream_id": entry.stream_id,
-            "stream_icon": entry.logo,
-            "epg_channel_id": entry.tvg_id,
-            "added": "0",
-            "category_id": entry.category_id,
-            "category_name": entry.category_name,
-            "custom_sid": "",
-            "tv_archive": 0,
-            "direct_source": "",
-        }
-    if entry.stream_type == "movie":
-        return {
-            "num": entry.stream_id,
-            "name": entry.name,
-            "stream_type": "movie",
-            "stream_id": entry.stream_id,
-            "stream_icon": entry.logo,
-            "rating": "0",
-            "added": "0",
-            "category_id": entry.category_id,
-            "category_name": entry.category_name,
-            "container_extension": "mp4",
-            "custom_sid": "",
-            "direct_source": "",
-        }
+    """Used for live streams only."""
     return {
         "num": entry.stream_id,
         "name": entry.name,
-        "series_id": entry.stream_id,
+        "stream_type": "live",
+        "stream_id": entry.stream_id,
         "stream_icon": entry.logo,
-        "rating": "0",
+        "epg_channel_id": entry.tvg_id,
         "added": "0",
         "category_id": entry.category_id,
         "category_name": entry.category_name,
-        "cover": entry.logo,
-        "plot": "",
-        "cast": "",
-        "director": "",
-        "genre": "",
-        "release_date": "",
-        "last_modified": "0",
-        "episode_run_time": "0",
-        "youtube_trailer": "",
+        "custom_sid": "",
+        "tv_archive": 0,
+        "direct_source": "",
     }
 
 
@@ -558,13 +639,13 @@ def _auth_response(base_url: str, item: Item) -> dict:
     }
 
 
-def _vod_info_response(entry: StreamEntry) -> dict:
+def _vod_info_response_from_row(row) -> dict:
     return {
         "info": {
-            "name": entry.name,
-            "o_name": entry.name,
-            "cover_big": entry.logo,
-            "movie_image": entry.logo,
+            "name": row["name"],
+            "o_name": row["name"],
+            "cover_big": row["logo"],
+            "movie_image": row["logo"],
             "release_date": "",
             "episode_run_time": "",
             "rating": "0",
@@ -575,10 +656,10 @@ def _vod_info_response(entry: StreamEntry) -> dict:
             "youtube_trailer": "",
         },
         "movie_data": {
-            "stream_id": entry.stream_id,
-            "name": entry.name,
+            "stream_id": row["stream_id"],
+            "name": row["name"],
             "added": "0",
-            "category_id": entry.category_id,
+            "category_id": row["category_id"],
             "container_extension": "mp4",
             "custom_sid": "",
             "direct_source": "",
@@ -586,8 +667,12 @@ def _vod_info_response(entry: StreamEntry) -> dict:
     }
 
 
-def _fetch_vod_url(entry: StreamEntry, db: Session) -> Optional[str]:
-    item = db.query(Item).filter(Item.id == entry.item_id).first()
+# ---------------------------------------------------------------------------
+# Upstream fetch helpers (lazy VOD URL resolution + series info)
+# ---------------------------------------------------------------------------
+
+def _fetch_vod_url(stream_id: int, tvg_id: str, item_id: int, db: Session) -> Optional[str]:
+    item = db.query(Item).filter(Item.id == item_id).first()
     if not item:
         return None
     base = item.server_url.rstrip("/")
@@ -598,7 +683,7 @@ def _fetch_vod_url(entry: StreamEntry, db: Session) -> Optional[str]:
                 "username": item.username,
                 "password": item.user_pass,
                 "action": "get_vod_info",
-                "vod_id": entry.tvg_id,
+                "vod_id": tvg_id,
             },
             headers={**_UPSTREAM_HEADERS, "Referer": base},
             timeout=15,
@@ -606,23 +691,43 @@ def _fetch_vod_url(entry: StreamEntry, db: Session) -> Optional[str]:
         resp.raise_for_status()
         data = resp.json()
     except Exception as exc:
-        logger.warning(f"Upstream get_vod_info failed for vod {entry.tvg_id}: {exc}")
+        logger.warning(f"Upstream get_vod_info failed for vod {tvg_id}: {exc}")
         return None
 
     ext = (data.get("movie_data") or {}).get("container_extension") or "mp4"
-    url = f"{base}/movie/{item.username}/{item.user_pass}/{entry.tvg_id}.{ext}"
+    url = f"{base}/movie/{item.username}/{item.user_pass}/{tvg_id}.{ext}"
     with _vod_url_cache_lock:
         if len(_vod_url_cache) >= _CACHE_MAX:
             for k in list(_vod_url_cache)[: _CACHE_MAX // 2]:
                 del _vod_url_cache[k]
-        _vod_url_cache[entry.stream_id] = url
+        _vod_url_cache[stream_id] = url
     return url
 
 
-def _fetch_series_info(entry: StreamEntry, db: Session) -> dict:
-    item = db.query(Item).filter(Item.id == entry.item_id).first()
+def _series_info_fallback_from_row(row) -> dict:
+    return {
+        "info": {
+            "name": row["name"],
+            "cover": row["logo"],
+            "plot": "",
+            "cast": "",
+            "director": "",
+            "genre": "",
+            "release_date": "",
+            "rating": "0",
+            "backdrop_path": [],
+            "youtube_trailer": "",
+            "episode_run_time": "0",
+            "category_id": row["category_id"],
+        },
+        "episodes": {},
+    }
+
+
+def _fetch_series_info_from_row(row, db: Session) -> dict:
+    item = db.query(Item).filter(Item.id == row["item_id"]).first()
     if not item:
-        return _series_info_fallback(entry)
+        return _series_info_fallback_from_row(row)
 
     try:
         base = item.server_url.rstrip("/")
@@ -632,7 +737,7 @@ def _fetch_series_info(entry: StreamEntry, db: Session) -> dict:
                 "username": item.username,
                 "password": item.user_pass,
                 "action": "get_series_info",
-                "series_id": entry.tvg_id,
+                "series_id": row["tvg_id"],
             },
             headers={**_UPSTREAM_HEADERS, "Referer": base},
             timeout=15,
@@ -640,8 +745,8 @@ def _fetch_series_info(entry: StreamEntry, db: Session) -> dict:
         resp.raise_for_status()
         data = resp.json()
     except Exception as exc:
-        logger.warning(f"Upstream get_series_info failed for series {entry.tvg_id}: {exc}")
-        return _series_info_fallback(entry)
+        logger.warning(f"Upstream get_series_info failed for series {row['tvg_id']}: {exc}")
+        return _series_info_fallback_from_row(row)
 
     episodes_out = {}
     for season_num, episodes in data.get("episodes", {}).items():
@@ -652,7 +757,7 @@ def _fetch_series_info(entry: StreamEntry, db: Session) -> dict:
             except (ValueError, TypeError):
                 continue
             ext = ep.get("container_extension", "mp4")
-            local_id = _episode_id(entry.item_id, upstream_ep_id)
+            local_id = _episode_id(row["item_id"], upstream_ep_id)
             upstream_url = (
                 f"{base}/series/{item.username}/{item.user_pass}/{upstream_ep_id}.{ext}"
             )
@@ -669,34 +774,15 @@ def _fetch_series_info(entry: StreamEntry, db: Session) -> dict:
             episodes_out[season_num] = season_list
 
     info = data.get("info", {})
-    info.setdefault("name", entry.name)
-    info.setdefault("cover", entry.logo)
+    info.setdefault("name", row["name"])
+    info.setdefault("cover", row["logo"])
     return {"info": info, "episodes": episodes_out}
-
-
-def _series_info_fallback(entry: StreamEntry) -> dict:
-    return {
-        "info": {
-            "name": entry.name,
-            "cover": entry.logo,
-            "plot": "",
-            "cast": "",
-            "director": "",
-            "genre": "",
-            "release_date": "",
-            "rating": "0",
-            "backdrop_path": [],
-            "youtube_trailer": "",
-            "episode_run_time": "0",
-            "category_id": entry.category_id,
-        },
-        "episodes": {},
-    }
 
 
 # ---------------------------------------------------------------------------
 # Xtream API endpoint
 # ---------------------------------------------------------------------------
+
 async def _handle_player_api(
     username: str,
     password: str,
@@ -724,28 +810,36 @@ async def _handle_player_api(
 
     if action == "get_live_streams":
         return JSONResponse([_stream_to_json(s) for s in cache.live_streams])
+
+    # VOD and series lists are served directly from pre-built JSON files — zero RAM cost
     if action == "get_vod_streams":
-        return JSONResponse([_stream_to_json(s) for s in cache.vod_streams])
+        if not os.path.exists(cache.vod_json_path):
+            return JSONResponse([])
+        return FileResponse(cache.vod_json_path, media_type="application/json")
     if action == "get_series":
-        return JSONResponse([_stream_to_json(s) for s in cache.series_streams])
+        if not os.path.exists(cache.series_json_path):
+            return JSONResponse([])
+        return FileResponse(cache.series_json_path, media_type="application/json")
 
     if action == "get_vod_info" and vod_id:
         try:
-            entry = cache.stream_map.get(int(vod_id))
+            sid = int(vod_id)
         except (ValueError, TypeError):
-            entry = None
-        if not entry or entry.stream_type != "movie":
             return JSONResponse({"info": {}, "movie_data": {}})
-        return JSONResponse(_vod_info_response(entry))
+        row = await asyncio.to_thread(_catalog_lookup, cache.db_path, sid)
+        if not row or row["stream_type"] != "movie":
+            return JSONResponse({"info": {}, "movie_data": {}})
+        return JSONResponse(_vod_info_response_from_row(row))
 
     if action == "get_series_info" and series_id:
         try:
-            entry = cache.stream_map.get(int(series_id))
+            sid = int(series_id)
         except (ValueError, TypeError):
-            entry = None
-        if not entry or entry.stream_type != "series":
             return JSONResponse({"info": {}, "episodes": {}})
-        return JSONResponse(await asyncio.to_thread(_fetch_series_info, entry, db))
+        row = await asyncio.to_thread(_catalog_lookup, cache.db_path, sid)
+        if not row or row["stream_type"] != "series":
+            return JSONResponse({"info": {}, "episodes": {}})
+        return JSONResponse(await asyncio.to_thread(_fetch_series_info_from_row, row, db))
 
     return JSONResponse({"error": "Unknown action"}, status_code=400)
 
@@ -781,7 +875,9 @@ async def player_api_post(
 # ---------------------------------------------------------------------------
 # M3U playlist endpoints
 # ---------------------------------------------------------------------------
-def _m3u_generator(cache: XtreamCache, base_url: str, username: str, password: str, slug: str):
+
+async def _m3u_generator(cache: XtreamCache, base_url: str, username: str, password: str, slug: str):
+    """Async generator — yields M3U lines without holding full catalog in RAM."""
     yield "#EXTM3U\n"
     for s in cache.live_streams:
         url = f"{base_url}/{slug}/live/{username}/{password}/{s.stream_id}.ts"
@@ -790,18 +886,30 @@ def _m3u_generator(cache: XtreamCache, base_url: str, username: str, password: s
             f'tvg-logo="{s.logo}" group-title="{s.category_name}",{s.name}\n'
             f"{url}\n"
         )
-    for s in cache.vod_streams:
-        url = f"{base_url}/{slug}/movie/{username}/{password}/{s.stream_id}.mp4"
+
+    # Stream VOD/series from SQLite via thread (avoids blocking the event loop)
+    def _fetch_rows(stream_type: str) -> list:
+        with _catalog_conn(cache.db_path) as conn:
+            conn.row_factory = None  # return plain tuples for speed
+            return conn.execute(
+                "SELECT stream_id, tvg_id, name, logo, category_name "
+                "FROM streams WHERE item_id=? AND stream_type=?",
+                (cache.item_id, stream_type),
+            ).fetchall()
+
+    for sid, tvg_id, name, logo, cat in await asyncio.to_thread(_fetch_rows, "movie"):
+        url = f"{base_url}/{slug}/movie/{username}/{password}/{sid}.mp4"
         yield (
-            f'#EXTINF:-1 tvg-id="{s.tvg_id}" tvg-name="{s.name}" '
-            f'tvg-logo="{s.logo}" group-title="{s.category_name}",{s.name}\n'
+            f'#EXTINF:-1 tvg-id="{tvg_id}" tvg-name="{name}" '
+            f'tvg-logo="{logo}" group-title="{cat}",{name}\n'
             f"{url}\n"
         )
-    for s in cache.series_streams:
-        url = f"{base_url}/{slug}/series/{username}/{password}/{s.stream_id}.m3u8"
+
+    for sid, tvg_id, name, logo, cat in await asyncio.to_thread(_fetch_rows, "series"):
+        url = f"{base_url}/{slug}/series/{username}/{password}/{sid}.m3u8"
         yield (
-            f'#EXTINF:-1 tvg-id="{s.tvg_id}" tvg-name="{s.name}" '
-            f'tvg-logo="{s.logo}" group-title="{s.category_name}",{s.name}\n'
+            f'#EXTINF:-1 tvg-id="{tvg_id}" tvg-name="{name}" '
+            f'tvg-logo="{logo}" group-title="{cat}",{name}\n'
             f"{url}\n"
         )
 
@@ -853,6 +961,7 @@ async def get_m3u_simple(
 # ---------------------------------------------------------------------------
 # EPG redirect
 # ---------------------------------------------------------------------------
+
 @router.get("/{provider_slug}/xmltv.php")
 async def xmltv_redirect(
     provider_slug: str,
@@ -923,7 +1032,6 @@ def _stream_live_direct(source_url: str, channel_name: str, client_ip: str,
                         _active_streams[session_id]["bytes_sent"] = bytes_sent
                         _active_streams[session_id]["last_chunk_at"] = time.time()
                         yield chunk
-                # Clean end-of-stream — don't retry
                 break
             except Exception as exc:
                 logger.warning(f"Live read error for '{channel_name}': {exc}")
@@ -954,8 +1062,8 @@ async def proxy_live(
         raise HTTPException(status_code=400, detail="Invalid stream ID")
 
     cache = await get_xtream_cache(db, item)
-    entry = cache.stream_map.get(stream_id)
-    if not entry or entry.stream_type != "live":
+    entry = cache.live_stream_map.get(stream_id)
+    if not entry:
         logger.warning(f"proxy_live [{item.name}]: stream_id {stream_id} not in cache "
                        f"(cache has {len(cache.live_streams)} live streams)")
         raise HTTPException(status_code=404, detail=f"Live stream {stream_id} not found")
@@ -1089,11 +1197,6 @@ async def proxy_vod(
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid stream ID")
 
-    cache = await get_xtream_cache(db, item)
-    entry = cache.stream_map.get(stream_id)
-    if not entry or entry.stream_type != "movie":
-        raise HTTPException(status_code=404, detail=f"VOD stream {stream_id} not found")
-
     client_ip = request.client.host if request.client else "unknown"
     if is_ip_blocked(client_ip):
         raise HTTPException(
@@ -1102,9 +1205,14 @@ async def proxy_vod(
             headers={"Retry-After": str(KILL_BLOCK_SECONDS)},
         )
 
-    provider_item = db.query(Item).filter(Item.id == entry.item_id).first()
+    cache = await get_xtream_cache(db, item)
+    row = await asyncio.to_thread(_catalog_lookup, cache.db_path, stream_id)
+    if not row or row["stream_type"] != "movie":
+        raise HTTPException(status_code=404, detail=f"VOD stream {stream_id} not found")
+
+    provider_item = db.query(Item).filter(Item.id == row["item_id"]).first()
     max_sessions = int(provider_item.max_sessions) if provider_item and provider_item.max_sessions is not None else 1
-    active_count = auto_replace_ip_session(client_ip, f"VOD:{entry.name}")
+    active_count = auto_replace_ip_session(client_ip, f"VOD:{stream_id}")
     if active_count >= max_sessions:
         raise HTTPException(
             status_code=429,
@@ -1116,9 +1224,14 @@ async def proxy_vod(
         resolved_url = _vod_url_cache.get(stream_id)
 
     if resolved_url is None:
-        resolved_url = await asyncio.to_thread(_fetch_vod_url, entry, db) or entry.url
+        resolved_url = await asyncio.to_thread(
+            _fetch_vod_url, stream_id, row["tvg_id"], row["item_id"], db
+        ) or row["url"]
 
-    result = _proxy_finite_stream(resolved_url, request, "video/mp4", stream_label=f"VOD:{entry.name}", item_id=entry.item_id)
+    result = _proxy_finite_stream(
+        resolved_url, request, "video/mp4",
+        stream_label=f"VOD:{stream_id}", item_id=row["item_id"],
+    )
 
     if isinstance(result, JSONResponse) and result.status_code == 502:
         with _vod_url_cache_lock:
@@ -1168,22 +1281,25 @@ async def proxy_series(
 
     if upstream_url:
         logger.debug(f"Series episode {stream_id} → {upstream_url}")
-        return _proxy_finite_stream(upstream_url, request, "video/mp4", stream_label=f"Series:{stream_id}", item_id=item.id)
+        return _proxy_finite_stream(upstream_url, request, "video/mp4",
+                                    stream_label=f"Series:{stream_id}", item_id=item.id)
 
     logger.warning(f"Series episode {stream_id} not in episode cache")
     cache = await get_xtream_cache(db, item)
-    entry = cache.stream_map.get(stream_id)
-    if not entry or entry.stream_type != "series":
+    row = await asyncio.to_thread(_catalog_lookup, cache.db_path, stream_id)
+    if not row or row["stream_type"] != "series":
         return JSONResponse({"error": f"Series stream {stream_id} not found"}, status_code=404)
 
     return _proxy_finite_stream(
-        entry.url, request, "application/vnd.apple.mpegurl", stream_label=f"Series:{entry.name}", item_id=entry.item_id
+        row["url"], request, "application/vnd.apple.mpegurl",
+        stream_label=f"Series:{stream_id}", item_id=row["item_id"],
     )
 
 
 # ---------------------------------------------------------------------------
 # Backward-compat: old root-level Xtream paths return a helpful error
 # ---------------------------------------------------------------------------
+
 def _provider_not_found_response(db: Session) -> JSONResponse:
     all_items = db.query(Item).all()
     available = [f"/{i.slug}/" for i in all_items if i.slug]

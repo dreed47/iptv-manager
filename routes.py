@@ -431,52 +431,58 @@ async def m3u_browser_data(
     groups: set = set()
     prefixes: dict = {}
 
+    # Iterate line-by-line to avoid loading the full 58 MB file into RAM at once
+    prev_extinf: str | None = None
+    first_line_checked = False
     with open(file_path, "r", encoding="utf-8", errors="replace") as f:
-        lines = f.read().splitlines()
+        for raw in f:
+            line = raw.rstrip("\n")
+            if not first_line_checked:
+                first_line_checked = True
+                if line.strip() == "#EXTM3U":
+                    continue
+            if line.startswith("#EXTINF"):
+                prev_extinf = line
+            elif prev_extinf is not None:
+                extinf = prev_extinf
+                url = line.strip()
+                prev_extinf = None
+                attrs = {}
+                display_name = ""
+                if "," in extinf:
+                    attr_part, display_name = extinf.split(",", 1)
+                    for k, v in re.findall(r'(\S+?)="([^"]*)"', attr_part):
+                        attrs[k.lower()] = v
+                display_name = display_name.strip()
+                tvg_name = attrs.get("tvg-name", "").strip()
+                group_title = attrs.get("group-title", "").strip()
 
-    i = 1 if (lines and lines[0].strip() == "#EXTM3U") else 0
-    while i < len(lines):
-        line = lines[i]
-        if line.startswith("#EXTINF") and i + 1 < len(lines):
-            extinf = line
-            url = lines[i + 1]
-            attrs = {}
-            display_name = ""
-            if "," in extinf:
-                attr_part, display_name = extinf.split(",", 1)
-                for k, v in re.findall(r'(\S+?)="([^"]*)"', attr_part):
-                    attrs[k.lower()] = v
-            display_name = display_name.strip()
-            tvg_name = attrs.get("tvg-name", "").strip()
-            group_title = attrs.get("group-title", "").strip()
+                # Detect provider prefix  e.g. "SLING: ESPN" -> "SLING:", "EN - BBC" -> "EN -"
+                src = tvg_name or display_name
+                ch_prefix = ""
+                if ":" in src:
+                    candidate = src.split(":")[0].strip()
+                    if 1 < len(candidate) <= 15 and not any(c.isdigit() for c in candidate):
+                        ch_prefix = candidate + ":"
+                elif " - " in src:
+                    candidate = src.split(" - ")[0].strip()
+                    if 1 < len(candidate) <= 6:
+                        ch_prefix = candidate + " -"
 
-            # Detect provider prefix  e.g. "SLING: ESPN" -> "SLING:", "EN - BBC" -> "EN -"
-            src = tvg_name or display_name
-            ch_prefix = ""
-            if ":" in src:
-                candidate = src.split(":")[0].strip()
-                if 1 < len(candidate) <= 15 and not any(c.isdigit() for c in candidate):
-                    ch_prefix = candidate + ":"
-            elif " - " in src:
-                candidate = src.split(" - ")[0].strip()
-                if 1 < len(candidate) <= 6:
-                    ch_prefix = candidate + " -"
+                if group_title:
+                    groups.add(group_title)
+                if ch_prefix:
+                    prefixes[ch_prefix] = prefixes.get(ch_prefix, 0) + 1
 
-            if group_title:
-                groups.add(group_title)
-            if ch_prefix:
-                prefixes[ch_prefix] = prefixes.get(ch_prefix, 0) + 1
-
-            channels.append({
-                "name": display_name,
-                "tvg_name": tvg_name,
-                "group": group_title,
-                "prefix": ch_prefix,
-                "url": url,
-            })
-            i += 2
-        else:
-            i += 1
+                channels.append({
+                    "name": display_name,
+                    "tvg_name": tvg_name,
+                    "group": group_title,
+                    "prefix": ch_prefix,
+                    "url": url,
+                })
+            else:
+                prev_extinf = None
 
     # Only include prefixes that appear on at least 5 channels (avoids one-off channel name colons)
     MIN_PREFIX_COUNT = 5
