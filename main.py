@@ -4,7 +4,7 @@ import collections
 import threading
 
 _LOG_BUFFER_LOCK = threading.Lock()
-_LOG_BUFFER: collections.deque = collections.deque(maxlen=2000)
+_LOG_BUFFER: collections.deque = collections.deque(maxlen=500)
 
 class _BufferHandler(logging.Handler):
     def emit(self, record: logging.LogRecord) -> None:

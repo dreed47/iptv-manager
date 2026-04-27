@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import JSONResponse, StreamingResponse, RedirectResponse, Response, HTMLResponse
+from fastapi.responses import JSONResponse, StreamingResponse, RedirectResponse, Response, HTMLResponse, FileResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
 from models import get_db, Item, get_app_config
@@ -589,11 +589,11 @@ async def serve_epg():
     Cached for 12 hours; force-refresh via POST /epg/refresh.
     """
     import asyncio
-    from epg_manager import get_epg
-    from fastapi.responses import Response as FastResponse
-    xml_content = await asyncio.get_event_loop().run_in_executor(None, get_epg)
-    return FastResponse(
-        content=xml_content,
+    from epg_manager import get_epg, EPG_CACHE_PATH
+    # Ensure the cache file exists and is fresh, then stream directly from disk.
+    await asyncio.get_event_loop().run_in_executor(None, get_epg)
+    return FileResponse(
+        EPG_CACHE_PATH,
         media_type="application/xml",
         headers={"Cache-Control": "max-age=3600", "Access-Control-Allow-Origin": "*"},
     )

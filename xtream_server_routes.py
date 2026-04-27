@@ -14,6 +14,7 @@ import time
 import threading
 import uuid
 import unicodedata
+import gc
 import requests
 from dataclasses import dataclass, field
 from typing import Optional
@@ -53,7 +54,7 @@ async def get_item_for_slug(provider_slug: str, db: Session = Depends(get_db)) -
 # ---------------------------------------------------------------------------
 # Data model
 # ---------------------------------------------------------------------------
-@dataclass
+@dataclass(slots=True)
 class StreamEntry:
     stream_id: int
     name: str
@@ -431,6 +432,10 @@ def _build_cache(items: list, fingerprint: tuple) -> XtreamCache:
         f"({len(extra_channel_urls)} xtream extras), "
         f"{len(vod_streams)} VOD, {len(series_streams)} series"
     )
+
+    # Release the raw parsed M3U dicts before returning the built cache.
+    del _file_cache
+    gc.collect()
 
     return XtreamCache(
         fingerprint=fingerprint,
