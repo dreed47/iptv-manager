@@ -114,6 +114,16 @@
         🔌 Test Connection
       </button>
       <span id="testResult" class="text-sm"></span>
+      {% if item.provider_status or item.provider_exp_date %}
+      <span class="text-sm" style="color: var(--text-muted);">
+        {% if item.provider_status %}
+        <span class="badge {{ 'badge-success' if item.provider_status|lower == 'active' else 'badge-danger' }}">{{ item.provider_status }}</span>
+        {% endif %}
+        {% if item.provider_exp_date %}
+        Expires {{ item.provider_exp_date }}
+        {% endif %}
+      </span>
+      {% endif %}
       {% endif %}
     </div>
   </form>
