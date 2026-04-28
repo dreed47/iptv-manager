@@ -1,4 +1,5 @@
 import re
+import json
 import logging
 import os
 from sqlalchemy.orm import Session
@@ -131,9 +132,43 @@ def _count_extinf(path: str) -> int:
 def _count_epg_channels(path: str) -> int:
     try:
         with open(path, "r", encoding="utf-8", errors="ignore") as f:
-            return sum(1 for line in f if "<channel " in line)
+            return f.read().count("<channel ")
     except Exception:
         return 0
+
+
+def _get_file_mtime(path: str) -> float | None:
+    try:
+        return os.path.getmtime(path)
+    except FileNotFoundError:
+        return None
+
+
+def _load_count_cache(cache_path: str) -> dict:
+    try:
+        with open(cache_path) as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def _save_count_cache(cache_path: str, data: dict) -> None:
+    try:
+        with open(cache_path, "w") as f:
+            json.dump(data, f)
+    except Exception:
+        pass
+
+
+def _cached_count(path: str, count_fn, cache: dict, count_key: str, mtime_key: str) -> tuple[int, bool]:
+    """Return (count, cache_was_updated). Uses cached value if mtime unchanged."""
+    mtime = _get_file_mtime(path)
+    if mtime is not None and cache.get(mtime_key) == mtime:
+        return cache.get(count_key, 0), False
+    count = count_fn(path) if mtime is not None else 0
+    cache[mtime_key] = mtime
+    cache[count_key] = count
+    return count, True
 
 
 def _build_context_for_item(item: Item, base_url: str, existing_files: set, m3u_dir: str) -> dict:
@@ -182,11 +217,27 @@ def _build_context_for_item(item: Item, base_url: str, existing_files: set, m3u_
         ctx["m3u_last_fetched_ts"] = int(os.path.getmtime(m3u_path))
     except FileNotFoundError:
         ctx["m3u_last_fetched_ts"] = None
-    ctx["m3u_count"] = _count_extinf(m3u_path) if ctx["has_m3u"] else 0
+
+    cache_path = os.path.join(m3u_dir, f"counts_{item.id}.json")
+    cache = _load_count_cache(cache_path)
+    dirty = False
+
     filtered_path = os.path.join(m3u_dir, f"filtered_playlist_{item.id}.m3u")
-    ctx["filtered_count"] = _count_extinf(filtered_path) if ctx["has_filtered"] else 0
     epg_path = os.path.join(m3u_dir, f"epg_{item.id}.xml")
-    ctx["epg_count"] = _count_epg_channels(epg_path) if ctx["has_epg"] else 0
+
+    m3u_count, d = _cached_count(m3u_path, _count_extinf, cache, "m3u_count", "m3u_mtime")
+    dirty = dirty or d
+    filtered_count, d = _cached_count(filtered_path, _count_extinf, cache, "filtered_count", "filtered_mtime")
+    dirty = dirty or d
+    epg_count, d = _cached_count(epg_path, _count_epg_channels, cache, "epg_count", "epg_mtime")
+    dirty = dirty or d
+
+    if dirty:
+        _save_count_cache(cache_path, cache)
+
+    ctx["m3u_count"] = m3u_count if ctx["has_m3u"] else 0
+    ctx["filtered_count"] = filtered_count if ctx["has_filtered"] else 0
+    ctx["epg_count"] = epg_count if ctx["has_epg"] else 0
     return ctx
 
 
