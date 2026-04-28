@@ -518,3 +518,16 @@ def refresh_filtered_playlist(item) -> tuple[int, int]:
     logger.info(f"Refreshed filtered playlist for item {item.id}: {kept}/{total} channels")
     return kept, total
 
+
+def run_filtered_refresh(item_id: int) -> None:
+    """Entry point for rebuilding filtered playlists in a separate process."""
+    try:
+        from models import SessionLocal, Item
+        with SessionLocal() as db:
+            item = db.query(Item).filter(Item.id == item_id).first()
+            if not item:
+                return
+            refresh_filtered_playlist(item)
+    except Exception as exc:
+        logger.warning(f"Filtered playlist refresh failed for item {item_id}: {exc}", exc_info=True)
+

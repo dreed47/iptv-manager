@@ -44,7 +44,7 @@ def _do_refresh_filtered(item_id: int):
 
 
 def queue_refresh_filtered(item_id: int) -> bool:
-    """Queue filtered playlist rebuild on a dedicated thread and return immediately."""
+    """Queue filtered playlist rebuild out-of-process and return immediately."""
     with _FILTER_REFRESH_LOCK:
         if item_id in _FILTER_REFRESH_INFLIGHT:
             return False
@@ -52,7 +52,13 @@ def queue_refresh_filtered(item_id: int) -> bool:
 
     def _run():
         try:
-            _do_refresh_filtered(item_id)
+            import multiprocessing as mp
+            from m3u_service import run_filtered_refresh
+            p = mp.Process(target=run_filtered_refresh, args=(item_id,), daemon=True)
+            p.start()
+            p.join()
+        except Exception as exc:
+            logger.warning(f"Failed to start filtered refresh for item {item_id}: {exc}")
         finally:
             with _FILTER_REFRESH_LOCK:
                 _FILTER_REFRESH_INFLIGHT.discard(item_id)
@@ -513,40 +519,60 @@ async def m3u_browser(item_id: int, request: Request, db: Session = Depends(get_
 @router.get("/m3u_browser_data/{item_id}")
 async def m3u_browser_data(
     item_id: int,
-    db: Session = Depends(get_db),
     search: str = "",
     group: str = "",
     prefix: str = "",
     page: int = 1,
     per_page: int = 100,
 ):
-    item = db.query(Item).filter(Item.id == item_id).first()
-    if not item:
-        raise HTTPException(status_code=404, detail="Item not found")
-    file_path = os.path.join(config.M3U_DIR, f"xtream_playlist_{item_id}.m3u")
-    if not os.path.exists(file_path):
-        raise HTTPException(status_code=404, detail="Full M3U not found")
+    per_page = max(10, min(per_page, 500))
+    page = max(1, page)
 
-    channels = []
-    groups: set = set()
-    prefixes: dict = {}
+    def _load():
+        # Run parsing off the event loop — this file can be ~50–60MB with 200K+ entries.
+        from models import SessionLocal
+        with SessionLocal() as db:
+            item = db.query(Item).filter(Item.id == item_id).first()
+            if not item:
+                return ("not_found", None)
 
-    # Iterate line-by-line to avoid loading the full 58 MB file into RAM at once
-    prev_extinf: str | None = None
-    first_line_checked = False
-    with open(file_path, "r", encoding="utf-8", errors="replace") as f:
-        for raw in f:
-            line = raw.rstrip("\n")
-            if not first_line_checked:
-                first_line_checked = True
-                if line.strip() == "#EXTM3U":
+        file_path = os.path.join(config.M3U_DIR, f"xtream_playlist_{item_id}.m3u")
+        if not os.path.exists(file_path):
+            return ("missing_m3u", None)
+
+        s = (search or "").lower().strip()
+        group_f = (group or "").strip()
+        prefix_f = (prefix or "").strip()
+
+        groups: set[str] = set()
+        prefixes: dict[str, int] = {}
+        page_rows: list[dict] = []
+
+        matched = 0
+        start = (page - 1) * per_page
+        end = start + per_page
+
+        prev_extinf: str | None = None
+        first_line_checked = False
+        with open(file_path, "r", encoding="utf-8", errors="replace") as f:
+            for raw in f:
+                line = raw.rstrip("\n")
+                if not first_line_checked:
+                    first_line_checked = True
+                    if line.strip() == "#EXTM3U":
+                        continue
+
+                if line.startswith("#EXTINF"):
+                    prev_extinf = line
                     continue
-            if line.startswith("#EXTINF"):
-                prev_extinf = line
-            elif prev_extinf is not None:
+
+                if prev_extinf is None:
+                    continue
+
                 extinf = prev_extinf
                 url = line.strip()
                 prev_extinf = None
+
                 attrs = {}
                 display_name = ""
                 if "," in extinf:
@@ -574,50 +600,55 @@ async def m3u_browser_data(
                 if ch_prefix:
                     prefixes[ch_prefix] = prefixes.get(ch_prefix, 0) + 1
 
-                channels.append({
-                    "name": display_name,
-                    "tvg_name": tvg_name,
-                    "group": group_title,
-                    "prefix": ch_prefix,
-                    "url": url,
-                })
-            else:
-                prev_extinf = None
+                # Apply filters (streaming)
+                if s and (s not in display_name.lower() and s not in tvg_name.lower()):
+                    continue
+                if group_f and group_title != group_f:
+                    continue
+                if prefix_f and ch_prefix != prefix_f:
+                    continue
 
-    # Only include prefixes that appear on at least 5 channels (avoids one-off channel name colons)
-    MIN_PREFIX_COUNT = 5
-    valid_prefixes = {p for p, count in prefixes.items() if count >= MIN_PREFIX_COUNT}
+                if matched >= start and matched < end:
+                    page_rows.append({
+                        "name": display_name,
+                        "tvg_name": tvg_name,
+                        "group": group_title,
+                        "prefix": ch_prefix,
+                        "url": url,
+                    })
+                matched += 1
 
-    # Clear prefix on channels whose detected prefix isn't a real provider
-    for ch in channels:
-        if ch["prefix"] and ch["prefix"] not in valid_prefixes:
-            ch["prefix"] = ""
+        # Only include prefixes that appear on at least 5 channels (avoids one-off channel name colons)
+        MIN_PREFIX_COUNT = 5
+        valid_prefixes = {p for p, count in prefixes.items() if count >= MIN_PREFIX_COUNT}
 
-    # Apply filters
-    filtered = channels
-    if search:
-        s = search.lower()
-        filtered = [c for c in filtered if s in c["name"].lower() or s in c["tvg_name"].lower()]
-    if group:
-        filtered = [c for c in filtered if c["group"] == group]
-    if prefix:
-        filtered = [c for c in filtered if c["prefix"] == prefix]
+        # Clear prefix on returned page rows whose detected prefix isn't a real provider
+        for ch in page_rows:
+            if ch["prefix"] and ch["prefix"] not in valid_prefixes:
+                ch["prefix"] = ""
 
-    total = len(filtered)
-    per_page = max(10, min(per_page, 500))
-    total_pages = max(1, (total + per_page - 1) // per_page)
-    page = max(1, min(page, total_pages))
-    start = (page - 1) * per_page
+        total = matched
+        total_pages = max(1, (total + per_page - 1) // per_page)
 
-    return {
-        "channels": filtered[start:start + per_page],
-        "total": total,
-        "page": page,
-        "per_page": per_page,
-        "total_pages": total_pages,
-        "groups": sorted(groups),
-        "prefixes": sorted(valid_prefixes),
-    }
+        return (
+            "ok",
+            {
+                "channels": page_rows,
+                "total": total,
+                "page": min(page, total_pages),
+                "per_page": per_page,
+                "total_pages": total_pages,
+                "groups": sorted(groups),
+                "prefixes": sorted(valid_prefixes),
+            },
+        )
+
+    status, payload = await asyncio.to_thread(_load)
+    if status == "not_found":
+        raise HTTPException(status_code=404, detail="Item not found")
+    if status == "missing_m3u":
+        raise HTTPException(status_code=404, detail="Full M3U not found")
+    return payload
 
 
 @router.get("/hdhomerun", response_class=HTMLResponse)
