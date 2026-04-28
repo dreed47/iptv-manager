@@ -7,5 +7,5 @@ startup.log
 
 .env
 .claude/settings.local.json
-m3u_files/*.*
+m3u_files/
 
