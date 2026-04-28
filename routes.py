@@ -1163,8 +1163,9 @@ async def provider_save_filters(
         filtered_content, num_records, input_count = await asyncio.to_thread(_do_save_filters)
 
         if filtered_content is None:
+            # No M3U filter configured — Xtream filters saved, skip filtered playlist regeneration
             return RedirectResponse(
-                url=f"/providers/{item_id}?error=Channel+list+is+empty+%E2%80%94+add+channels+in+the+format%3A+100%7CESPN",
+                url=f"/providers/{item_id}?success=Filters+saved",
                 status_code=303,
             )
         if num_records == 0:
