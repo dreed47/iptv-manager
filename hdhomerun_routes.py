@@ -590,10 +590,17 @@ async def serve_epg(db: Session = Depends(get_db)):
     Only includes channels from the configured HDHomeRun provider (or all providers if none set).
     """
     import asyncio
-    from epg_manager import get_epg, EPG_CACHE_PATH
+    import multiprocessing as mp
+    from epg_manager import run_epg_build, EPG_CACHE_PATH
     hdhr_provider_id = get_app_config(db, "hdhr_provider_id")
     item_ids = [int(hdhr_provider_id)] if hdhr_provider_id else None
-    await asyncio.get_event_loop().run_in_executor(None, lambda: get_epg(item_ids=item_ids))
+
+    def _build():
+        p = mp.Process(target=run_epg_build, args=(False, item_ids), daemon=True)
+        p.start()
+        p.join()
+
+    await asyncio.to_thread(_build)
     return FileResponse(
         EPG_CACHE_PATH,
         media_type="application/xml",
@@ -605,10 +612,17 @@ async def serve_epg(db: Session = Depends(get_db)):
 async def refresh_epg(db: Session = Depends(get_db)):
     """Force a rebuild of the EPG cache from source URLs."""
     import asyncio
-    from epg_manager import get_epg
+    import multiprocessing as mp
+    from epg_manager import run_epg_build
     hdhr_provider_id = get_app_config(db, "hdhr_provider_id")
     item_ids = [int(hdhr_provider_id)] if hdhr_provider_id else None
-    await asyncio.get_event_loop().run_in_executor(None, lambda: get_epg(force_refresh=True, item_ids=item_ids))
+
+    def _build():
+        p = mp.Process(target=run_epg_build, args=(True, item_ids), daemon=True)
+        p.start()
+        p.join()
+
+    await asyncio.to_thread(_build)
     return RedirectResponse(url="/?success=EPG refreshed successfully", status_code=303)
 
 

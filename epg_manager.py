@@ -490,3 +490,11 @@ def get_epg(force_refresh: bool = False, item_ids: list[int] | None = None) -> s
             with open(EPG_CACHE_PATH, 'r', encoding='utf-8') as f:
                 return f.read()
     return build_and_cache_epg(item_ids=item_ids)
+
+
+def run_epg_build(force_refresh: bool = True, item_ids: list[int] | None = None) -> None:
+    """Entry point for running EPG builds in a separate process."""
+    try:
+        get_epg(force_refresh=force_refresh, item_ids=item_ids)
+    except Exception as exc:
+        logger.warning(f"EPG build failed: {exc}", exc_info=True)

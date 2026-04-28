@@ -3,6 +3,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, File
 from fastapi.templating import Jinja2Templates
 import asyncio
 import time
+import threading
 from sqlalchemy.orm import Session
 from models import get_db, Item, AppConfig, get_app_config, set_app_config, SessionLocal
 from services import create_item, update_item, get_item_context, get_all_item_contexts, get_item_by_slug, generate_slug, get_generated_epg_count, write_count_to_cache
@@ -13,7 +14,7 @@ import re
 from hdhomerun_routes import hdhomerun_emulator, get_active_streams, kill_stream, KILL_BLOCK_SECONDS
 import urllib.parse
 import json
-from epg_manager import get_epg
+from epg_manager import get_epg, run_epg_build
 from m3u_service import do_fetch_m3u, build_filter_config, apply_m3u_filter, refresh_filtered_playlist
 
 # Configure logging
@@ -24,8 +25,17 @@ router = APIRouter()
 templates = Jinja2Templates(directory="templates")
 
 
+_FILTER_REFRESH_LOCK = threading.Lock()
+_FILTER_REFRESH_INFLIGHT: set[int] = set()
+
+_EPG_REFRESH_LOCK = threading.Lock()
+_EPG_REFRESH_INFLIGHT = False
+_EPG_LAST_START = 0.0
+_EPG_COOLDOWN_S = float(os.getenv("EPG_REFRESH_COOLDOWN_S", "60"))
+
+
 def _do_refresh_filtered(item_id: int):
-    """Background-safe filtered playlist rebuild for a single provider."""
+    """Rebuild filtered playlist for a provider (safe to call from a worker thread)."""
     from models import SessionLocal, Item as _Item
     with SessionLocal() as db:
         item = db.query(_Item).filter(_Item.id == item_id).first()
@@ -33,13 +43,65 @@ def _do_refresh_filtered(item_id: int):
             refresh_filtered_playlist(item)
 
 
-def _do_epg_refresh(force: bool = True):
-    """Background-safe EPG rebuild: opens its own DB session to read hdhr_provider_id."""
+def queue_refresh_filtered(item_id: int) -> bool:
+    """Queue filtered playlist rebuild on a dedicated thread and return immediately."""
+    with _FILTER_REFRESH_LOCK:
+        if item_id in _FILTER_REFRESH_INFLIGHT:
+            return False
+        _FILTER_REFRESH_INFLIGHT.add(item_id)
+
+    def _run():
+        try:
+            _do_refresh_filtered(item_id)
+        finally:
+            with _FILTER_REFRESH_LOCK:
+                _FILTER_REFRESH_INFLIGHT.discard(item_id)
+
+    threading.Thread(target=_run, name=f"filtered-refresh-{item_id}", daemon=True).start()
+    return True
+
+
+def _resolve_epg_item_ids() -> list[int] | None:
     from models import SessionLocal
     with SessionLocal() as db:
         hdhr_id = get_app_config(db, "hdhr_provider_id")
-        item_ids = [int(hdhr_id)] if hdhr_id else None
-    get_epg(force_refresh=force, item_ids=item_ids)
+        return [int(hdhr_id)] if hdhr_id else None
+
+
+def queue_epg_refresh(force: bool = True) -> bool:
+    """Run EPG build out-of-process to avoid blocking the asyncio event loop."""
+    global _EPG_REFRESH_INFLIGHT, _EPG_LAST_START
+
+    now = time.monotonic()
+    with _EPG_REFRESH_LOCK:
+        if _EPG_REFRESH_INFLIGHT:
+            return False
+        if _EPG_COOLDOWN_S > 0 and (now - _EPG_LAST_START) < _EPG_COOLDOWN_S:
+            return False
+        _EPG_REFRESH_INFLIGHT = True
+        _EPG_LAST_START = now
+
+    def _run():
+        global _EPG_REFRESH_INFLIGHT
+        try:
+            item_ids = _resolve_epg_item_ids()
+            import multiprocessing as mp
+            p = mp.Process(target=run_epg_build, args=(force, item_ids), daemon=True)
+            p.start()
+            p.join()
+        except Exception as exc:
+            logger.warning(f"EPG refresh failed to start: {exc}")
+        finally:
+            with _EPG_REFRESH_LOCK:
+                _EPG_REFRESH_INFLIGHT = False
+
+    threading.Thread(target=_run, name="epg-refresh", daemon=True).start()
+    return True
+
+
+def _do_epg_refresh(force: bool = True):
+    """Compatibility wrapper for existing BackgroundTasks.add_task calls."""
+    queue_epg_refresh(force=force)
 
 def get_base_url(request: Request) -> str:
     return config.ADVERTISED_BASE_URL
@@ -243,7 +305,7 @@ async def generate_m3u(background_tasks: BackgroundTasks, item_id: int = Form(..
         ok, msg, _ = await asyncio.to_thread(_fetch)
         if not ok:
             return RedirectResponse(url=f"/providers/{item_id}?error={urllib.parse.quote(msg)}", status_code=303)
-        background_tasks.add_task(_do_refresh_filtered, item_id)
+        background_tasks.add_task(queue_refresh_filtered, item_id)
         background_tasks.add_task(_do_epg_refresh)
         return RedirectResponse(url=f"/providers/{item_id}?success={urllib.parse.quote(msg)}", status_code=303)
     except Exception as e:
@@ -297,18 +359,13 @@ async def generate_filtered_m3u(background_tasks: BackgroundTasks, item_id: int 
             )
             return filtered_content, num_records, input_record_count
 
-        filtered_content, num_records, input_record_count = await asyncio.to_thread(_do_provider_filter)
-
-        if num_records == 0:
-            logger.warning(f"No records matched filter for item {item_id}")
-            return RedirectResponse(url=f"/providers/{item_id}?error=No+records+matched+the+filter+criteria.", status_code=303)
-
-        success_msg = urllib.parse.quote(
-            f"Filtered {num_records} of {input_record_count} records"
-        )
+        # Run filtering in the background to avoid long POST hangs.
+        queue_refresh_filtered(item_id)
         background_tasks.add_task(_do_epg_refresh)
-        logger.debug("EPG rebuild queued in background after filtered M3U save")
-        return RedirectResponse(url=f"/providers/{item_id}?success={success_msg}", status_code=303)
+        return RedirectResponse(
+            url=f"/providers/{item_id}?success=Filtered+playlist+refresh+queued",
+            status_code=303,
+        )
 
     except Exception as e:
         logger.error(f"Failed to generate filtered M3U for item {item_id}: {str(e)}")
@@ -1203,30 +1260,14 @@ async def provider_save_filters(
         )
 
     try:
-        def _do_save_filters():
-            # Don't pass SQLAlchemy ORM objects across threads; reload inside the worker.
-            from models import SessionLocal, Item as _Item
-            from m3u_service import refresh_filtered_playlist
-            with SessionLocal() as thread_db:
-                it = thread_db.query(_Item).filter(_Item.id == item_id).first()
-                if not it:
-                    return 0, 0
-                kept, total = refresh_filtered_playlist(it)
-                return kept, total
-
-        kept, total = await asyncio.to_thread(_do_save_filters)
         configured = bool(result.includes or result.excludes or result.languages or result.xtream_includes)
-
-        if configured and total > 0 and kept == 0:
+        if configured:
+            queue_refresh_filtered(item_id)
+            background_tasks.add_task(_do_epg_refresh)
             return RedirectResponse(
-                url=f"/providers/{item_id}?error=Filters+saved+but+no+channels+matched",
+                url=f"/providers/{item_id}?success=Filters+saved+%E2%80%94+applying+in+background",
                 status_code=303,
             )
-
-        if kept > 0:
-            background_tasks.add_task(_do_epg_refresh)
-            msg = urllib.parse.quote(f"Filters saved — {kept} of {total} channels matched")
-            return RedirectResponse(url=f"/providers/{item_id}?success={msg}", status_code=303)
 
         return RedirectResponse(
             url=f"/providers/{item_id}?success=Filters+saved",
