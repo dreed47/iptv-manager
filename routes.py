@@ -4,7 +4,7 @@ from fastapi.templating import Jinja2Templates
 import asyncio
 import time
 from sqlalchemy.orm import Session
-from models import get_db, Item, AppConfig, get_app_config, set_app_config
+from models import get_db, Item, AppConfig, get_app_config, set_app_config, SessionLocal
 from services import create_item, update_item, get_item_context, get_all_item_contexts, get_item_by_slug, generate_slug, get_generated_epg_count, write_count_to_cache
 import config
 import logging
@@ -45,9 +45,19 @@ def get_base_url(request: Request) -> str:
     return config.ADVERTISED_BASE_URL
 
 @router.get("/", response_class=HTMLResponse)
-async def index(request: Request, db: Session = Depends(get_db), error: str = None, success: str = None):
+async def index(request: Request, error: str = None, success: str = None):
     base_url = get_base_url(request)
-    items = get_all_item_contexts(db, base_url, config.M3U_DIR)
+
+    def _load_dashboard_context():
+        # Run DB + filesystem work off the event loop. Create a fresh DB session
+        # in this thread to avoid cross-thread SQLAlchemy usage.
+        with SessionLocal() as db:
+            items = get_all_item_contexts(db, base_url, config.M3U_DIR)
+        epg_count = get_generated_epg_count(config.M3U_DIR)
+        return items, epg_count
+
+    items, epg_count = await asyncio.to_thread(_load_dashboard_context)
+
     # Keep single `item` for templates that still expect it (VPN quick actions etc.)
     item = items[0] if items else None
     ssdp_disabled_by_env = hdhomerun_emulator.is_env_disabled()
@@ -65,7 +75,7 @@ async def index(request: Request, db: Session = Depends(get_db), error: str = No
         "friendly_name": config.HDHR_FRIENDLY_NAME,
         "active_page": "dashboard",
         "hdhr_filtered_count": sum(i["filtered_count"] for i in items),
-        "hdhr_epg_count": get_generated_epg_count(config.M3U_DIR),
+        "hdhr_epg_count": epg_count,
     })
     logger.debug(f"Template render duration: {time.perf_counter() - start:.3f}s")
     return HTMLResponse(content=rendered)
@@ -548,16 +558,29 @@ async def m3u_browser_data(
 
 
 @router.get("/hdhomerun", response_class=HTMLResponse)
-async def hdhomerun_page(request: Request, db: Session = Depends(get_db), error: str = None, success: str = None):
+async def hdhomerun_page(request: Request, error: str = None, success: str = None):
     base_url = get_base_url(request)
-    items = get_all_item_contexts(db, base_url, config.M3U_DIR)
-    hdhr_provider_id = get_app_config(db, "hdhr_provider_id")
-    hdhr_stream_provider_id = get_app_config(db, "hdhr_stream_provider_id")
-    # Resolve the selected provider for the channel filter form
-    if hdhr_provider_id:
-        selected_item = get_item_context(db, base_url, config.M3U_DIR, db.query(Item).filter(Item.id == int(hdhr_provider_id)).first())
-    else:
-        selected_item = items[0] if items else None
+
+    def _load():
+        with SessionLocal() as db:
+            items = get_all_item_contexts(db, base_url, config.M3U_DIR)
+            hdhr_provider_id = get_app_config(db, "hdhr_provider_id")
+            hdhr_stream_provider_id = get_app_config(db, "hdhr_stream_provider_id")
+
+        selected_item = None
+        if hdhr_provider_id:
+            try:
+                sel_id = int(hdhr_provider_id)
+                selected_item = next((i for i in items if i.get("id") == sel_id), None)
+            except (TypeError, ValueError):
+                selected_item = None
+        if selected_item is None:
+            selected_item = items[0] if items else None
+
+        return items, hdhr_provider_id, hdhr_stream_provider_id, selected_item
+
+    items, hdhr_provider_id, hdhr_stream_provider_id, selected_item = await asyncio.to_thread(_load)
+
     ssdp_disabled_by_env = hdhomerun_emulator.is_env_disabled()
     start = time.perf_counter()
     template = templates.get_template("hdhomerun.html")
@@ -792,14 +815,23 @@ async def test_vpn():
 
 
 @router.get("/tools", response_class=HTMLResponse)
-async def tools_page(request: Request, db: Session = Depends(get_db), error: str = None, success: str = None):
+async def tools_page(request: Request, error: str = None, success: str = None):
     import vpn_manager
     base_url = get_base_url(request)
-    item = get_item_context(db, base_url, config.M3U_DIR)
-    all_items = db.query(Item).all()
-    provider_count = len(all_items)
-    mqtt_device_count = sum(1 for it in all_items if it.mqtt_topic_prefix and it.mqtt_topic_prefix.strip())
+
+    def _load():
+        with SessionLocal() as db:
+            item = get_item_context(db, base_url, config.M3U_DIR)
+            all_items = db.query(Item).all()
+            provider_count = len(all_items)
+            mqtt_device_count = sum(
+                1 for it in all_items if it.mqtt_topic_prefix and it.mqtt_topic_prefix.strip()
+            )
+        return item, provider_count, mqtt_device_count
+
+    item, provider_count, mqtt_device_count = await asyncio.to_thread(_load)
     vpn_status = await asyncio.to_thread(vpn_manager.get_vpn_status)
+
     start = time.perf_counter()
     template = templates.get_template("tools.html")
     rendered = template.render({
@@ -842,11 +874,14 @@ async def _save_mqtt_to_item(item, db, mqtt_enabled, mqtt_host, mqtt_port, mqtt_
     }
     _sync_provider_mqtt_configs(db)
     if enabled and item.mqtt_host:
-        ok, msg = _mqtt.start_mqtt(cfg)
+        ok, msg = await asyncio.to_thread(_mqtt.start_mqtt, cfg)
         if not ok:
-            return RedirectResponse(url=f"{redirect_base}?error={urllib.parse.quote('MQTT saved but connect failed: ' + msg)}", status_code=303)
+            return RedirectResponse(
+                url=f"{redirect_base}?error={urllib.parse.quote('MQTT saved but connect failed: ' + msg)}",
+                status_code=303,
+            )
     else:
-        _mqtt.stop_mqtt()
+        await asyncio.to_thread(_mqtt.stop_mqtt)
     return RedirectResponse(url=f"{redirect_base}?success=MQTT+settings+saved", status_code=303)
 
 
@@ -982,9 +1017,14 @@ async def mqtt_test(
 # ---------------------------------------------------------------------------
 
 @router.get("/providers", response_class=HTMLResponse)
-async def providers_list(request: Request, db: Session = Depends(get_db), error: str = None, success: str = None):
+async def providers_list(request: Request, error: str = None, success: str = None):
     base_url = get_base_url(request)
-    items = get_all_item_contexts(db, base_url, config.M3U_DIR)
+
+    def _load():
+        with SessionLocal() as db:
+            return get_all_item_contexts(db, base_url, config.M3U_DIR)
+
+    items = await asyncio.to_thread(_load)
     template = templates.get_template("providers.html")
     rendered = template.render({
         "request": request,
@@ -1048,15 +1088,22 @@ async def provider_create(
 async def provider_edit_form(
     item_id: int,
     request: Request,
-    db: Session = Depends(get_db),
     error: str = None,
     success: str = None,
 ):
     base_url = get_base_url(request)
-    db_item = db.query(Item).filter(Item.id == item_id).first()
-    if not db_item:
+
+    def _load():
+        with SessionLocal() as db:
+            db_item = db.query(Item).filter(Item.id == item_id).first()
+            if not db_item:
+                return None
+            return get_item_context(db, base_url, config.M3U_DIR, db_item)
+
+    item = await asyncio.to_thread(_load)
+    if not item:
         return RedirectResponse(url="/providers?error=Provider+not+found", status_code=302)
-    item = get_item_context(db, base_url, config.M3U_DIR, db_item)
+
     template = templates.get_template("provider_edit.html")
     rendered = template.render({
         "request": request,

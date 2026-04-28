@@ -290,9 +290,30 @@ def get_generated_epg_count(m3u_dir: str) -> int:
 
 def write_count_to_cache(m3u_dir: str, cache_name: str, count_key: str, count: int, file_path: str) -> None:
     """Persist a pre-computed count to the sidecar cache immediately after a file is written.
-    cache_name is the item id (as string) or 'generated' for the merged EPG."""
+
+    NOTE: The UI uses `_cached_count(..., mtime_key=...)` with mtime keys of:
+      - m3u_mtime
+      - filtered_mtime
+      - epg_mtime
+
+    Older versions wrote keys like "m3u_count_mtime", which caused the UI to
+    re-count large files on every page load (slow / "hung" pages).
+
+    cache_name is the item id (as string) or 'generated' for the merged EPG.
+    """
     cache_path = os.path.join(m3u_dir, f"counts_{cache_name}.json")
     cache = _load_count_cache(cache_path)
-    cache[f"{count_key}_mtime"] = _get_file_mtime(file_path)
+
+    # Keep mtime key names consistent with _cached_count callers.
+    if count_key == "m3u_count":
+        mtime_key = "m3u_mtime"
+    elif count_key == "filtered_count":
+        mtime_key = "filtered_mtime"
+    elif count_key == "epg_count":
+        mtime_key = "epg_mtime"
+    else:
+        mtime_key = f"{count_key}_mtime"
+
+    cache[mtime_key] = _get_file_mtime(file_path)
     cache[count_key] = count
     _save_count_cache(cache_path, cache)
