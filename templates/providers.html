@@ -83,13 +83,9 @@
 
 <script>
 function copyProxyUrl(url, iconId) {
-  navigator.clipboard.writeText(url).then(function() {
-    var icon = document.getElementById(iconId);
-    if (icon) {
-      icon.style.color = 'var(--color-success, #22c55e)';
-      setTimeout(function() { icon.style.color = ''; }, 1500);
-    }
-  });
+  var icon = document.getElementById(iconId);
+  // Use the shared helper from base.html so it works on non-HTTPS LAN URLs too.
+  copyToClipboard(url, icon);
 }
 </script>
 {% endblock %}

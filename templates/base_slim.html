@@ -277,14 +277,54 @@
       _syncDarkToggle(isDark);
     }
 
-    function copyToClipboard(text, btn) {
-      navigator.clipboard.writeText(text).then(function() {
-        if (btn) {
-          var orig = btn.textContent;
-          btn.textContent = 'Copied!';
-          setTimeout(function() { btn.textContent = orig; }, 2000);
-        }
-      });
+    function _fallbackCopyText(text) {
+      try {
+        var ta = document.createElement('textarea');
+        ta.value = String(text);
+        ta.setAttribute('readonly', '');
+        ta.style.position = 'fixed';
+        ta.style.top = '-1000px';
+        ta.style.left = '-1000px';
+        ta.style.opacity = '0';
+        document.body.appendChild(ta);
+        ta.focus();
+        ta.select();
+        ta.setSelectionRange(0, ta.value.length);
+        var ok = document.execCommand('copy');
+        document.body.removeChild(ta);
+        return !!ok;
+      } catch (e) {
+        return false;
+      }
+    }
+
+    function _copyFeedback(el) {
+      if (!el) return;
+      var tag = (el.tagName || '').toLowerCase();
+      if (tag === 'svg' || tag === 'path') {
+        var origColor = el.style.color;
+        el.style.color = 'var(--success, #16a34a)';
+        setTimeout(function() { el.style.color = origColor; }, 1500);
+        return;
+      }
+      var orig = el.textContent;
+      el.textContent = 'Copied!';
+      setTimeout(function() { el.textContent = orig; }, 2000);
+    }
+
+    function copyToClipboard(text, el) {
+      // navigator.clipboard requires a secure context (https or localhost). On LAN http
+      // it will fail, so we fall back to execCommand.
+      if (navigator.clipboard && window.isSecureContext) {
+        navigator.clipboard.writeText(String(text)).then(function() {
+          _copyFeedback(el);
+        }).catch(function() {
+          if (_fallbackCopyText(text)) _copyFeedback(el);
+        });
+        return;
+      }
+
+      if (_fallbackCopyText(text)) _copyFeedback(el);
     }
 
     document.addEventListener('DOMContentLoaded', function() {

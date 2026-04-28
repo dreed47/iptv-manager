@@ -655,23 +655,10 @@ active.</pre>
     });
   }
 
-  async function copyHealthUrl() {
+  function copyHealthUrl() {
     const url = buildHealthUrl();
     const btn = document.getElementById('copy-health-btn');
-    try {
-      await navigator.clipboard.writeText(url);
-      btn.textContent = 'Copied!';
-    } catch {
-      const ta = document.createElement('textarea');
-      ta.value = url;
-      ta.style.cssText = 'position:fixed;opacity:0;top:0;left:0';
-      document.body.appendChild(ta);
-      ta.focus(); ta.select();
-      document.execCommand('copy');
-      document.body.removeChild(ta);
-      btn.textContent = 'Copied!';
-    }
-    setTimeout(() => btn.textContent = 'Copy', 2000);
+    copyToClipboard(url, btn);
   }
 
   async function testHealth() {
