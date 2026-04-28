@@ -598,7 +598,7 @@ async def handle_hdhomerun_form(
     if save_filters and item_id:
         if new_includes and '\n' in new_includes:
             new_includes = ','.join([inc.strip() for inc in new_includes.split('\n') if inc.strip()])
-        result = update_item(db, item_id, None, None, None, None, None, new_includes, None, m3u_refresh_hours)
+        result = update_item(db, item_id, includes=new_includes or None, m3u_refresh_hours=m3u_refresh_hours)
         if not result:
             return RedirectResponse(url="/hdhomerun?error=Failed to save filters", status_code=303)
 
@@ -1129,6 +1129,11 @@ async def provider_save_filters(
         with open(m3u_path, "r", encoding="utf-8", errors="replace") as f:
             lines = f.read().splitlines()
         languages_cfg, includes_map, raw_includes, excludes_cfg, has_wildcard = build_filter_config(item)
+        if not includes_map and not languages_cfg and not excludes_cfg:
+            return RedirectResponse(
+                url=f"/providers/{item_id}?error=Channel+list+is+empty+%E2%80%94+add+channels+in+the+format%3A+100%7CESPN",
+                status_code=303,
+            )
         filtered_content, num_records, input_count = apply_m3u_filter(
             lines, languages_cfg, includes_map, excludes_cfg, has_wildcard
         )
