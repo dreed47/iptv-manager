@@ -73,11 +73,22 @@ def create_app():
         allow_headers=["*"],
     )
     
-    # Initialize database in a background task to avoid blocking startup
+    # Optional Xtream cache pre-warm. This can be very CPU/disk heavy (indexes VOD/series
+    # into SQLite/JSON). Default: disabled to keep the UI responsive on small boxes.
     async def _warm_xtream_cache():
+        import os
+        if os.getenv("XTREAM_PREWARM", "0").strip() != "1":
+            logger.info("Xtream cache pre-warm disabled (set XTREAM_PREWARM=1 to enable)")
+            return
         try:
             import time
             from models import Item as _Item
+
+            delay_s = float(os.getenv("XTREAM_PREWARM_DELAY_S", "15"))
+            if delay_s > 0:
+                logger.info(f"Xtream cache pre-warm: delaying start by {delay_s:.0f}s")
+                await asyncio.sleep(delay_s)
+
             logger.info("Xtream cache pre-warm starting...")
             _start = time.monotonic()
             with SessionLocal() as db:
@@ -169,8 +180,6 @@ def create_app():
         asyncio.create_task(_autostart_vpn())
         asyncio.create_task(_autostart_mqtt())
         asyncio.create_task(_loop_lag_monitor())
-        # Warm the Xtream cache in the background so the first stream request
-        # doesn't block for ~28s while 180K+ VOD/series entries are indexed.
         asyncio.create_task(_warm_xtream_cache())
     
     import os
