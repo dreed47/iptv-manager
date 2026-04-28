@@ -131,6 +131,12 @@ def get_channels_from_m3u(item_ids: list[int] | None = None) -> list[dict]:
             line = line.strip()
             if not line.startswith('#EXTINF') or i + 1 >= len(lines):
                 continue
+
+            # Skip VOD and series — only live streams have EPG data
+            url_line = lines[i + 1].strip()
+            if '/movie/' in url_line or '/series/' in url_line:
+                continue
+
             tvg_id_m = re.search(r'tvg-id="([^"]+)"', line)
             tvg_name_m = re.search(r'tvg-name="([^"]+)"', line)
             tvg_chno_m = re.search(r'tvg-chno="([^"]+)"', line)
