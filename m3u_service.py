@@ -216,9 +216,10 @@ def start_m3u_scheduler():
         while True:
             time.sleep(1800)  # check every 30 minutes
             try:
+                # Collect work items quickly, then release the DB session before heavy I/O
+                work = []
                 with SessionLocal() as db:
-                    items = db.query(Item).all()
-                    for item in items:
+                    for item in db.query(Item).all():
                         interval_h = item.m3u_refresh_hours or 0
                         if interval_h <= 0:
                             continue
@@ -226,20 +227,28 @@ def start_m3u_scheduler():
                         try:
                             age_h = (time.time() - os.path.getmtime(playlist_path)) / 3600
                         except FileNotFoundError:
-                            continue  # never fetched — skip until user does it manually
+                            continue
                         if age_h >= interval_h:
-                            logger.debug(
-                                f"Scheduler: refreshing M3U for item {item.id} "
-                                f"(age={age_h:.1f}h >= interval={interval_h}h)"
-                            )
-                            ok, msg, _ = do_fetch_m3u(item.id, db)
-                            logger.info(f"Scheduler: item {item.id} fetch {'ok' if ok else 'failed'}: {msg}")
+                            work.append(item.id)
+
+                for item_id in work:
+                    try:
+                        with SessionLocal() as db:
+                            item = db.query(Item).filter(Item.id == item_id).first()
+                            if not item:
+                                continue
+                            logger.debug(f"Scheduler: refreshing M3U for item {item_id}")
+                            ok, msg, _ = do_fetch_m3u(item_id, db)
+                            logger.info(f"Scheduler: item {item_id} fetch {'ok' if ok else 'failed'}: {msg}")
                             if ok:
                                 refresh_filtered_playlist(item)
-                                from epg_manager import get_epg
                                 hdhr_id = get_app_config(db, "hdhr_provider_id")
-                                epg_item_ids = [int(hdhr_id)] if hdhr_id else None
-                                get_epg(force_refresh=True, item_ids=epg_item_ids)
+                        if ok:
+                            from epg_manager import get_epg
+                            epg_item_ids = [int(hdhr_id)] if hdhr_id else None
+                            get_epg(force_refresh=True, item_ids=epg_item_ids)
+                    except Exception as e:
+                        logger.error(f"Scheduler: item {item_id} error: {e}")
             except Exception as e:
                 logger.error(f"M3U scheduler error: {e}")
 

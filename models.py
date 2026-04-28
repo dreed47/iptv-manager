@@ -73,6 +73,11 @@ def _slugify(name: str) -> str:
 
 def init_db():
     Base.metadata.create_all(bind=engine)
+    with engine.connect() as conn:
+        from sqlalchemy import text as _text
+        conn.execute(_text("PRAGMA journal_mode=WAL"))
+        conn.execute(_text("PRAGMA synchronous=NORMAL"))
+        conn.commit()
     # Migrate existing databases that predate new columns
     with engine.connect() as conn:
         from sqlalchemy import text, inspect

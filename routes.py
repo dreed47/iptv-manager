@@ -253,37 +253,42 @@ async def generate_filtered_m3u(background_tasks: BackgroundTasks, item_id: int 
             logger.warning(f"M3U file not found for item {item_id} at {m3u_path}")
             return RedirectResponse(url=f"/providers/{item_id}?error=M3U+file+not+found%2C+fetch+M3U+first", status_code=303)
 
-        with open(m3u_path, "r", encoding="utf-8") as f:
-            lines = f.read().splitlines()
+        _item_snapshot = item
 
-        languages, includes_map, raw_includes, excludes, has_wildcard = build_filter_config(item)
-        logger.debug(
-            f"Filtering item {item_id}: languages={languages} includes={raw_includes} "
-            f"excludes={excludes} wildcard={has_wildcard}"
-        )
+        def _do_provider_filter():
+            with open(m3u_path, "r", encoding="utf-8") as f:
+                lines = f.read().splitlines()
+            languages, includes_map, raw_includes, excludes, has_wildcard = build_filter_config(_item_snapshot)
+            logger.debug(
+                f"Filtering item {item_id}: languages={languages} includes={raw_includes} "
+                f"excludes={excludes} wildcard={has_wildcard}"
+            )
+            filtered_content, num_records, input_record_count = apply_m3u_filter(
+                lines, languages, includes_map, excludes, has_wildcard
+            )
+            if num_records == 0:
+                return None, 0, input_record_count
+            os.makedirs(config.M3U_DIR, exist_ok=True)
+            filtered_path = os.path.join(config.M3U_DIR, f"filtered_playlist_{item_id}.m3u")
+            tmp_path = filtered_path + ".tmp"
+            with open(tmp_path, "w", encoding="utf-8") as f:
+                f.write(filtered_content)
+            os.replace(tmp_path, filtered_path)
+            write_count_to_cache(config.M3U_DIR, str(item_id), "filtered_count", num_records, filtered_path)
+            total_lines = len(filtered_content.splitlines())
+            logger.info(
+                f"Filtered M3U for item {item_id}: input={input_record_count} kept={num_records} lines={total_lines}"
+            )
+            return filtered_content, num_records, input_record_count
 
-        filtered_content, num_records, input_record_count = apply_m3u_filter(
-            lines, languages, includes_map, excludes, has_wildcard
-        )
+        filtered_content, num_records, input_record_count = await asyncio.to_thread(_do_provider_filter)
 
         if num_records == 0:
             logger.warning(f"No records matched filter for item {item_id}")
             return RedirectResponse(url=f"/providers/{item_id}?error=No+records+matched+the+filter+criteria.", status_code=303)
 
-        os.makedirs(config.M3U_DIR, exist_ok=True)
-        filtered_path = os.path.join(config.M3U_DIR, f"filtered_playlist_{item_id}.m3u")
-        tmp_path = filtered_path + ".tmp"
-        with open(tmp_path, "w", encoding="utf-8") as f:
-            f.write(filtered_content)
-        os.replace(tmp_path, filtered_path)
-        write_count_to_cache(config.M3U_DIR, str(item_id), "filtered_count", num_records, filtered_path)
-
-        total_lines = len(filtered_content.splitlines())
-        logger.info(
-            f"Filtered M3U for item {item_id}: input={input_record_count} kept={num_records} lines={total_lines}"
-        )
         success_msg = urllib.parse.quote(
-            f"Filtered {num_records} of {input_record_count} records ({total_lines} lines)"
+            f"Filtered {num_records} of {input_record_count} records"
         )
         background_tasks.add_task(_do_epg_refresh)
         logger.debug("EPG rebuild queued in background after filtered M3U save")
@@ -611,32 +616,40 @@ async def handle_hdhomerun_form(
 
         try:
             item = db.query(Item).filter(Item.id == item_id).first()
-            with open(m3u_path, "r", encoding="utf-8", errors="replace") as f:
-                lines = f.read().splitlines()
+            _item_snapshot = item
 
-            languages, includes_map, raw_includes, excludes, has_wildcard = build_filter_config(item)
-            if not includes_map and not languages and not excludes:
+            def _do_hdhr_filter():
+                with open(m3u_path, "r", encoding="utf-8", errors="replace") as f:
+                    lines = f.read().splitlines()
+                languages, includes_map, raw_includes, excludes, has_wildcard = build_filter_config(_item_snapshot)
+                if not includes_map and not languages and not excludes:
+                    return None, 0, 0
+                filtered_content, num_records, input_record_count = apply_m3u_filter(
+                    lines, languages, includes_map, excludes, has_wildcard
+                )
+                if num_records == 0:
+                    return filtered_content, 0, input_record_count
+                os.makedirs(config.M3U_DIR, exist_ok=True)
+                filtered_path = os.path.join(config.M3U_DIR, f"filtered_playlist_{item_id}.m3u")
+                tmp_path = filtered_path + ".tmp"
+                with open(tmp_path, "w", encoding="utf-8") as f:
+                    f.write(filtered_content)
+                os.replace(tmp_path, filtered_path)
+                write_count_to_cache(config.M3U_DIR, str(item_id), "filtered_count", num_records, filtered_path)
+                return filtered_content, num_records, input_record_count
+
+            filtered_content, num_records, input_record_count = await asyncio.to_thread(_do_hdhr_filter)
+
+            if filtered_content is None:
                 return RedirectResponse(
                     url="/hdhomerun?error=Channel list is empty — add channels in the format: 100|ESPN",
                     status_code=303,
                 )
-            filtered_content, num_records, input_record_count = apply_m3u_filter(
-                lines, languages, includes_map, excludes, has_wildcard
-            )
-
             if num_records == 0:
                 return RedirectResponse(
                     url="/hdhomerun?error=Filters saved but no channels matched — check your filter list",
                     status_code=303,
                 )
-
-            os.makedirs(config.M3U_DIR, exist_ok=True)
-            filtered_path = os.path.join(config.M3U_DIR, f"filtered_playlist_{item_id}.m3u")
-            tmp_path = filtered_path + ".tmp"
-            with open(tmp_path, "w", encoding="utf-8") as f:
-                f.write(filtered_content)
-            os.replace(tmp_path, filtered_path)
-            write_count_to_cache(config.M3U_DIR, str(item_id), "filtered_count", num_records, filtered_path)
 
             background_tasks.add_task(_do_epg_refresh)
             success_msg = urllib.parse.quote(
@@ -1126,28 +1139,39 @@ async def provider_save_filters(
 
     try:
         item = db.query(Item).filter(Item.id == item_id).first()
-        with open(m3u_path, "r", encoding="utf-8", errors="replace") as f:
-            lines = f.read().splitlines()
-        languages_cfg, includes_map, raw_includes, excludes_cfg, has_wildcard = build_filter_config(item)
-        if not includes_map and not languages_cfg and not excludes_cfg:
+        _item_snapshot = item
+
+        def _do_save_filters():
+            with open(m3u_path, "r", encoding="utf-8", errors="replace") as f:
+                lines = f.read().splitlines()
+            languages_cfg, includes_map, raw_includes, excludes_cfg, has_wildcard = build_filter_config(_item_snapshot)
+            if not includes_map and not languages_cfg and not excludes_cfg:
+                return None, 0, 0
+            filtered_content, num_records, input_count = apply_m3u_filter(
+                lines, languages_cfg, includes_map, excludes_cfg, has_wildcard
+            )
+            if num_records == 0:
+                return filtered_content, 0, input_count
+            filtered_path = os.path.join(config.M3U_DIR, f"filtered_playlist_{item_id}.m3u")
+            tmp_path = filtered_path + ".tmp"
+            with open(tmp_path, "w", encoding="utf-8") as f:
+                f.write(filtered_content)
+            os.replace(tmp_path, filtered_path)
+            write_count_to_cache(config.M3U_DIR, str(item_id), "filtered_count", num_records, filtered_path)
+            return filtered_content, num_records, input_count
+
+        filtered_content, num_records, input_count = await asyncio.to_thread(_do_save_filters)
+
+        if filtered_content is None:
             return RedirectResponse(
                 url=f"/providers/{item_id}?error=Channel+list+is+empty+%E2%80%94+add+channels+in+the+format%3A+100%7CESPN",
                 status_code=303,
             )
-        filtered_content, num_records, input_count = apply_m3u_filter(
-            lines, languages_cfg, includes_map, excludes_cfg, has_wildcard
-        )
         if num_records == 0:
             return RedirectResponse(
                 url=f"/providers/{item_id}?error=Filters+saved+but+no+channels+matched",
                 status_code=303,
             )
-        filtered_path = os.path.join(config.M3U_DIR, f"filtered_playlist_{item_id}.m3u")
-        tmp_path = filtered_path + ".tmp"
-        with open(tmp_path, "w", encoding="utf-8") as f:
-            f.write(filtered_content)
-        os.replace(tmp_path, filtered_path)
-        write_count_to_cache(config.M3U_DIR, str(item_id), "filtered_count", num_records, filtered_path)
         background_tasks.add_task(_do_epg_refresh)
         msg = urllib.parse.quote(f"Filters saved — {num_records} of {input_count} channels matched")
         return RedirectResponse(url=f"/providers/{item_id}?success={msg}", status_code=303)
