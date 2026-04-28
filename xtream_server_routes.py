@@ -97,6 +97,10 @@ class XtreamCache:
 _cache: dict[int, XtreamCache] = {}
 _cache_lock = asyncio.Lock()
 
+def invalidate_xtream_cache(item_id: int) -> None:
+    """Drop cached catalog for a provider so the next request rebuilds it."""
+    _cache.pop(item_id, None)
+
 # Tracks last build failure time per item_id to prevent tight rebuild loops
 _build_failures: dict[int, float] = {}
 _BUILD_RETRY_COOLDOWN = 60.0  # seconds before retrying after a failed build
@@ -366,16 +370,28 @@ def _build_cache(items: list, fingerprint: tuple) -> XtreamCache:  # noqa: C901
         if not patterns:
             item_matchers.append((item, False, None))
             continue
+
         compiled = []
         for p in patterns:
-            if p.startswith("*") and p.endswith("*") and p.count("*") == 2:
-                inner = _xi_display_norm(p[1:-1])
+            # Behavior:
+            # - If user supplies '*' wildcards, treat as fnmatch on normalized alphanum.
+            # - If no '*', treat as a word/phrase match (more user-friendly than exact match).
+            if "*" in p:
+                if p.startswith("*") and p.endswith("*") and p.count("*") == 2:
+                    inner = _xi_display_norm(p[1:-1])
+                    if inner:
+                        words = inner.split()
+                        rx = re.compile(r"\b" + r"\s+".join(re.escape(w) for w in words) + r"\b")
+                        compiled.append(("word", rx))
+                else:
+                    compiled.append(("fnmatch", re.sub(r"[^a-z0-9*]+", "", p.lower())))
+            else:
+                inner = _xi_display_norm(p)
                 if inner:
                     words = inner.split()
                     rx = re.compile(r"\b" + r"\s+".join(re.escape(w) for w in words) + r"\b")
                     compiled.append(("word", rx))
-            else:
-                compiled.append(("fnmatch", re.sub(r"[^a-z0-9*]+", "", p.lower())))
+
         item_matchers.append((item, bool(compiled), _make_matcher(compiled)))
 
     # ---- Single-pass streaming: VOD + Series → SQLite + JSON; live → extra channels ----

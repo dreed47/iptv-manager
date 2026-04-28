@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import re
+import fnmatch
 import threading
 import time
 import unicodedata
@@ -261,11 +262,23 @@ def start_m3u_scheduler():
 # Filter helpers
 # ---------------------------------------------------------------------------
 
+_PREFIX_RE = re.compile(r"^[A-Za-z]{2,6}\s*:\s*")
+_RATIO_PREFIX_RE = re.compile(r"^\d+\s*/\s*\d+\s*:\s*")
+_SUPERSCRIPT_RE = re.compile(r"[\u00B2\u00B3\u00B9\u2070-\u2079]+")
+
+
 def normalize_channel(s: str) -> str:
-    s = s.lower().strip()
-    s = unicodedata.normalize('NFKD', s)
-    s = ''.join(c for c in s if not unicodedata.combining(c))
-    return ' '.join(s.split())
+    s = (s or "").strip()
+    s = unicodedata.normalize("NFKD", s)
+    s = "".join(c for c in s if not unicodedata.combining(c))
+
+    # Strip common provider prefixes before lowercasing (e.g. "US: ", "1/2: ").
+    s = _RATIO_PREFIX_RE.sub("", s).strip()
+    s = _PREFIX_RE.sub("", s).strip()
+    s = _SUPERSCRIPT_RE.sub(" ", s).strip()
+
+    s = s.lower()
+    return " ".join(s.split())
 
 
 def strict_normalize(s: str) -> str:
@@ -383,6 +396,94 @@ def apply_m3u_filter(
     return "".join(parts), num_records, input_record_count
 
 
+def _xi_display_norm(s: str) -> str:
+    s = normalize_channel(s)
+    s = re.sub(r"[^a-z0-9]+", " ", s).strip()
+    return " ".join(s.split())
+
+
+def _compile_xtream_includes(raw: str):
+    patterns = [p.strip() for p in (raw or "").split(",") if p.strip()]
+    if not patterns:
+        return None
+
+    compiled = []
+    for p in patterns:
+        if "*" in p:
+            if p.startswith("*") and p.endswith("*") and p.count("*") == 2:
+                inner = _xi_display_norm(p[1:-1])
+                if inner:
+                    words = inner.split()
+                    rx = re.compile(r"\b" + r"\s+".join(re.escape(w) for w in words) + r"\b")
+                    compiled.append(("word", rx))
+            else:
+                compiled.append(("fnmatch", re.sub(r"[^a-z0-9*]+", "", p.lower())))
+        else:
+            inner = _xi_display_norm(p)
+            if inner:
+                words = inner.split()
+                rx = re.compile(r"\b" + r"\s+".join(re.escape(w) for w in words) + r"\b")
+                compiled.append(("word", rx))
+
+    if not compiled:
+        return None
+
+    def _matches(display: str) -> bool:
+        norm_d = _xi_display_norm(display)
+        for kind, matcher in compiled:
+            if kind == "word":
+                if matcher.search(norm_d):
+                    return True
+            else:
+                if fnmatch.fnmatch(re.sub(r"\s+", "", norm_d), matcher):
+                    return True
+        return False
+
+    return _matches
+
+
+def apply_xtream_includes_filter(lines: list[str], raw_xtream_includes: str) -> tuple[str, int, int]:
+    """Include-only filter for IPTV-app (Xtream) live-channel patterns."""
+    matcher = _compile_xtream_includes(raw_xtream_includes)
+    input_record_count = sum(1 for ln in lines if ln.startswith("#EXTINF"))
+    if not matcher:
+        return "#EXTM3U\n", 0, input_record_count
+
+    parts = ["#EXTM3U\n"]
+    num_records = 0
+    i = 1 if (lines and lines[0].strip() == "#EXTM3U") else 0
+
+    while i < len(lines):
+        if not (lines[i].startswith("#EXTINF") and i + 1 < len(lines) and not lines[i + 1].startswith("#")):
+            i += 1
+            continue
+
+        extinf, url = lines[i], lines[i + 1]
+
+        attributes: dict[str, str] = {}
+        channel_name = ""
+        if " " in extinf and "," in extinf:
+            attr_part, channel_name = extinf.split(",", 1)
+            for key, value in re.findall(r'(\S+?)="([^"]*)"', attr_part):
+                attributes[key.lower()] = value
+        else:
+            channel_name = extinf.split(",", 1)[1] if "," in extinf else ""
+
+        group_title = (attributes.get("group-title") or "").strip().lower()
+        if group_title in ("vod", "series"):
+            i += 2
+            continue
+
+        tvg_name = (attributes.get("tvg-name") or "").strip()
+        if matcher(f"{tvg_name} {channel_name}"):
+            parts.append(f"{extinf}\n{url}\n")
+            num_records += 1
+
+        i += 2
+
+    return "".join(parts), num_records, input_record_count
+
+
 def refresh_filtered_playlist(item) -> tuple[int, int]:
     """Re-apply the current filter config to the full M3U and rewrite filtered_playlist.
     Returns (kept, total). Skips rewrite if the filter produces 0 channels."""
@@ -391,11 +492,20 @@ def refresh_filtered_playlist(item) -> tuple[int, int]:
         return 0, 0
     with open(m3u_path, 'r', encoding='utf-8') as f:
         lines = f.read().splitlines()
+
     languages, includes_map, _, excludes, has_wildcard = build_filter_config(item)
-    if not includes_map and not languages and not excludes:
+    raw_xtream_includes = getattr(item, "xtream_includes", None) or ""
+
+    if not includes_map and not languages and not excludes and not raw_xtream_includes.strip():
+        total = sum(1 for ln in lines if ln.startswith("#EXTINF"))
         logger.warning(f"No filter configured for item {item.id} — skipping filtered playlist rewrite")
-        return 0, 0
-    filtered_content, kept, total = apply_m3u_filter(lines, languages, includes_map, excludes, has_wildcard)
+        return 0, total
+
+    if includes_map or languages or excludes:
+        filtered_content, kept, total = apply_m3u_filter(lines, languages, includes_map, excludes, has_wildcard)
+    else:
+        filtered_content, kept, total = apply_xtream_includes_filter(lines, raw_xtream_includes)
+
     if kept == 0:
         logger.warning(f"Filter produced 0 channels for item {item.id} — not overwriting filtered playlist")
         return 0, total

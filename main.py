@@ -168,10 +168,40 @@ def create_app():
             logger.warning(f"Could not initialize MQTT provider configs: {exc}")
         asyncio.create_task(_autostart_vpn())
         asyncio.create_task(_autostart_mqtt())
+        asyncio.create_task(_loop_lag_monitor())
         # Warm the Xtream cache in the background so the first stream request
         # doesn't block for ~28s while 180K+ VOD/series entries are indexed.
         asyncio.create_task(_warm_xtream_cache())
     
+    import os
+
+    slow_request_ms = int(os.getenv("SLOW_REQUEST_MS", "2000"))
+    loop_lag_ms = int(os.getenv("EVENT_LOOP_LAG_MS", "250"))
+    dump_stacks_on_lag = os.getenv("DUMP_STACKS_ON_LAG", "0").strip() == "1"
+    dump_stacks_min_interval_s = float(os.getenv("DUMP_STACKS_MIN_INTERVAL_S", "30"))
+
+    async def _loop_lag_monitor():
+        if loop_lag_ms <= 0:
+            return
+        interval = 0.5
+        lag_threshold = loop_lag_ms / 1000.0
+        last_dump = 0.0
+        loop = asyncio.get_running_loop()
+        while True:
+            t0 = loop.time()
+            await asyncio.sleep(interval)
+            lag = loop.time() - t0 - interval
+            if lag > lag_threshold:
+                logger.warning(f"Event-loop lag {lag*1000.0:.0f}ms (threshold {loop_lag_ms}ms)")
+                if dump_stacks_on_lag and (loop.time() - last_dump) >= dump_stacks_min_interval_s:
+                    last_dump = loop.time()
+                    try:
+                        import sys
+                        import faulthandler
+                        faulthandler.dump_traceback(file=sys.stderr, all_threads=True)
+                    except Exception as exc:
+                        logger.warning(f"Failed to dump stacks on lag: {exc}")
+
     @app.middleware("http")
     async def log_request_time(request: Request, call_next):
         start = time.perf_counter()
@@ -180,9 +210,13 @@ def create_app():
             response = await call_next(request)
             return response
         finally:
-            duration = time.perf_counter() - start
+            duration_s = time.perf_counter() - start
             if not path.startswith(("/static/", "/favicon.ico")):
-                logger.debug(f"{request.method} {path}  {duration:.3f}s")
+                duration_ms = duration_s * 1000.0
+                if duration_ms >= slow_request_ms:
+                    logger.warning(f"SLOW {request.method} {path}  {duration_s:.3f}s")
+                else:
+                    logger.debug(f"{request.method} {path}  {duration_s:.3f}s")
 
     app.include_router(router)
     app.include_router(hdhomerun_router)

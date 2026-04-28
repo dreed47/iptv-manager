@@ -263,12 +263,18 @@ async def generate_filtered_m3u(background_tasks: BackgroundTasks, item_id: int 
             logger.warning(f"M3U file not found for item {item_id} at {m3u_path}")
             return RedirectResponse(url=f"/providers/{item_id}?error=M3U+file+not+found%2C+fetch+M3U+first", status_code=303)
 
-        _item_snapshot = item
-
         def _do_provider_filter():
+            # Don't pass SQLAlchemy ORM objects across threads; reload inside the worker.
+            from models import SessionLocal, Item as _Item
+            with SessionLocal() as thread_db:
+                it = thread_db.query(_Item).filter(_Item.id == item_id).first()
+                if not it:
+                    return None, 0, 0
+                languages, includes_map, raw_includes, excludes, has_wildcard = build_filter_config(it)
+
             with open(m3u_path, "r", encoding="utf-8") as f:
                 lines = f.read().splitlines()
-            languages, includes_map, raw_includes, excludes, has_wildcard = build_filter_config(_item_snapshot)
+
             logger.debug(
                 f"Filtering item {item_id}: languages={languages} includes={raw_includes} "
                 f"excludes={excludes} wildcard={has_wildcard}"
@@ -638,13 +644,18 @@ async def handle_hdhomerun_form(
             )
 
         try:
-            item = db.query(Item).filter(Item.id == item_id).first()
-            _item_snapshot = item
-
             def _do_hdhr_filter():
+                # Don't pass SQLAlchemy ORM objects across threads; reload inside the worker.
+                from models import SessionLocal, Item as _Item
+                with SessionLocal() as thread_db:
+                    it = thread_db.query(_Item).filter(_Item.id == item_id).first()
+                    if not it:
+                        return None, 0, 0
+                    languages, includes_map, raw_includes, excludes, has_wildcard = build_filter_config(it)
+
                 with open(m3u_path, "r", encoding="utf-8", errors="replace") as f:
                     lines = f.read().splitlines()
-                languages, includes_map, raw_includes, excludes, has_wildcard = build_filter_config(_item_snapshot)
+
                 if not includes_map and not languages and not excludes:
                     return None, 0, 0
                 filtered_content, num_records, input_record_count = apply_m3u_filter(
@@ -1177,6 +1188,13 @@ async def provider_save_filters(
     if not result:
         return RedirectResponse(url=f"/providers/{item_id}?error=Failed+to+save+filters", status_code=303)
 
+    # Ensure IPTV-app (Xtream) responses rebuild after filter changes.
+    try:
+        from xtream_server_routes import invalidate_xtream_cache
+        invalidate_xtream_cache(item_id)
+    except Exception:
+        pass
+
     m3u_path = os.path.join(config.M3U_DIR, f"xtream_playlist_{item_id}.m3u")
     if not os.path.exists(m3u_path):
         return RedirectResponse(
@@ -1185,44 +1203,35 @@ async def provider_save_filters(
         )
 
     try:
-        item = db.query(Item).filter(Item.id == item_id).first()
-        _item_snapshot = item
-
         def _do_save_filters():
-            with open(m3u_path, "r", encoding="utf-8", errors="replace") as f:
-                lines = f.read().splitlines()
-            languages_cfg, includes_map, raw_includes, excludes_cfg, has_wildcard = build_filter_config(_item_snapshot)
-            if not includes_map and not languages_cfg and not excludes_cfg:
-                return None, 0, 0
-            filtered_content, num_records, input_count = apply_m3u_filter(
-                lines, languages_cfg, includes_map, excludes_cfg, has_wildcard
-            )
-            if num_records == 0:
-                return filtered_content, 0, input_count
-            filtered_path = os.path.join(config.M3U_DIR, f"filtered_playlist_{item_id}.m3u")
-            tmp_path = filtered_path + ".tmp"
-            with open(tmp_path, "w", encoding="utf-8") as f:
-                f.write(filtered_content)
-            os.replace(tmp_path, filtered_path)
-            write_count_to_cache(config.M3U_DIR, str(item_id), "filtered_count", num_records, filtered_path)
-            return filtered_content, num_records, input_count
+            # Don't pass SQLAlchemy ORM objects across threads; reload inside the worker.
+            from models import SessionLocal, Item as _Item
+            from m3u_service import refresh_filtered_playlist
+            with SessionLocal() as thread_db:
+                it = thread_db.query(_Item).filter(_Item.id == item_id).first()
+                if not it:
+                    return 0, 0
+                kept, total = refresh_filtered_playlist(it)
+                return kept, total
 
-        filtered_content, num_records, input_count = await asyncio.to_thread(_do_save_filters)
+        kept, total = await asyncio.to_thread(_do_save_filters)
+        configured = bool(result.includes or result.excludes or result.languages or result.xtream_includes)
 
-        if filtered_content is None:
-            # No M3U filter configured — Xtream filters saved, skip filtered playlist regeneration
-            return RedirectResponse(
-                url=f"/providers/{item_id}?success=Filters+saved",
-                status_code=303,
-            )
-        if num_records == 0:
+        if configured and total > 0 and kept == 0:
             return RedirectResponse(
                 url=f"/providers/{item_id}?error=Filters+saved+but+no+channels+matched",
                 status_code=303,
             )
-        background_tasks.add_task(_do_epg_refresh)
-        msg = urllib.parse.quote(f"Filters saved — {num_records} of {input_count} channels matched")
-        return RedirectResponse(url=f"/providers/{item_id}?success={msg}", status_code=303)
+
+        if kept > 0:
+            background_tasks.add_task(_do_epg_refresh)
+            msg = urllib.parse.quote(f"Filters saved — {kept} of {total} channels matched")
+            return RedirectResponse(url=f"/providers/{item_id}?success={msg}", status_code=303)
+
+        return RedirectResponse(
+            url=f"/providers/{item_id}?success=Filters+saved",
+            status_code=303,
+        )
     except Exception as e:
         logger.error(f"Failed to apply filters for item {item_id}: {e}")
         return RedirectResponse(
