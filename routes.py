@@ -615,6 +615,11 @@ async def handle_hdhomerun_form(
                 lines = f.read().splitlines()
 
             languages, includes_map, raw_includes, excludes, has_wildcard = build_filter_config(item)
+            if not includes_map and not languages and not excludes:
+                return RedirectResponse(
+                    url="/hdhomerun?error=Channel list is empty — add channels in the format: 100|ESPN",
+                    status_code=303,
+                )
             filtered_content, num_records, input_record_count = apply_m3u_filter(
                 lines, languages, includes_map, excludes, has_wildcard
             )

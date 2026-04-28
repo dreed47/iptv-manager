@@ -383,6 +383,9 @@ def refresh_filtered_playlist(item) -> tuple[int, int]:
     with open(m3u_path, 'r', encoding='utf-8') as f:
         lines = f.read().splitlines()
     languages, includes_map, _, excludes, has_wildcard = build_filter_config(item)
+    if not includes_map and not languages and not excludes:
+        logger.warning(f"No filter configured for item {item.id} — skipping filtered playlist rewrite")
+        return 0, 0
     filtered_content, kept, total = apply_m3u_filter(lines, languages, includes_map, excludes, has_wildcard)
     if kept == 0:
         logger.warning(f"Filter produced 0 channels for item {item.id} — not overwriting filtered playlist")
