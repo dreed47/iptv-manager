@@ -266,3 +266,14 @@ def get_all_item_contexts(db: Session, base_url: str, m3u_dir: str) -> list[dict
         logger.error("Error listing m3u_files directory: %s", e)
         existing_files = set()
     return [_build_context_for_item(it, base_url, existing_files, m3u_dir) for it in items]
+
+
+def get_generated_epg_count(m3u_dir: str) -> int:
+    """Return channel count from generated_epg.xml, using a sidecar cache keyed by mtime."""
+    epg_path = os.path.join(m3u_dir, "generated_epg.xml")
+    cache_path = os.path.join(m3u_dir, "counts_generated.json")
+    cache = _load_count_cache(cache_path)
+    count, dirty = _cached_count(epg_path, _count_epg_channels, cache, "epg_count", "epg_mtime")
+    if dirty:
+        _save_count_cache(cache_path, cache)
+    return count

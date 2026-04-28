@@ -5,7 +5,7 @@ import asyncio
 import time
 from sqlalchemy.orm import Session
 from models import get_db, Item, AppConfig, get_app_config, set_app_config
-from services import create_item, update_item, get_item_context, get_all_item_contexts, get_item_by_slug, generate_slug
+from services import create_item, update_item, get_item_context, get_all_item_contexts, get_item_by_slug, generate_slug, get_generated_epg_count
 import config
 import logging
 import os
@@ -64,6 +64,8 @@ async def index(request: Request, db: Session = Depends(get_db), error: str = No
         "can_enable_ssdp": not ssdp_disabled_by_env,
         "friendly_name": config.HDHR_FRIENDLY_NAME,
         "active_page": "dashboard",
+        "hdhr_filtered_count": sum(i["filtered_count"] for i in items),
+        "hdhr_epg_count": get_generated_epg_count(config.M3U_DIR),
     })
     logger.debug(f"Template render duration: {time.perf_counter() - start:.3f}s")
     return HTMLResponse(content=rendered)

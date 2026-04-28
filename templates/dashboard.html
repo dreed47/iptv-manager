@@ -21,6 +21,18 @@
       {{ 'Active' if hdhr_running else 'Inactive' }}
     </div>
     <div class="stat-sub">Discovery service</div>
+    {% if hdhr_filtered_count %}
+    <div class="flex gap-12" style="margin-top:8px;">
+      <span class="status-item">
+        <span class="status-dot dot-on"></span>
+        <span class="text-sm">Filtered <span class="text-muted">({{ "{:,}".format(hdhr_filtered_count) }})</span></span>
+      </span>
+      <span class="status-item">
+        <span class="status-dot {{ 'dot-on' if hdhr_epg_count else 'dot-off' }}"></span>
+        <span class="text-sm">EPG{% if hdhr_epg_count %} <span class="text-muted">({{ "{:,}".format(hdhr_epg_count) }})</span>{% endif %}</span>
+      </span>
+    </div>
+    {% endif %}
     {% if items|selectattr('has_filtered')|list %}
     <a href="/channels" target="_blank" class="btn btn-outline btn-sm" style="margin-top:8px;">Channel Guide</a>
     {% endif %}
