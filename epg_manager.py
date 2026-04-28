@@ -199,6 +199,19 @@ def _fetch_epg_source(url: str):
                 pass
 
 
+def _load_epg_from_file(path: str):
+    """Parse a local XMLTV file. Returns (channel_elements, programme_elements) or (None, None)."""
+    try:
+        root = ET.parse(path).getroot()
+        channels = root.findall('channel')
+        programmes = root.findall('programme')
+        logger.debug(f"EPG: loaded {len(channels)} channels, {len(programmes)} programmes from {path}")
+        return channels, programmes
+    except Exception as exc:
+        logger.warning(f"EPG: failed to parse {path}: {exc}")
+        return None, None
+
+
 # ---------------------------------------------------------------------------
 # Name matching
 # ---------------------------------------------------------------------------
@@ -436,6 +449,15 @@ def build_and_cache_epg(item_ids: list[int] | None = None) -> str:
         return '<?xml version="1.0" encoding="UTF-8"?>\n<tv></tv>'
 
     sources_data = []
+
+    # Provider EPG first (already on disk from M3U sync, no HTTP needed)
+    for filename in sorted(os.listdir(config.M3U_DIR)):
+        if filename.startswith("epg_") and filename.endswith(".xml"):
+            path = os.path.join(config.M3U_DIR, filename)
+            chs, progs = _load_epg_from_file(path)
+            sources_data.append((chs, progs))
+
+    # External sources as fallback for channels not covered by provider EPG
     for url in config.EPG_XML_SOURCES:
         chs, progs = _fetch_epg_source(url)
         sources_data.append((chs, progs))
