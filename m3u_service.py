@@ -15,6 +15,7 @@ import requests
 
 import config
 from models import Item, SessionLocal, get_app_config
+from services import write_count_to_cache
 
 logger = logging.getLogger(__name__)
 
@@ -51,12 +52,22 @@ def do_fetch_m3u(item_id: int, db) -> tuple:
         with open(tmp, 'w', encoding='utf-8') as f:
             f.write(content)
         os.replace(tmp, m3u_path)
+        num_records = content.count('#EXTINF')
+        write_count_to_cache(config.M3U_DIR, str(item_id), "m3u_count", num_records, m3u_path)
         peer_epg = os.path.join(config.M3U_DIR, f"epg_{peer.id}.xml")
+        dest_epg = os.path.join(config.M3U_DIR, f"epg_{item_id}.xml")
         if os.path.exists(peer_epg):
             import shutil
-            shutil.copy2(peer_epg, os.path.join(config.M3U_DIR, f"epg_{item_id}.xml"))
+            shutil.copy2(peer_epg, dest_epg)
+            peer_cache_path = os.path.join(config.M3U_DIR, f"counts_{peer.id}.json")
+            try:
+                import json as _json
+                with open(peer_cache_path) as _f:
+                    peer_cache = _json.load(_f)
+                write_count_to_cache(config.M3U_DIR, str(item_id), "epg_count", peer_cache.get("epg_count", 0), dest_epg)
+            except Exception:
+                pass
         total_lines = len(content.splitlines())
-        num_records = content.count('#EXTINF')
         logger.warning(f"M3U fetch [{item.name}]: reused data from '{peer.name}' (age {age/3600:.1f}h, {num_records} records)")
         return True, f"Reused recent data from '{peer.name}' ({age/3600:.1f}h old)", total_lines
 
@@ -153,6 +164,7 @@ def do_fetch_m3u(item_id: int, db) -> tuple:
     with open(tmp_m3u, "w", encoding="utf-8") as f:
         f.write(m3u_content)
     os.replace(tmp_m3u, m3u_path)
+    write_count_to_cache(config.M3U_DIR, str(item_id), "m3u_count", num_records, m3u_path)
 
     total_lines = len(m3u_content.splitlines())
     logger.warning(f"M3U fetch [{item.name}]: saved {num_records} records ({total_lines} lines) via {source}")
@@ -168,12 +180,20 @@ def do_fetch_m3u(item_id: int, db) -> tuple:
         epg_resp.raise_for_status()
         epg_path = os.path.join(config.M3U_DIR, f"epg_{item_id}.xml")
         tmp_epg  = epg_path + ".tmp"
+        _epg_needle = b"<channel "
+        _epg_nlen = len(_epg_needle)
+        _epg_count = 0
+        _epg_buf = b""
         with open(tmp_epg, "wb") as f:
             for chunk in epg_resp.iter_content(chunk_size=65536):
                 if chunk:
                     f.write(chunk)
+                    combined = _epg_buf + chunk
+                    _epg_count += combined.count(_epg_needle)
+                    _epg_buf = combined[-(_epg_nlen - 1):]
         os.replace(tmp_epg, epg_path)
-        logger.debug(f"Saved EPG for item {item_id}")
+        write_count_to_cache(config.M3U_DIR, str(item_id), "epg_count", _epg_count, epg_path)
+        logger.debug(f"Saved EPG for item {item_id} ({_epg_count} channels)")
     except requests.exceptions.RequestException as e:
         logger.warning(f"EPG fetch failed for item {item_id}: {e}")
 
@@ -372,6 +392,7 @@ def refresh_filtered_playlist(item) -> tuple[int, int]:
     with open(tmp_path, 'w', encoding='utf-8') as f:
         f.write(filtered_content)
     os.replace(tmp_path, filtered_path)
+    write_count_to_cache(config.M3U_DIR, str(item.id), "filtered_count", kept, filtered_path)
     logger.info(f"Refreshed filtered playlist for item {item.id}: {kept}/{total} channels")
     return kept, total
 

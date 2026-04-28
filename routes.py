@@ -5,7 +5,7 @@ import asyncio
 import time
 from sqlalchemy.orm import Session
 from models import get_db, Item, AppConfig, get_app_config, set_app_config
-from services import create_item, update_item, get_item_context, get_all_item_contexts, get_item_by_slug, generate_slug, get_generated_epg_count
+from services import create_item, update_item, get_item_context, get_all_item_contexts, get_item_by_slug, generate_slug, get_generated_epg_count, write_count_to_cache
 import config
 import logging
 import os
@@ -276,6 +276,7 @@ async def generate_filtered_m3u(background_tasks: BackgroundTasks, item_id: int 
         with open(tmp_path, "w", encoding="utf-8") as f:
             f.write(filtered_content)
         os.replace(tmp_path, filtered_path)
+        write_count_to_cache(config.M3U_DIR, str(item_id), "filtered_count", num_records, filtered_path)
 
         total_lines = len(filtered_content.splitlines())
         logger.info(
@@ -630,6 +631,7 @@ async def handle_hdhomerun_form(
             with open(tmp_path, "w", encoding="utf-8") as f:
                 f.write(filtered_content)
             os.replace(tmp_path, filtered_path)
+            write_count_to_cache(config.M3U_DIR, str(item_id), "filtered_count", num_records, filtered_path)
 
             background_tasks.add_task(_do_epg_refresh)
             success_msg = urllib.parse.quote(
@@ -1135,6 +1137,7 @@ async def provider_save_filters(
         with open(tmp_path, "w", encoding="utf-8") as f:
             f.write(filtered_content)
         os.replace(tmp_path, filtered_path)
+        write_count_to_cache(config.M3U_DIR, str(item_id), "filtered_count", num_records, filtered_path)
         background_tasks.add_task(_do_epg_refresh)
         msg = urllib.parse.quote(f"Filters saved — {num_records} of {input_count} channels matched")
         return RedirectResponse(url=f"/providers/{item_id}?success={msg}", status_code=303)

@@ -30,6 +30,7 @@ from datetime import datetime, timezone, timedelta
 
 import config
 import requests
+from services import write_count_to_cache
 
 logger = logging.getLogger(__name__)
 
@@ -475,6 +476,7 @@ def build_and_cache_epg(item_ids: list[int] | None = None) -> str:
     with open(tmp_cache, 'w', encoding='utf-8') as f:
         f.write(xml_content)
     os.replace(tmp_cache, EPG_CACHE_PATH)
+    write_count_to_cache(config.M3U_DIR, "generated", "epg_count", xml_content.count("<channel "), EPG_CACHE_PATH)
     logger.info(f"EPG cached at {EPG_CACHE_PATH} ({len(xml_content) // 1024} KB)")
     return xml_content
 

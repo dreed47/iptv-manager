@@ -130,9 +130,18 @@ def _count_extinf(path: str) -> int:
 
 
 def _count_epg_channels(path: str) -> int:
+    """Count <channel  occurrences using chunked reads — avoids loading large EPG files into memory."""
     try:
-        with open(path, "r", encoding="utf-8", errors="ignore") as f:
-            return f.read().count("<channel ")
+        needle = b"<channel "
+        nlen = len(needle)
+        count = 0
+        buf = b""
+        with open(path, "rb") as f:
+            for chunk in iter(lambda: f.read(65536), b""):
+                combined = buf + chunk
+                count += combined.count(needle)
+                buf = combined[-(nlen - 1):]
+        return count
     except Exception:
         return 0
 
@@ -277,3 +286,13 @@ def get_generated_epg_count(m3u_dir: str) -> int:
     if dirty:
         _save_count_cache(cache_path, cache)
     return count
+
+
+def write_count_to_cache(m3u_dir: str, cache_name: str, count_key: str, count: int, file_path: str) -> None:
+    """Persist a pre-computed count to the sidecar cache immediately after a file is written.
+    cache_name is the item id (as string) or 'generated' for the merged EPG."""
+    cache_path = os.path.join(m3u_dir, f"counts_{cache_name}.json")
+    cache = _load_count_cache(cache_path)
+    cache[f"{count_key}_mtime"] = _get_file_mtime(file_path)
+    cache[count_key] = count
+    _save_count_cache(cache_path, cache)
