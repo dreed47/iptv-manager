@@ -138,7 +138,7 @@ def _build_context_for_item(item: Item, base_url: str, existing_files: set, m3u_
         ),
         "has_m3u": f"xtream_playlist_{item.id}.m3u" in existing_files,
         "has_filtered": f"filtered_playlist_{item.id}.m3u" in existing_files,
-        "has_epg": "generated_epg.xml" in existing_files,
+        "has_epg": f"epg_{item.id}.xml" in existing_files,
         "stream_url": f"{base_url}/stream_filtered_m3u/{item.id}",
         "epg_url": f"{base_url}/epg.xml",
         "provider_status": item.provider_status,

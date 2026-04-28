@@ -99,10 +99,11 @@ def _normalize(s: str) -> str:
 # Read our channel list from filtered M3U files
 # ---------------------------------------------------------------------------
 
-def get_channels_from_m3u() -> list[dict]:
+def get_channels_from_m3u(item_ids: list[int] | None = None) -> list[dict]:
     """
-    Parse all filtered_playlist_*.m3u files and return a de-duplicated list
+    Parse filtered_playlist_*.m3u files and return a de-duplicated list
     of channel dicts: {tvg_id, tvg_chno, raw_name, clean_name, norm, logo}
+    If item_ids is provided, only files for those provider IDs are read.
     """
     channels: list[dict] = []
     seen_ids: set[str] = set()
@@ -111,6 +112,13 @@ def get_channels_from_m3u() -> list[dict]:
     for filename in sorted(os.listdir(m3u_dir)):
         if not (filename.startswith("filtered_playlist_") and filename.endswith(".m3u")):
             continue
+        if item_ids is not None:
+            try:
+                fid = int(filename[len("filtered_playlist_"):-len(".m3u")])
+            except ValueError:
+                continue
+            if fid not in item_ids:
+                continue
         filepath = os.path.join(m3u_dir, filename)
         try:
             with open(filepath, 'r', encoding='utf-8') as f:
@@ -420,9 +428,9 @@ def build_epg_xml(our_channels: list[dict], epg_sources: list) -> str:
 # Public API
 # ---------------------------------------------------------------------------
 
-def build_and_cache_epg() -> str:
+def build_and_cache_epg(item_ids: list[int] | None = None) -> str:
     """Fetch sources, build XMLTV, write cache, return XML string."""
-    our_channels = get_channels_from_m3u()
+    our_channels = get_channels_from_m3u(item_ids=item_ids)
     if not our_channels:
         logger.warning("EPG: no channels found in filtered M3U files — returning empty guide")
         return '<?xml version="1.0" encoding="UTF-8"?>\n<tv></tv>'
@@ -443,7 +451,7 @@ def build_and_cache_epg() -> str:
     return xml_content
 
 
-def get_epg(force_refresh: bool = False) -> str:
+def get_epg(force_refresh: bool = False, item_ids: list[int] | None = None) -> str:
     """Return EPG XML, using on-disk cache unless stale or force_refresh=True."""
     if not force_refresh and os.path.exists(EPG_CACHE_PATH):
         age = time.time() - os.path.getmtime(EPG_CACHE_PATH)
@@ -451,4 +459,4 @@ def get_epg(force_refresh: bool = False) -> str:
             logger.debug(f"EPG: serving from cache (age {age / 3600:.1f}h)")
             with open(EPG_CACHE_PATH, 'r', encoding='utf-8') as f:
                 return f.read()
-    return build_and_cache_epg()
+    return build_and_cache_epg(item_ids=item_ids)

@@ -581,17 +581,19 @@ async def stream_channel(channel_number: str, request: Request, db: Session = De
 
 
 @router.get("/epg.xml")
-async def serve_epg():
+async def serve_epg(db: Session = Depends(get_db)):
     """
     Serve a combined XMLTV EPG file built from iptv-org US guide data.
     Pass this URL to Plex DVR as your guide source instead of a zip code:
       http://<your-ip>:5005/epg.xml
     Cached for 12 hours; force-refresh via POST /epg/refresh.
+    Only includes channels from the configured HDHomeRun provider (or all providers if none set).
     """
     import asyncio
     from epg_manager import get_epg, EPG_CACHE_PATH
-    # Ensure the cache file exists and is fresh, then stream directly from disk.
-    await asyncio.get_event_loop().run_in_executor(None, get_epg)
+    hdhr_provider_id = get_app_config(db, "hdhr_provider_id")
+    item_ids = [int(hdhr_provider_id)] if hdhr_provider_id else None
+    await asyncio.get_event_loop().run_in_executor(None, lambda: get_epg(item_ids=item_ids))
     return FileResponse(
         EPG_CACHE_PATH,
         media_type="application/xml",
@@ -600,11 +602,13 @@ async def serve_epg():
 
 
 @router.post("/epg/refresh")
-async def refresh_epg():
+async def refresh_epg(db: Session = Depends(get_db)):
     """Force a rebuild of the EPG cache from source URLs."""
     import asyncio
     from epg_manager import get_epg
-    await asyncio.get_event_loop().run_in_executor(None, lambda: get_epg(force_refresh=True))
+    hdhr_provider_id = get_app_config(db, "hdhr_provider_id")
+    item_ids = [int(hdhr_provider_id)] if hdhr_provider_id else None
+    await asyncio.get_event_loop().run_in_executor(None, lambda: get_epg(force_refresh=True, item_ids=item_ids))
     return RedirectResponse(url="/?success=EPG refreshed successfully", status_code=303)
 
 

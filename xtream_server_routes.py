@@ -968,11 +968,11 @@ async def get_m3u_simple(
 
 
 # ---------------------------------------------------------------------------
-# EPG redirect
+# EPG endpoint
 # ---------------------------------------------------------------------------
 
 @router.get("/{provider_slug}/xmltv.php")
-async def xmltv_redirect(
+async def xmltv_endpoint(
     provider_slug: str,
     username: str = Query(...),
     password: str = Query(...),
@@ -980,7 +980,11 @@ async def xmltv_redirect(
 ):
     if not verify_credentials(username, password, item):
         return _unauthorized()
-    return RedirectResponse(url="/epg.xml", status_code=302)
+    epg_path = os.path.join(config.M3U_DIR, f"epg_{item.id}.xml")
+    if not os.path.exists(epg_path):
+        raise HTTPException(status_code=404, detail="EPG not yet available for this provider. Trigger an M3U refresh first.")
+    return FileResponse(epg_path, media_type="application/xml",
+                        headers={"Cache-Control": "max-age=3600", "Access-Control-Allow-Origin": "*"})
 
 
 # ---------------------------------------------------------------------------
