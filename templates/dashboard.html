@@ -92,9 +92,18 @@
           {% endif %}
         </td>
         <td class="text-mono" style="font-size:11px; color:var(--text-muted);">{{ p.server_url }}</td>
-        <td style="text-align:center;"><span class="status-dot {{ 'dot-on' if p.has_m3u else 'dot-off' }}" style="display:inline-block;"></span></td>
-        <td style="text-align:center;"><span class="status-dot {{ 'dot-on' if p.has_filtered else 'dot-off' }}" style="display:inline-block;"></span></td>
-        <td style="text-align:center;"><span class="status-dot {{ 'dot-on' if p.has_epg else 'dot-off' }}" style="display:inline-block;"></span></td>
+        <td style="text-align:center;">
+          <span class="status-dot {{ 'dot-on' if p.has_m3u else 'dot-off' }}" style="display:inline-block;"></span>
+          {% if p.has_m3u %}<span class="text-sm text-muted" style="margin-left:4px;">{{ "{:,}".format(p.m3u_count) }}</span>{% endif %}
+        </td>
+        <td style="text-align:center;">
+          <span class="status-dot {{ 'dot-on' if p.has_filtered else 'dot-off' }}" style="display:inline-block;"></span>
+          {% if p.has_filtered %}<span class="text-sm text-muted" style="margin-left:4px;">{{ "{:,}".format(p.filtered_count) }}</span>{% endif %}
+        </td>
+        <td style="text-align:center;">
+          <span class="status-dot {{ 'dot-on' if p.has_epg else 'dot-off' }}" style="display:inline-block;"></span>
+          {% if p.has_epg %}<span class="text-sm text-muted" style="margin-left:4px;">{{ "{:,}".format(p.epg_count) }}</span>{% endif %}
+        </td>
         <td>
           {% if p.m3u_last_fetched_ts %}
           <span class="text-sm text-muted" data-ts="{{ p.m3u_last_fetched_ts }}"><span class="last-fetch-time">…</span></span>

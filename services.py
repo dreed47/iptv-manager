@@ -120,6 +120,22 @@ def get_item_by_slug(db: Session, slug: str):
     return db.query(Item).filter(Item.slug == slug).first()
 
 
+def _count_extinf(path: str) -> int:
+    try:
+        with open(path, "r", encoding="utf-8", errors="ignore") as f:
+            return sum(1 for line in f if line.startswith("#EXTINF"))
+    except Exception:
+        return 0
+
+
+def _count_epg_channels(path: str) -> int:
+    try:
+        with open(path, "r", encoding="utf-8", errors="ignore") as f:
+            return sum(1 for line in f if "<channel " in line)
+    except Exception:
+        return 0
+
+
 def _build_context_for_item(item: Item, base_url: str, existing_files: set, m3u_dir: str) -> dict:
     refresh_h = item.m3u_refresh_hours
     ctx = {
@@ -166,6 +182,11 @@ def _build_context_for_item(item: Item, base_url: str, existing_files: set, m3u_
         ctx["m3u_last_fetched_ts"] = int(os.path.getmtime(m3u_path))
     except FileNotFoundError:
         ctx["m3u_last_fetched_ts"] = None
+    ctx["m3u_count"] = _count_extinf(m3u_path) if ctx["has_m3u"] else 0
+    filtered_path = os.path.join(m3u_dir, f"filtered_playlist_{item.id}.m3u")
+    ctx["filtered_count"] = _count_extinf(filtered_path) if ctx["has_filtered"] else 0
+    epg_path = os.path.join(m3u_dir, f"epg_{item.id}.xml")
+    ctx["epg_count"] = _count_epg_channels(epg_path) if ctx["has_epg"] else 0
     return ctx
 
 

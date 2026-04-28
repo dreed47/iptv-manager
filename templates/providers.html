@@ -52,22 +52,25 @@
       <strong>Server:</strong> {{ item.server_url }}
     </span>
     <span class="text-sm" style="color: var(--text-muted);">
-      <strong>Proxy URL:</strong> {{ base_url }}/{{ item.slug }}/
+      <strong>Proxy URL:</strong> <span id="proxy-url-{{ item.id }}">{{ base_url }}/{{ item.slug }}</span>
+      <button type="button" onclick="copyProxyUrl('{{ base_url }}/{{ item.slug }}', 'proxy-copy-{{ item.id }}')" title="Copy to clipboard" style="background:none;border:none;cursor:pointer;padding:0 4px;color:var(--text-muted);vertical-align:middle;">
+        <svg id="proxy-copy-{{ item.id }}" xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+      </button>
     </span>
   </div>
 
   <div class="flex flex-wrap gap-16">
     <span class="status-item">
       <span class="status-dot {{ 'dot-on' if item.has_m3u else 'dot-off' }}"></span>
-      <span class="text-sm">M3U</span>
+      <span class="text-sm">M3U{% if item.has_m3u %} <span class="text-muted">({{ "{:,}".format(item.m3u_count) }})</span>{% endif %}</span>
     </span>
     <span class="status-item">
       <span class="status-dot {{ 'dot-on' if item.has_filtered else 'dot-off' }}"></span>
-      <span class="text-sm">Filtered</span>
+      <span class="text-sm">Filtered{% if item.has_filtered %} <span class="text-muted">({{ "{:,}".format(item.filtered_count) }})</span>{% endif %}</span>
     </span>
     <span class="status-item">
       <span class="status-dot {{ 'dot-on' if item.has_epg else 'dot-off' }}"></span>
-      <span class="text-sm">EPG</span>
+      <span class="text-sm">EPG{% if item.has_epg %} <span class="text-muted">({{ "{:,}".format(item.epg_count) }})</span>{% endif %}</span>
     </span>
     <span class="status-item">
       <span class="status-dot {{ 'dot-on' if item.mqtt_configured else 'dot-off' }}"></span>
@@ -77,4 +80,16 @@
 </div>
 {% endfor %}
 {% endif %}
+
+<script>
+function copyProxyUrl(url, iconId) {
+  navigator.clipboard.writeText(url).then(function() {
+    var icon = document.getElementById(iconId);
+    if (icon) {
+      icon.style.color = 'var(--color-success, #22c55e)';
+      setTimeout(function() { icon.style.color = ''; }, 1500);
+    }
+  });
+}
+</script>
 {% endblock %}
