@@ -280,6 +280,29 @@ async def api_logs(level: str = "", since: float = 0):
     return JSONResponse({"logs": entries})
 
 
+@router.get("/api/jobs", response_class=JSONResponse)
+async def api_jobs():
+    """Expose in-flight background jobs for the UI."""
+    now = time.monotonic()
+    with _FILTER_REFRESH_LOCK:
+        filtered = sorted(_FILTER_REFRESH_INFLIGHT)
+    with _EPG_REFRESH_LOCK:
+        epg_inflight = bool(_EPG_REFRESH_INFLIGHT)
+        epg_last_start = float(_EPG_LAST_START)
+
+    cooldown_remaining = 0.0
+    if _EPG_COOLDOWN_S > 0 and epg_last_start:
+        cooldown_remaining = max(0.0, _EPG_COOLDOWN_S - (now - epg_last_start))
+
+    return JSONResponse({
+        "filtered_refresh": {"inflight": filtered},
+        "epg": {
+            "inflight": epg_inflight,
+            "cooldown_remaining_s": round(cooldown_remaining, 1),
+        },
+    })
+
+
 @router.get("/tools/logs", response_class=HTMLResponse)
 async def logs_page(request: Request):
     start = time.perf_counter()
