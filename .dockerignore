@@ -1,0 +1,8 @@
+m3u_files/
+data/
+__pycache__/
+*.pyc
+*.pyo
+.git/
+.gitignore
+*.md

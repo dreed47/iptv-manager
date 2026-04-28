@@ -14,7 +14,7 @@ from hdhomerun_routes import hdhomerun_emulator, get_active_streams, kill_stream
 import urllib.parse
 import json
 from epg_manager import get_epg
-from m3u_service import do_fetch_m3u, build_filter_config, apply_m3u_filter
+from m3u_service import do_fetch_m3u, build_filter_config, apply_m3u_filter, refresh_filtered_playlist
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -215,9 +215,14 @@ async def set_refresh_interval(item_id: int = Form(...), m3u_refresh_hours: int 
 @router.post("/generate_m3u", response_class=RedirectResponse)
 async def generate_m3u(background_tasks: BackgroundTasks, item_id: int = Form(...)):
     def _fetch():
-        from models import SessionLocal
+        from models import SessionLocal, Item as _Item
         with SessionLocal() as thread_db:
-            return do_fetch_m3u(item_id, thread_db)
+            ok, msg, lines = do_fetch_m3u(item_id, thread_db)
+            if ok:
+                item = thread_db.query(_Item).filter(_Item.id == item_id).first()
+                if item:
+                    refresh_filtered_playlist(item)
+            return ok, msg, lines
     try:
         ok, msg, _ = await asyncio.to_thread(_fetch)
         if not ok:
