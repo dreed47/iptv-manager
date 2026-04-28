@@ -24,6 +24,15 @@ router = APIRouter()
 templates = Jinja2Templates(directory="templates")
 
 
+def _do_refresh_filtered(item_id: int):
+    """Background-safe filtered playlist rebuild for a single provider."""
+    from models import SessionLocal, Item as _Item
+    with SessionLocal() as db:
+        item = db.query(_Item).filter(_Item.id == item_id).first()
+        if item:
+            refresh_filtered_playlist(item)
+
+
 def _do_epg_refresh(force: bool = True):
     """Background-safe EPG rebuild: opens its own DB session to read hdhr_provider_id."""
     from models import SessionLocal
@@ -215,18 +224,14 @@ async def set_refresh_interval(item_id: int = Form(...), m3u_refresh_hours: int 
 @router.post("/generate_m3u", response_class=RedirectResponse)
 async def generate_m3u(background_tasks: BackgroundTasks, item_id: int = Form(...)):
     def _fetch():
-        from models import SessionLocal, Item as _Item
+        from models import SessionLocal
         with SessionLocal() as thread_db:
-            ok, msg, lines = do_fetch_m3u(item_id, thread_db)
-            if ok:
-                item = thread_db.query(_Item).filter(_Item.id == item_id).first()
-                if item:
-                    refresh_filtered_playlist(item)
-            return ok, msg, lines
+            return do_fetch_m3u(item_id, thread_db)
     try:
         ok, msg, _ = await asyncio.to_thread(_fetch)
         if not ok:
             return RedirectResponse(url=f"/providers/{item_id}?error={urllib.parse.quote(msg)}", status_code=303)
+        background_tasks.add_task(_do_refresh_filtered, item_id)
         background_tasks.add_task(_do_epg_refresh)
         return RedirectResponse(url=f"/providers/{item_id}?success={urllib.parse.quote(msg)}", status_code=303)
     except Exception as e:
