@@ -14,7 +14,7 @@ import urllib.parse
 import requests
 
 import config
-from models import Item, SessionLocal
+from models import Item, SessionLocal, get_app_config
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +27,38 @@ def do_fetch_m3u(item_id: int, db) -> tuple:
     item = db.query(Item).filter(Item.id == item_id).first()
     if not item:
         return False, f"Item {item_id} not found", 0
+
+    # If another provider points to the same server URL and has a recent M3U,
+    # reuse that data (substituting this item's credentials in stream URLs) to
+    # avoid re-fetching tens of thousands of records from the same source.
+    refresh_secs = (item.m3u_refresh_hours or 24) * 3600
+    peers = db.query(Item).filter(Item.server_url == item.server_url, Item.id != item_id).all()
+    for peer in peers:
+        peer_m3u = os.path.join(config.M3U_DIR, f"xtream_playlist_{peer.id}.m3u")
+        if not os.path.exists(peer_m3u):
+            continue
+        age = time.time() - os.path.getmtime(peer_m3u)
+        if age >= refresh_secs:
+            continue
+        # Reuse: swap credentials in stream URLs, copy EPG
+        with open(peer_m3u, 'r', encoding='utf-8') as f:
+            content = f.read()
+        old_seg = f'/{peer.username}/{peer.user_pass}/'
+        new_seg = f'/{item.username}/{item.user_pass}/'
+        content = content.replace(old_seg, new_seg)
+        m3u_path = os.path.join(config.M3U_DIR, f"xtream_playlist_{item_id}.m3u")
+        tmp = m3u_path + ".tmp"
+        with open(tmp, 'w', encoding='utf-8') as f:
+            f.write(content)
+        os.replace(tmp, m3u_path)
+        peer_epg = os.path.join(config.M3U_DIR, f"epg_{peer.id}.xml")
+        if os.path.exists(peer_epg):
+            import shutil
+            shutil.copy2(peer_epg, os.path.join(config.M3U_DIR, f"epg_{item_id}.xml"))
+        total_lines = len(content.splitlines())
+        num_records = content.count('#EXTINF')
+        logger.warning(f"M3U fetch [{item.name}]: reused data from '{peer.name}' (age {age/3600:.1f}h, {num_records} records)")
+        return True, f"Reused recent data from '{peer.name}' ({age/3600:.1f}h old)", total_lines
 
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36",
@@ -183,8 +215,11 @@ def start_m3u_scheduler():
                             ok, msg, _ = do_fetch_m3u(item.id, db)
                             logger.info(f"Scheduler: item {item.id} fetch {'ok' if ok else 'failed'}: {msg}")
                             if ok:
+                                refresh_filtered_playlist(item)
                                 from epg_manager import get_epg
-                                get_epg(True)
+                                hdhr_id = get_app_config(db, "hdhr_provider_id")
+                                epg_item_ids = [int(hdhr_id)] if hdhr_id else None
+                                get_epg(force_refresh=True, item_ids=epg_item_ids)
             except Exception as e:
                 logger.error(f"M3U scheduler error: {e}")
 
@@ -317,3 +352,26 @@ def apply_m3u_filter(
         i += 2
 
     return "".join(parts), num_records, input_record_count
+
+
+def refresh_filtered_playlist(item) -> tuple[int, int]:
+    """Re-apply the current filter config to the full M3U and rewrite filtered_playlist.
+    Returns (kept, total). Skips rewrite if the filter produces 0 channels."""
+    m3u_path = os.path.join(config.M3U_DIR, f"xtream_playlist_{item.id}.m3u")
+    if not os.path.exists(m3u_path):
+        return 0, 0
+    with open(m3u_path, 'r', encoding='utf-8') as f:
+        lines = f.read().splitlines()
+    languages, includes_map, _, excludes, has_wildcard = build_filter_config(item)
+    filtered_content, kept, total = apply_m3u_filter(lines, languages, includes_map, excludes, has_wildcard)
+    if kept == 0:
+        logger.warning(f"Filter produced 0 channels for item {item.id} — not overwriting filtered playlist")
+        return 0, total
+    filtered_path = os.path.join(config.M3U_DIR, f"filtered_playlist_{item.id}.m3u")
+    tmp_path = filtered_path + ".tmp"
+    with open(tmp_path, 'w', encoding='utf-8') as f:
+        f.write(filtered_content)
+    os.replace(tmp_path, filtered_path)
+    logger.info(f"Refreshed filtered playlist for item {item.id}: {kept}/{total} channels")
+    return kept, total
+

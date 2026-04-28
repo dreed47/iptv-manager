@@ -13,7 +13,7 @@ import re
 from hdhomerun_routes import hdhomerun_emulator, get_active_streams, kill_stream, KILL_BLOCK_SECONDS
 import urllib.parse
 import json
-from epg_manager import get_epg as _refresh_epg
+from epg_manager import get_epg
 from m3u_service import do_fetch_m3u, build_filter_config, apply_m3u_filter
 
 # Configure logging
@@ -22,6 +22,15 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 templates = Jinja2Templates(directory="templates")
+
+
+def _do_epg_refresh(force: bool = True):
+    """Background-safe EPG rebuild: opens its own DB session to read hdhr_provider_id."""
+    from models import SessionLocal
+    with SessionLocal() as db:
+        hdhr_id = get_app_config(db, "hdhr_provider_id")
+        item_ids = [int(hdhr_id)] if hdhr_id else None
+    get_epg(force_refresh=force, item_ids=item_ids)
 
 def get_base_url(request: Request) -> str:
     return config.ADVERTISED_BASE_URL
@@ -213,7 +222,7 @@ async def generate_m3u(background_tasks: BackgroundTasks, item_id: int = Form(..
         ok, msg, _ = await asyncio.to_thread(_fetch)
         if not ok:
             return RedirectResponse(url=f"/providers/{item_id}?error={urllib.parse.quote(msg)}", status_code=303)
-        background_tasks.add_task(_refresh_epg, True)
+        background_tasks.add_task(_do_epg_refresh)
         return RedirectResponse(url=f"/providers/{item_id}?success={urllib.parse.quote(msg)}", status_code=303)
     except Exception as e:
         logger.error(f"Failed to generate M3U for item {item_id}: {e}")
@@ -263,7 +272,7 @@ async def generate_filtered_m3u(background_tasks: BackgroundTasks, item_id: int 
         success_msg = urllib.parse.quote(
             f"Filtered {num_records} of {input_record_count} records ({total_lines} lines)"
         )
-        background_tasks.add_task(_refresh_epg, True)
+        background_tasks.add_task(_do_epg_refresh)
         logger.debug("EPG rebuild queued in background after filtered M3U save")
         return RedirectResponse(url=f"/providers/{item_id}?success={success_msg}", status_code=303)
 
@@ -610,7 +619,7 @@ async def handle_hdhomerun_form(
                 f.write(filtered_content)
             os.replace(tmp_path, filtered_path)
 
-            background_tasks.add_task(_refresh_epg, True)
+            background_tasks.add_task(_do_epg_refresh)
             success_msg = urllib.parse.quote(
                 f"Filters saved — {num_records} of {input_record_count} channels matched"
             )
@@ -1114,7 +1123,7 @@ async def provider_save_filters(
         with open(tmp_path, "w", encoding="utf-8") as f:
             f.write(filtered_content)
         os.replace(tmp_path, filtered_path)
-        background_tasks.add_task(_refresh_epg, True)
+        background_tasks.add_task(_do_epg_refresh)
         msg = urllib.parse.quote(f"Filters saved — {num_records} of {input_count} channels matched")
         return RedirectResponse(url=f"/providers/{item_id}?success={msg}", status_code=303)
     except Exception as e:
