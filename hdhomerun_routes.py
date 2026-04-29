@@ -48,6 +48,23 @@ _blocked_ips_lock = threading.Lock()
 KILL_BLOCK_SECONDS = 60
 
 
+def _purge_stale_sessions():
+    """Background thread: remove sessions with no recent chunk activity from the dict."""
+    while True:
+        time.sleep(_SESSION_STALE_SECONDS)
+        cutoff = time.time() - _SESSION_STALE_SECONDS
+        with _active_streams_lock:
+            stale = [sid for sid, s in _active_streams.items() if s["last_chunk_at"] < cutoff]
+            for sid in stale:
+                _active_streams.pop(sid, None)
+        if stale:
+            import logging as _logging
+            _logging.getLogger(__name__).debug(f"Purged {len(stale)} stale stream session(s)")
+
+
+threading.Thread(target=_purge_stale_sessions, daemon=True, name="session-purge").start()
+
+
 def _live_streams() -> list[dict]:
     """Return sessions that have had recent activity (not stale)."""
     cutoff = time.time() - _SESSION_STALE_SECONDS
