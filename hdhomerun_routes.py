@@ -94,17 +94,14 @@ def is_ip_blocked(ip: str) -> bool:
 def auto_replace_ip_session(client_ip: str, new_channel: str, item_id: int | None = None) -> int:
     """Kill any non-killed active sessions from client_ip on the same provider (channel switch).
     No IP block is added. Returns the count of non-killed live streams for this provider after replacement."""
+    killed_info = []
     with _active_streams_lock:
-        existing = [
-            (sid, s) for sid, s in _active_streams.items()
-            if s.get("client_ip") == client_ip and not s.get("killed")
-            and (item_id is None or s.get("item_id") == item_id)
-        ]
-    for sid, s in existing:
-        old_ch = s.get("channel_name") or s.get("channel", "?")
-        with _active_streams_lock:
-            if sid in _active_streams:
-                _active_streams[sid]["killed"] = True
+        for sid, s in _active_streams.items():
+            if (s.get("client_ip") == client_ip and not s.get("killed")
+                    and (item_id is None or s.get("item_id") == item_id)):
+                s["killed"] = True
+                killed_info.append((sid, s.get("channel_name") or s.get("channel", "?")))
+    for sid, old_ch in killed_info:
         logger.info(f"Auto-replaced session {sid}: IP {client_ip} switched from '{old_ch}' to '{new_channel}'")
     return sum(
         1 for s in _live_streams()
@@ -374,6 +371,22 @@ async def stream_channel(channel_number: str, request: Request, db: Session = De
     user_agent = request.headers.get("user-agent", "unknown")
     session_id = str(uuid.uuid4())
 
+    with _channel_source_urls_lock:
+        channel_name = _channel_names.get(channel_number, channel_number)
+    with _active_streams_lock:
+        _active_streams[session_id] = {
+            "session_id": session_id,
+            "channel": channel_number,
+            "channel_name": channel_name,
+            "item_id": session_item_id,
+            "client_ip": client_ip,
+            "user_agent": user_agent,
+            "started_at": time.time(),
+            "last_chunk_at": time.time(),
+            "bytes_sent": 0,
+            "killed": False,
+        }
+
     def generate() -> Iterator[bytes]:
         bytes_sent = 0
         attempt = 0
@@ -383,21 +396,6 @@ async def stream_channel(channel_number: str, request: Request, db: Session = De
         prebuf_size = 0
         prebuffering = prebuffer_bytes > 0
         session = requests.Session()
-        with _channel_source_urls_lock:
-            channel_name = _channel_names.get(channel_number, channel_number)
-        with _active_streams_lock:
-            _active_streams[session_id] = {
-                "session_id": session_id,
-                "channel": channel_number,
-                "channel_name": channel_name,
-                "item_id": session_item_id,
-                "client_ip": client_ip,
-                "user_agent": user_agent,
-                "started_at": time.time(),
-                "last_chunk_at": time.time(),
-                "bytes_sent": 0,
-                "killed": False,
-            }
         # Use a mutable container so inner reconnect logic can update the URL.
         current_url = [source_url]
         bytes_at_last_connect = 0  # track how much was sent when the last connection opened
@@ -480,8 +478,10 @@ async def stream_channel(channel_number: str, request: Request, db: Session = De
                                     prebuffering = False
                             else:
                                 bytes_sent += len(chunk)
-                                _active_streams[session_id]["bytes_sent"] = bytes_sent
-                                _active_streams[session_id]["last_chunk_at"] = time.time()
+                                s = _active_streams.get(session_id)
+                                if s:
+                                    s["bytes_sent"] = bytes_sent
+                                    s["last_chunk_at"] = time.time()
                                 yield chunk
 
                     # Upstream closed connection cleanly — flush any partial prebuffer then reconnect

@@ -1098,20 +1098,8 @@ async def xmltv_endpoint(
 # Stream proxy endpoints
 # ---------------------------------------------------------------------------
 
-def _stream_live_direct(source_url: str, channel_name: str, client_ip: str,
-                        user_agent: str, session_id: str, max_sessions: int,
-                        item_id: int | None = None):
-    """Generator that proxies a live stream directly from source_url with retry."""
-    chunk_size = config.STREAM_CHUNK_KB * 1024
-    max_retries = config.STREAM_MAX_RETRIES
-    retry_delay = config.STREAM_RETRY_DELAY
-    read_timeout = config.STREAM_READ_TIMEOUT
-    proxy_headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-        "Accept": "*/*",
-        "Connection": "keep-alive",
-    }
-
+def _register_session(session_id: str, channel_name: str, client_ip: str, user_agent: str, item_id):
+    """Eagerly register a session in _active_streams before the generator starts."""
     with _active_streams_lock:
         _active_streams[session_id] = {
             "session_id": session_id,
@@ -1125,6 +1113,22 @@ def _stream_live_direct(source_url: str, channel_name: str, client_ip: str,
             "bytes_sent": 0,
             "killed": False,
         }
+
+
+def _stream_live_direct(source_url: str, channel_name: str, client_ip: str,
+                        user_agent: str, session_id: str, max_sessions: int,
+                        item_id: int | None = None):
+    """Generator that proxies a live stream directly from source_url with retry.
+    Session must be registered in _active_streams before this generator is iterated."""
+    chunk_size = config.STREAM_CHUNK_KB * 1024
+    max_retries = config.STREAM_MAX_RETRIES
+    retry_delay = config.STREAM_RETRY_DELAY
+    read_timeout = config.STREAM_READ_TIMEOUT
+    proxy_headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Accept": "*/*",
+        "Connection": "keep-alive",
+    }
 
     bytes_sent = 0
     attempt = 0
@@ -1149,8 +1153,10 @@ def _stream_live_direct(source_url: str, channel_name: str, client_ip: str,
                             logger.info(f"Live stream {session_id} ('{channel_name}') killed by admin")
                             return
                         bytes_sent += len(chunk)
-                        _active_streams[session_id]["bytes_sent"] = bytes_sent
-                        _active_streams[session_id]["last_chunk_at"] = time.time()
+                        s = _active_streams.get(session_id)
+                        if s:
+                            s["bytes_sent"] = bytes_sent
+                            s["last_chunk_at"] = time.time()
                         yield chunk
                 break
             except Exception as exc:
@@ -1159,7 +1165,8 @@ def _stream_live_direct(source_url: str, channel_name: str, client_ip: str,
                 resp.close()
     finally:
         logger.info(f"Live stream ended: '{channel_name}', {bytes_sent} bytes sent")
-        _active_streams.pop(session_id, None)
+        with _active_streams_lock:
+            _active_streams.pop(session_id, None)
 
 
 # ---------------------------------------------------------------------------
@@ -1202,11 +1209,12 @@ async def proxy_live_root(
                             detail=f"Session limit reached ({active_count}/{max_sessions} active streams)")
 
     session_id = str(uuid.uuid4())
+    user_agent = request.headers.get("user-agent", "unknown")
+    _register_session(session_id, entry.name, client_ip, user_agent, item.id)
     logger.info(f"proxy_live_root [{item.name}]: '{entry.name}' → {entry.url}")
     return StreamingResponse(
         _stream_live_direct(entry.url, entry.name, client_ip,
-                            request.headers.get("user-agent", "unknown"),
-                            session_id, max_sessions, item_id=item.id),
+                            user_agent, session_id, max_sessions, item_id=item.id),
         media_type="video/mp2t",
         headers={"Cache-Control": "no-cache"},
     )
@@ -1381,11 +1389,12 @@ async def proxy_live(
                             detail=f"Session limit reached ({active_count}/{max_sessions} active streams)")
 
     session_id = str(uuid.uuid4())
+    user_agent = request.headers.get("user-agent", "unknown")
+    _register_session(session_id, entry.name, client_ip, user_agent, item.id)
     logger.info(f"proxy_live [{item.name}]: '{entry.name}' → direct stream from {entry.url}")
     return StreamingResponse(
         _stream_live_direct(entry.url, entry.name, client_ip,
-                            request.headers.get("user-agent", "unknown"),
-                            session_id, max_sessions, item_id=item.id),
+                            user_agent, session_id, max_sessions, item_id=item.id),
         media_type="video/mp2t",
         headers={"Cache-Control": "no-cache"},
     )
@@ -1442,20 +1451,9 @@ def _proxy_finite_stream(source_url: str, request: Request, media_type: str, str
     client_ip = request.client.host if request.client else "unknown"
     user_agent = request.headers.get("user-agent", "unknown")
     session_id = str(uuid.uuid4())
+    _register_session(session_id, stream_label, client_ip, user_agent, item_id)
 
     def generate():
-        with _active_streams_lock:
-            _active_streams[session_id] = {
-                "session_id": session_id,
-                "channel": stream_label,
-                "item_id": item_id,
-                "client_ip": client_ip,
-                "user_agent": user_agent,
-                "started_at": time.time(),
-                "last_chunk_at": time.time(),
-                "bytes_sent": 0,
-                "killed": False,
-            }
         bytes_sent = 0
         try:
             for chunk in resp.iter_content(chunk_size=chunk_size):
@@ -1464,8 +1462,10 @@ def _proxy_finite_stream(source_url: str, request: Request, media_type: str, str
                         logger.info(f"Stream {session_id} ({stream_label}) terminated by admin")
                         return
                     bytes_sent += len(chunk)
-                    _active_streams[session_id]["bytes_sent"] = bytes_sent
-                    _active_streams[session_id]["last_chunk_at"] = time.time()
+                    s = _active_streams.get(session_id)
+                    if s:
+                        s["bytes_sent"] = bytes_sent
+                        s["last_chunk_at"] = time.time()
                     yield chunk
         except Exception as exc:
             logger.error(f"Stream error mid-transfer for {source_url}: {exc}")
