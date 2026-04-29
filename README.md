@@ -42,7 +42,7 @@ docker compose up -d
 
 Open the web UI at `http://localhost:5005` (or `http://<your-ip>:5005`).
 
-See [DEPLOYMENT.md](DEPLOYMENT.md) for full setup, media server integration, EPG options, OpenVPN, and configuration details.
+See [DEPLOYMENT.md](docs/DEPLOYMENT.md) for full setup, media server integration, EPG options, OpenVPN, and configuration details.
 
 ## How It Works
 
