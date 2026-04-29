@@ -1169,17 +1169,24 @@ async def provider_create(
     db: Session = Depends(get_db),
 ):
     slug = slug.strip() or None
-    if slug:
-        existing = db.query(Item).filter(Item.slug == slug).first()
-        if existing:
-            return RedirectResponse(url=f"/providers/new?error=Slug+'{slug}'+already+in+use", status_code=303)
+    proxy_username = proxy_username.strip() or "iptv"
+    proxy_password = proxy_password.strip() or "iptv"
+    conflict = db.query(Item).filter(
+        Item.proxy_username == proxy_username,
+        Item.proxy_password == proxy_password,
+    ).first()
+    if conflict:
+        return RedirectResponse(
+            url=f"/providers/new?error=Proxy+credentials+'{proxy_username}'/'{proxy_password}'+already+used+by+'{conflict.name}'",
+            status_code=303,
+        )
     result = create_item(
         db, name, server_url, username, user_pass,
         languages=None, includes=None, excludes=None,
         m3u_refresh_hours=m3u_refresh_hours, max_sessions=max_sessions,
         slug=slug,
-        proxy_username=proxy_username or "iptv",
-        proxy_password=proxy_password or "iptv",
+        proxy_username=proxy_username,
+        proxy_password=proxy_password,
     )
     if not result:
         return RedirectResponse(url="/providers/new?error=Failed+to+create+provider", status_code=303)
@@ -1237,16 +1244,24 @@ async def provider_save(
     db: Session = Depends(get_db),
 ):
     slug = slug.strip() or None
-    if slug:
-        conflict = db.query(Item).filter(Item.slug == slug, Item.id != item_id).first()
-        if conflict:
-            return RedirectResponse(url=f"/providers/{item_id}?error=Slug+'{slug}'+already+in+use+by+another+provider", status_code=303)
+    proxy_username = proxy_username.strip() or "iptv"
+    proxy_password = proxy_password.strip() or "iptv"
+    conflict = db.query(Item).filter(
+        Item.proxy_username == proxy_username,
+        Item.proxy_password == proxy_password,
+        Item.id != item_id,
+    ).first()
+    if conflict:
+        return RedirectResponse(
+            url=f"/providers/{item_id}?error=Proxy+credentials+'{proxy_username}'/'{proxy_password}'+already+used+by+'{conflict.name}'",
+            status_code=303,
+        )
     result = update_item(
         db, item_id,
         name=name, slug=slug, server_url=server_url,
         username=username, user_pass=user_pass,
-        proxy_username=proxy_username or "iptv",
-        proxy_password=proxy_password or "iptv",
+        proxy_username=proxy_username,
+        proxy_password=proxy_password,
         m3u_refresh_hours=m3u_refresh_hours,
         max_sessions=max_sessions,
     )

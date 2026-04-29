@@ -34,22 +34,11 @@
   <div class="card-title">Provider Credentials</div>
   <form method="POST" action="{% if is_new %}/providers/new{% else %}/providers/{{ item.id }}{% endif %}">
 
-    <div class="grid-2">
-      <div class="form-group">
-        <label class="form-label">Provider Name</label>
-        <input type="text" name="name" value="{{ item.name if item else '' }}"
-          placeholder="My IPTV Service" class="form-input" required />
-      </div>
-      <div class="form-group">
-        <label class="form-label">
-          URL Slug
-          <span class="text-muted" style="font-weight:400; letter-spacing:0; text-transform:none;"> — used in proxy URLs</span>
-        </label>
-        <input type="text" name="slug" value="{{ item.slug if item else '' }}"
-          placeholder="my-provider" class="form-input"
-          pattern="[a-z0-9\-]+" title="Lowercase letters, numbers and hyphens only" />
-        <p class="form-help">e.g. <code>my-provider</code> → clients use <code>/my-provider/player_api.php</code></p>
-      </div>
+    <input type="hidden" name="slug" value="{{ item.slug if item else '' }}" />
+    <div class="form-group">
+      <label class="form-label">Provider Name</label>
+      <input type="text" name="name" value="{{ item.name if item else '' }}"
+        placeholder="My IPTV Service" class="form-input" required />
     </div>
 
     <div class="form-group">
@@ -117,6 +106,24 @@
     </div>
     {% endif %}
 
+    {% if item and not is_new %}
+    <input type="hidden" name="proxy_username" value="{{ item.proxy_username }}" />
+    <input type="hidden" name="proxy_password" value="{{ item.proxy_password }}" />
+    {% else %}
+    <!-- Proxy credentials for new provider -->
+    <div class="grid-2" style="max-width: 420px;">
+      <div class="form-group">
+        <label class="form-label">Proxy Username</label>
+        <input type="text" name="proxy_username" value="iptv" class="form-input" required />
+      </div>
+      <div class="form-group">
+        <label class="form-label">Proxy Password</label>
+        <input type="text" name="proxy_password" value="iptv" class="form-input" required />
+      </div>
+    </div>
+    <p class="form-help" style="margin-top: -8px; margin-bottom: 12px;">Credentials IPTV apps use to connect to this proxy. Must be unique per provider.</p>
+    {% endif %}
+
     <div class="flex flex-center flex-wrap gap-12">
       <button type="submit" class="btn btn-primary">
         💾 {% if is_new %}Add Provider{% else %}Save Changes{% endif %}
@@ -145,8 +152,7 @@
 <div class="card">
   <div class="card-title">Proxy Credentials</div>
   <p class="text-muted text-sm mb-12">
-    Credentials IPTV apps use to connect to <em>this</em> proxy at
-    <code>{{ base_url }}/{{ item.slug }}/player_api.php</code>
+    Credentials IPTV apps use to connect to this proxy. Must be unique per provider.
   </p>
   <form method="POST" action="/providers/{{ item.id }}">
     <input type="hidden" name="name" value="{{ item.name }}" />
@@ -172,10 +178,13 @@
   <hr class="divider" />
 
   <div class="card-title" style="font-size: 13px; margin-bottom: 8px;">Connection Info</div>
+  <p class="text-sm text-muted mb-8">Configure your IPTV app with these settings. Use server URL without a path — credentials route to the correct provider automatically.</p>
   <table class="table">
-    <tr><th>Proxy URL</th><td><code>{{ base_url }}/{{ item.slug }}</code></td></tr>
-    <tr><th>player_api.php</th><td><code>{{ base_url }}/{{ item.slug }}/player_api.php</code></td></tr>
-    <tr><th>M3U Playlist</th><td><code>{{ base_url }}/{{ item.slug }}/get.php?username={{ item.proxy_username }}&amp;password={{ item.proxy_password }}&amp;type=m3u_plus</code></td></tr>
+    <tr><th>Server URL</th><td><code>{{ base_url }}</code></td></tr>
+    <tr><th>Username</th><td><code>{{ item.proxy_username }}</code></td></tr>
+    <tr><th>Password</th><td><code>{{ item.proxy_password }}</code></td></tr>
+    <tr><th>M3U URL</th><td><code>{{ base_url }}/get.php?username={{ item.proxy_username }}&amp;password={{ item.proxy_password }}&amp;type=m3u_plus</code></td></tr>
+    <tr><th>EPG / XMLTV</th><td><code>{{ base_url }}/xmltv.php?username={{ item.proxy_username }}&amp;password={{ item.proxy_password }}</code></td></tr>
   </table>
 </div>
 

@@ -144,26 +144,26 @@ In addition to HDHomeRun emulation for Plex/Jellyfin/Emby, the app acts as a ful
 
 ### Connecting an IPTV App
 
-Each provider has its own URL slug (e.g. `my-provider`) and proxy credentials, both configured on the provider's edit page. In your IPTV app's "Add Playlist / Add Source" screen, choose **Xtream Codes** and enter:
+Each provider has its own proxy credentials configured on the provider's edit page. In your IPTV app's "Add Playlist / Add Source" screen, choose **Xtream Codes** and enter:
 
 | Field | Value |
 |---|---|
-| Server | `http://<HDHR_ADVERTISE_HOST>:<APP_PORT>/<provider-slug>` |
-| Username | **Proxy Username** from the provider's edit page (default: `iptv`) |
-| Password | **Proxy Password** from the provider's edit page (default: `iptv`) |
+| Server | `http://<HDHR_ADVERTISE_HOST>:<APP_PORT>` |
+| Username | **Proxy Username** from the provider's edit page |
+| Password | **Proxy Password** from the provider's edit page |
 
-> **Note:** The proxy credentials are what your IPTV app uses to connect **to this app** — they are not your upstream provider credentials. Each provider can have different proxy credentials to keep apps from accessing each other's content.
+> **Note:** The proxy credentials are what your IPTV app uses to connect **to this app** — they are not your upstream provider credentials. Each provider must have unique proxy credentials so the app can route requests to the correct backend.
 
 Alternatively, some apps accept an M3U URL directly:
 
 ```text
-http://<host>:<port>/<provider-slug>/get.php?username=<proxy_user>&password=<proxy_pass>&type=m3u_plus
+http://<host>:<port>/get.php?username=<proxy_user>&password=<proxy_pass>&type=m3u_plus
 ```
 
 or a simple playlist URL:
 
 ```text
-http://<host>:<port>/<provider-slug>/iptv/playlist.m3u
+http://<host>:<port>/iptv/playlist.m3u
 ```
 
 ### What the IPTV App Sees

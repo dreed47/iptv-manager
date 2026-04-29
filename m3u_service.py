@@ -72,6 +72,17 @@ def do_fetch_m3u(item_id: int, db) -> tuple:
         os.replace(tmp, m3u_path)
         num_records = content.count('#EXTINF')
         write_count_to_cache(config.M3U_DIR, str(item_id), "m3u_count", num_records, m3u_path)
+        # Reuse peer's raw M3U (episode-level) for M3U-mode clients
+        peer_raw = os.path.join(config.M3U_DIR, f"raw_playlist_{peer.id}.m3u")
+        raw_path = os.path.join(config.M3U_DIR, f"raw_playlist_{item_id}.m3u")
+        if os.path.exists(peer_raw):
+            with open(peer_raw, 'r', encoding='utf-8') as rf:
+                raw_content = rf.read()
+            raw_content = raw_content.replace(old_seg, new_seg)
+            raw_tmp = raw_path + ".tmp"
+            with open(raw_tmp, 'w', encoding='utf-8') as rf:
+                rf.write(raw_content)
+            os.replace(raw_tmp, raw_path)
         peer_epg = os.path.join(config.M3U_DIR, f"epg_{peer.id}.xml")
         dest_epg = os.path.join(config.M3U_DIR, f"epg_{item_id}.xml")
         if os.path.exists(peer_epg):
@@ -136,12 +147,11 @@ def do_fetch_m3u(item_id: int, db) -> tuple:
                 f'group-title="{stream.get("category_name","Live")}", {name}\n{url}\n'
             )
         for stream in vod_streams:
-            upstream_sid  = stream.get('stream_id')
-            local_sid = _vod_id(item.id, upstream_sid)
+            sid  = stream.get('stream_id')
             name = stream.get('name', 'Unknown')
-            url  = f"{base}/movie/{item.username}/{item.user_pass}/{local_sid}.mp4"
+            url  = f"{base}/movie/{item.username}/{item.user_pass}/{sid}.mp4"
             m3u_content += (
-                f'#EXTINF:-1 tvg-id="{upstream_sid}" tvg-name="{name}" '
+                f'#EXTINF:-1 tvg-id="{sid}" tvg-name="{name}" '
                 f'tvg-logo="{stream.get("stream_icon","")}" '
                 f'group-title="{stream.get("category_name","VOD")}", {name}\n{url}\n'
             )
@@ -187,6 +197,29 @@ def do_fetch_m3u(item_id: int, db) -> tuple:
 
     total_lines = len(m3u_content.splitlines())
     logger.warning(f"M3U fetch [{item.name}]: saved {num_records} records ({total_lines} lines) via {source}")
+
+    # Fetch and cache the raw get.php M3U (has individual episode entries for M3U-mode apps)
+    raw_m3u_url = (
+        f"{item.server_url.rstrip('/')}/get.php"
+        f"?username={urllib.parse.quote(item.username)}"
+        f"&password={urllib.parse.quote(item.user_pass)}"
+        f"&type=m3u_plus&output=ts"
+    )
+    raw_path = os.path.join(config.M3U_DIR, f"raw_playlist_{item_id}.m3u")
+    try:
+        raw_resp = requests.get(raw_m3u_url, headers=headers, timeout=120)
+        if raw_resp.status_code not in range(200, 300):
+            raise ValueError(f"Upstream returned status {raw_resp.status_code}")
+        raw_text = raw_resp.text
+        if not raw_text.strip().startswith("#EXTM3U"):
+            raise ValueError(f"Invalid M3U content (status {raw_resp.status_code})")
+        raw_tmp = raw_path + ".tmp"
+        with open(raw_tmp, "w", encoding="utf-8") as rf:
+            rf.write(raw_text)
+        os.replace(raw_tmp, raw_path)
+        logger.info(f"Raw M3U saved for item {item_id} ({len(raw_text)} bytes)")
+    except Exception as exc:
+        logger.warning(f"Raw M3U unavailable for item {item_id}: {exc}")
 
     # Fetch provider EPG
     epg_url = (
@@ -358,6 +391,11 @@ def apply_m3u_filter(
         else:
             channel_name = extinf.split(",", 1)[1] if "," in extinf else ""
         tvg_name = attributes.get('tvg-name', '')
+
+        group_title = attributes.get("group-title", "").strip().lower()
+        if group_title in ("vod", "series"):
+            i += 2
+            continue
 
         # 1. Language filter
         if languages:
