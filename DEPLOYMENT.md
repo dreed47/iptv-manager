@@ -144,26 +144,26 @@ In addition to HDHomeRun emulation for Plex/Jellyfin/Emby, the app acts as a ful
 
 ### Connecting an IPTV App
 
-In your IPTV app's "Add Playlist / Add Source" screen, choose **Xtream Codes** and enter:
+Each provider has its own URL slug (e.g. `my-provider`) and proxy credentials, both configured on the provider's edit page. In your IPTV app's "Add Playlist / Add Source" screen, choose **Xtream Codes** and enter:
 
 | Field | Value |
 |---|---|
-| Server | `http://<HDHR_ADVERTISE_HOST>:<APP_PORT>` |
-| Username | value of `IPTV_USERNAME` in `.env` (default: `iptv`) |
-| Password | value of `IPTV_PASSWORD` in `.env` (default: `iptv`) |
+| Server | `http://<HDHR_ADVERTISE_HOST>:<APP_PORT>/<provider-slug>` |
+| Username | **Proxy Username** from the provider's edit page (default: `iptv`) |
+| Password | **Proxy Password** from the provider's edit page (default: `iptv`) |
 
-> **Note:** `IPTV_USERNAME` and `IPTV_PASSWORD` are the credentials your IPTV app uses to connect **to this app** — they are not your upstream provider credentials. The upstream credentials are stored per-config in the web UI.
+> **Note:** The proxy credentials are what your IPTV app uses to connect **to this app** — they are not your upstream provider credentials. Each provider can have different proxy credentials to keep apps from accessing each other's content.
 
 Alternatively, some apps accept an M3U URL directly:
 
 ```text
-http://<host>:<port>/get.php?username=iptv&password=iptv&type=m3u_plus
+http://<host>:<port>/<provider-slug>/get.php?username=<proxy_user>&password=<proxy_pass>&type=m3u_plus
 ```
 
-or a simple playlist URL (no auth required if credentials are default):
+or a simple playlist URL:
 
 ```text
-http://<host>:<port>/iptv/playlist.m3u
+http://<host>:<port>/<provider-slug>/iptv/playlist.m3u
 ```
 
 ### What the IPTV App Sees
@@ -194,7 +194,7 @@ Set it to `0` (or leave blank) to disable automatic refreshes and fetch manually
 
 ## Session Management
 
-Each IPTV config has an **Active Sessions Allowed** setting (Settings → IPTV Provider, default: 1). This caps the number of concurrent streams at the proxy layer and applies across all client types (HDHomeRun, Xtream live, VOD, and series).
+Each IPTV config has an **Active Sessions Allowed** setting (Providers → edit a provider, default: 1). This caps the number of concurrent streams at the proxy layer and applies across all client types (HDHomeRun, Xtream live, VOD, and series).
 
 ### Session Limit Enforcement
 
@@ -360,7 +360,7 @@ echo 'c /dev/net/tun 0666 root root - 10:200' > /etc/tmpfiles.d/tun.conf
 
 ### OpenVPN Setup
 
-1. Navigate to **IPTV Provider** (Settings) in the web UI.
+1. Navigate to **Tools → OpenVPN** in the web UI.
 2. Expand the **OpenVPN** section.
 3. Paste the full contents of an `.ovpn` config file from your VPN provider into the text area.
 4. Enter your VPN **service credentials** (username and password).
@@ -374,9 +374,9 @@ echo 'c /dev/net/tun 0666 root root - 10:200' > /etc/tmpfiles.d/tun.conf
 
 | Action | Where |
 |---|---|
-| Enable / Disable VPN | Settings → OpenVPN section, or Dashboard → Quick Actions |
+| Enable / Disable VPN | Tools → OpenVPN section, or Dashboard → Quick Actions |
 | Check connection status | Dashboard → OpenVPN stat card (live, updates every 10 s) |
-| Test your exit IP | Settings → OpenVPN → **Test Connection** (shows the public IP the provider sees) |
+| Test your exit IP | Tools → OpenVPN → **Test Connection** (shows the public IP the provider sees) |
 | VPN per-stream indicator | Dashboard → Active Streams (each row shows 🔒 VPN or Direct) |
 
 ### Auto-Start on Container Restart

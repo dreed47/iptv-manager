@@ -19,7 +19,7 @@ A web-based tool for managing, filtering, and serving IPTV playlists and EPG dat
 - **EPG / Guide Data** — Fetches and name-matches guide data automatically; generates a standards-compliant XMLTV file with channel numbers. Unmatched channels receive placeholder "No Guide Data" entries so they remain streamable. EPG rebuilds automatically after each filter save.
 - **Channel Number Preservation** — `tvg-chno` values from your provider are passed through to the HDHomeRun lineup and EPG so Plex shows the correct channel numbers.
 - **HDHomeRun Emulation** — Appears as an HDHomeRun tuner on your network; Plex, Jellyfin, and Emby discover it automatically or via manual IP entry.
-- **Generic IPTV App Proxy (Xtream Codes)** — Acts as a full Xtream Codes API server so TiviMate, IPTV Smarters, VLC, and other IPTV apps can connect directly. Serves live channels, VOD, and series through a single proxy. Set `IPTV_USERNAME` / `IPTV_PASSWORD` in `.env` and point your app at `http://<host>:<port>`.
+- **Generic IPTV App Proxy (Xtream Codes)** — Acts as a full Xtream Codes API server so TiviMate, IPTV Smarters, VLC, and other IPTV apps can connect directly. Serves live channels, VOD, and series through a single proxy. Each provider gets a unique URL slug; point your app at `http://<host>:<port>/<provider-slug>` with the per-provider credentials set in the web UI. See [DEPLOYMENT.md](DEPLOYMENT.md) for details.
 - **OpenVPN Support** — Route all outbound container traffic (to your IPTV provider) through an OpenVPN tunnel. Paste any `.ovpn` config file into the UI, save credentials, and enable with one click. The dashboard and Active Streams panel both show live VPN connection status. See [DEPLOYMENT.md](DEPLOYMENT.md#openvpn) for full setup.
 - **Session Management** — Set a maximum number of concurrent streams per config (1–unlimited). New connections over the limit receive HTTP 429. The dashboard shows live `active/max` counts. Each active stream row has a **Kill** button; killed clients are blocked from reconnecting for 60 seconds to prevent immediate re-entry.
 - **MQTT Integration** — Publishes real-time stream and VPN state to any MQTT broker every 10 seconds on change (heartbeat every 60 s). Supports Home Assistant MQTT auto-discovery — click **Publish HA Discovery** once and HA creates sensor and binary_sensor entities automatically. Configure in **Tools → MQTT Integration**. See [DEPLOYMENT.md](DEPLOYMENT.md#mqtt-integration) for topic reference and HA card examples.
@@ -53,7 +53,7 @@ See [DEPLOYMENT.md](DEPLOYMENT.md) for full setup, media server integration, EPG
 5. **View filtered lineup** — Click **Filtered Channel Viewer** to confirm the result.
 6. **Connect your media server** — Point Plex/Jellyfin/Emby DVR at `http://<your-ip>:5005`; it discovers the device as an HDHomeRun tuner.
 7. **Add the EPG** — In your media server's DVR settings, enter the EPG URL `http://<your-ip>:5005/epg.xml` so the guide populates automatically. See [EPG Options](#epg--guide-data) below for alternatives.
-8. **Connect IPTV apps (optional)** — In TiviMate, IPTV Smarters, or any Xtream Codes–compatible app, enter `http://<your-ip>:5005` as the server with the `IPTV_USERNAME` / `IPTV_PASSWORD` from your `.env`. See [DEPLOYMENT.md](DEPLOYMENT.md) for details.
+8. **Connect IPTV apps (optional)** — In TiviMate, IPTV Smarters, or any Xtream Codes–compatible app, enter `http://<your-ip>:5005/<provider-slug>` as the server with the per-provider credentials from the provider's edit page. See [DEPLOYMENT.md](DEPLOYMENT.md) for details.
 
 ## Filtering Logic
 
@@ -110,7 +110,8 @@ Channel numbers flow through the entire stack so what you see in your IPTV app m
 | `epg_manager.py` | EPG fetching, name-matching, and XMLTV generation |
 | `config.py` | Centralised environment variable parsing and validation |
 | `templates/dashboard.html` | Dashboard with stat cards, active streams, quick actions |
-| `templates/settings.html` | IPTV provider settings and OpenVPN configuration |
+| `templates/providers.html` | Provider list page |
+| `templates/provider_edit.html` | Provider add/edit form (credentials, filters, Xtream proxy settings, session limit) |
 | `templates/base.html` | Shared layout, sidebar nav, dark mode toggle |
 | `templates/channels.html` | Filtered channel browser (click to play in browser) |
 | `templates/m3u_browser.html` | Full raw M3U browser UI |
