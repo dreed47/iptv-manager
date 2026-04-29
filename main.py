@@ -4,7 +4,7 @@ import collections
 import threading
 
 _LOG_BUFFER_LOCK = threading.Lock()
-_LOG_BUFFER: collections.deque = collections.deque(maxlen=2000)
+_LOG_BUFFER: collections.deque = collections.deque(maxlen=500)
 
 class _BufferHandler(logging.Handler):
     def emit(self, record: logging.LogRecord) -> None:
@@ -73,16 +73,31 @@ def create_app():
         allow_headers=["*"],
     )
     
-    # Initialize database in a background task to avoid blocking startup
+    # Optional Xtream cache pre-warm. This can be very CPU/disk heavy (indexes VOD/series
+    # into SQLite/JSON). Default: disabled to keep the UI responsive on small boxes.
     async def _warm_xtream_cache():
+        import os
+        if os.getenv("XTREAM_PREWARM", "0").strip() != "1":
+            logger.info("Xtream cache pre-warm disabled (set XTREAM_PREWARM=1 to enable)")
+            return
         try:
             import time
+            from models import Item as _Item
+
+            delay_s = float(os.getenv("XTREAM_PREWARM_DELAY_S", "15"))
+            if delay_s > 0:
+                logger.info(f"Xtream cache pre-warm: delaying start by {delay_s:.0f}s")
+                await asyncio.sleep(delay_s)
+
             logger.info("Xtream cache pre-warm starting...")
             _start = time.monotonic()
             with SessionLocal() as db:
-                await get_xtream_cache(db)
+                items = db.query(_Item).all()
+                for item in items:
+                    logger.info(f"Xtream cache pre-warm: provider '{item.name}' (id={item.id})")
+                    await get_xtream_cache(db, item)
             elapsed = time.monotonic() - _start
-            logger.info(f"Xtream cache pre-warm complete in {elapsed:.2f}s")
+            logger.info(f"Xtream cache pre-warm complete ({len(items)} provider(s)) in {elapsed:.2f}s")
         except Exception as exc:
             logger.warning(f"Xtream cache pre-warm failed: {exc}")
 
@@ -149,12 +164,53 @@ def create_app():
         logger.info("Database initialized")
         start_m3u_scheduler()
         logger.info("M3U scheduler started")
+        try:
+            from models import Item
+            import mqtt_manager
+            with SessionLocal() as db:
+                all_items = db.query(Item).all()
+                configs = [
+                    {"item_id": it.id, "prefix": it.mqtt_topic_prefix, "device_name": it.mqtt_device_name or ""}
+                    for it in all_items
+                    if it.mqtt_topic_prefix and it.mqtt_topic_prefix.strip()
+                ]
+                mqtt_manager.set_provider_configs(configs)
+        except Exception as exc:
+            logger.warning(f"Could not initialize MQTT provider configs: {exc}")
         asyncio.create_task(_autostart_vpn())
         asyncio.create_task(_autostart_mqtt())
-        # Warm the Xtream cache in the background so the first stream request
-        # doesn't block for ~28s while 180K+ VOD/series entries are indexed.
+        asyncio.create_task(_loop_lag_monitor())
         asyncio.create_task(_warm_xtream_cache())
     
+    import os
+
+    slow_request_ms = int(os.getenv("SLOW_REQUEST_MS", "2000"))
+    loop_lag_ms = int(os.getenv("EVENT_LOOP_LAG_MS", "250"))
+    dump_stacks_on_lag = os.getenv("DUMP_STACKS_ON_LAG", "0").strip() == "1"
+    dump_stacks_min_interval_s = float(os.getenv("DUMP_STACKS_MIN_INTERVAL_S", "30"))
+
+    async def _loop_lag_monitor():
+        if loop_lag_ms <= 0:
+            return
+        interval = 0.5
+        lag_threshold = loop_lag_ms / 1000.0
+        last_dump = 0.0
+        loop = asyncio.get_running_loop()
+        while True:
+            t0 = loop.time()
+            await asyncio.sleep(interval)
+            lag = loop.time() - t0 - interval
+            if lag > lag_threshold:
+                logger.warning(f"Event-loop lag {lag*1000.0:.0f}ms (threshold {loop_lag_ms}ms)")
+                if dump_stacks_on_lag and (loop.time() - last_dump) >= dump_stacks_min_interval_s:
+                    last_dump = loop.time()
+                    try:
+                        import sys
+                        import faulthandler
+                        faulthandler.dump_traceback(file=sys.stderr, all_threads=True)
+                    except Exception as exc:
+                        logger.warning(f"Failed to dump stacks on lag: {exc}")
+
     @app.middleware("http")
     async def log_request_time(request: Request, call_next):
         start = time.perf_counter()
@@ -163,9 +219,13 @@ def create_app():
             response = await call_next(request)
             return response
         finally:
-            duration = time.perf_counter() - start
+            duration_s = time.perf_counter() - start
             if not path.startswith(("/static/", "/favicon.ico")):
-                logger.debug(f"{request.method} {path}  {duration:.3f}s")
+                duration_ms = duration_s * 1000.0
+                if duration_ms >= slow_request_ms:
+                    logger.warning(f"SLOW {request.method} {path}  {duration_s:.3f}s")
+                else:
+                    logger.debug(f"{request.method} {path}  {duration_s:.3f}s")
 
     app.include_router(router)
     app.include_router(hdhomerun_router)

@@ -1,4 +1,5 @@
 import os
+import re
 import logging
 from sqlalchemy import create_engine, Column, Integer, String, Boolean, Text
 from sqlalchemy.ext.declarative import declarative_base
@@ -54,9 +55,29 @@ class Item(Base):
     mqtt_topic_prefix  = Column(String(200), nullable=True, default="iptv-manager")
     mqtt_ha_discovery  = Column(Boolean, nullable=True, default=False)
     mqtt_device_name   = Column(String(200), nullable=True, default="IPTV Manager")
+    slug               = Column(String(100), nullable=True)
+    proxy_username     = Column(String(200), nullable=True)
+    proxy_password     = Column(String(200), nullable=True)
+
+
+class AppConfig(Base):
+    __tablename__ = "app_config"
+    key   = Column(String(100), primary_key=True)
+    value = Column(String(500), nullable=True)
+
+def _slugify(name: str) -> str:
+    s = name.lower().strip()
+    s = re.sub(r"[^a-z0-9]+", "-", s)
+    return s.strip("-") or "provider"
+
 
 def init_db():
     Base.metadata.create_all(bind=engine)
+    with engine.connect() as conn:
+        from sqlalchemy import text as _text
+        conn.execute(_text("PRAGMA journal_mode=WAL"))
+        conn.execute(_text("PRAGMA synchronous=NORMAL"))
+        conn.commit()
     # Migrate existing databases that predate new columns
     with engine.connect() as conn:
         from sqlalchemy import text, inspect
@@ -129,6 +150,50 @@ def init_db():
             conn.execute(text("ALTER TABLE items ADD COLUMN mqtt_device_name VARCHAR(200) DEFAULT 'IPTV Manager'"))
             conn.commit()
             logger.info("Migrated: added mqtt_device_name column")
+        if "slug" not in existing:
+            conn.execute(text("ALTER TABLE items ADD COLUMN slug VARCHAR(100)"))
+            conn.commit()
+            logger.info("Migrated: added slug column")
+        if "proxy_username" not in existing:
+            conn.execute(text("ALTER TABLE items ADD COLUMN proxy_username VARCHAR(200)"))
+            conn.commit()
+            logger.info("Migrated: added proxy_username column")
+        if "proxy_password" not in existing:
+            conn.execute(text("ALTER TABLE items ADD COLUMN proxy_password VARCHAR(200)"))
+            conn.commit()
+            logger.info("Migrated: added proxy_password column")
+
+        # Data migration: assign slugs to items that don't have one
+        rows = conn.execute(text("SELECT id, name, slug FROM items WHERE slug IS NULL OR slug = ''")).fetchall()
+        if rows:
+            used_slugs = set(
+                r[0] for r in conn.execute(text("SELECT slug FROM items WHERE slug IS NOT NULL AND slug != ''")).fetchall()
+            )
+            for row_id, row_name, _ in rows:
+                base = _slugify(row_name or "provider")
+                slug = base
+                i = 2
+                while slug in used_slugs:
+                    slug = f"{base}-{i}"
+                    i += 1
+                used_slugs.add(slug)
+                conn.execute(text("UPDATE items SET slug = :slug WHERE id = :id"), {"slug": slug, "id": row_id})
+            conn.commit()
+            logger.info("Migrated: assigned slugs to %d items", len(rows))
+
+        # Data migration: assign proxy credentials from env vars if not set
+        no_creds = conn.execute(
+            text("SELECT id FROM items WHERE proxy_username IS NULL OR proxy_username = ''")
+        ).fetchall()
+        if no_creds:
+            env_user = os.getenv("IPTV_USERNAME", "iptv")
+            env_pass = os.getenv("IPTV_PASSWORD", "iptv")
+            conn.execute(
+                text("UPDATE items SET proxy_username = :u, proxy_password = :p WHERE proxy_username IS NULL OR proxy_username = ''"),
+                {"u": env_user, "p": env_pass},
+            )
+            conn.commit()
+            logger.info("Migrated: set proxy credentials for %d items", len(no_creds))
 
 def get_db():
     db = SessionLocal()
@@ -136,3 +201,17 @@ def get_db():
         yield db
     finally:
         db.close()
+
+
+def get_app_config(db, key: str, default=None):
+    row = db.query(AppConfig).filter(AppConfig.key == key).first()
+    return row.value if row else default
+
+
+def set_app_config(db, key: str, value):
+    row = db.query(AppConfig).filter(AppConfig.key == key).first()
+    if row:
+        row.value = value
+    else:
+        db.add(AppConfig(key=key, value=value))
+    db.commit()

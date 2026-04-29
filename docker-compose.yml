@@ -16,6 +16,7 @@ services:
       - PLEX_URL=${PLEX_URL:-}
       - PLEX_TOKEN=${PLEX_TOKEN:-}
       - TZ=${TZ:-UTC}
+      - CONTAINER_NAME=${CONTAINER_NAME:-iptv-app}
     ports:
       - "${APP_PORT:-5005}:5005"
     # To see real client IPs instead of the Docker bridge gateway, run the app
@@ -27,6 +28,11 @@ services:
     volumes:
       - ./m3u_files:/app/m3u_files
       - ./data:/app/data
+    deploy:
+      resources:
+        limits:
+          memory: ${MEMORY_LIMIT:-512m}
+          cpus: '${CPU_LIMIT:-1.0}'
     restart: ${RESTART_POLICY:-unless-stopped}
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:5005/"]

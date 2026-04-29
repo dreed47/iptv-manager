@@ -374,6 +374,24 @@
       color: #78350f;
     }
 
+    /* ── Background jobs banner ───────────────────── */
+    .jobs-banner {
+      display: none;
+      background: #eff6ff;
+      border: 1px solid #bfdbfe;
+      border-left: 3px solid var(--primary);
+      border-radius: 6px;
+      padding: 10px 14px;
+      font-size: 13px;
+      color: #1e3a8a;
+      margin-bottom: 16px;
+    }
+    html.dark .jobs-banner {
+      background: rgba(37,99,235,0.12);
+      border-color: #1e3a8a;
+      color: #bfdbfe;
+    }
+
     /* ── Table ───────────────────────────────────── */
     .table { width: 100%; border-collapse: collapse; font-size: 13px; }
     .table th, .table td { padding: 9px 12px; border: 1px solid var(--border); text-align: left; vertical-align: middle; }
@@ -461,14 +479,11 @@
       <a href="/" class="nav-item {{ 'active' if active_page == 'dashboard' else '' }}">
         <span class="nav-icon">🏠</span><span class="nav-text">Dashboard</span>
       </a>
-      <a href="/settings" class="nav-item {{ 'active' if active_page == 'settings' else '' }}">
-        <span class="nav-icon">📡</span><span class="nav-text">IPTV Provider</span>
+      <a href="/providers" class="nav-item {{ 'active' if active_page == 'providers' else '' }}">
+        <span class="nav-icon">📡</span><span class="nav-text">IPTV Providers</span>
       </a>
       <a href="/hdhomerun" class="nav-item {{ 'active' if active_page == 'hdhomerun' else '' }}">
         <span class="nav-icon">📺</span><span class="nav-text">HDHomeRun</span>
-      </a>
-      <a href="/xtream" class="nav-item {{ 'active' if active_page == 'xtream' else '' }}">
-        <span class="nav-icon">📱</span><span class="nav-text">Xtream Proxy</span>
       </a>
       <a href="/tools" class="nav-item {{ 'active' if active_page == 'tools' else '' }}">
         <span class="nav-icon">🛠️</span><span class="nav-text">Tools</span>
@@ -484,6 +499,7 @@
   </nav>
 
   <div class="main-content">
+    <div id="jobsBanner" class="jobs-banner"><span id="jobsBannerText">Background jobs running…</span></div>
     {% block content %}{% endblock %}
   </div>
 
@@ -524,14 +540,56 @@
       document.getElementById(formId).submit();
     }
 
-    function copyToClipboard(text, btn) {
-      navigator.clipboard.writeText(text).then(function() {
-        if (btn) {
-          var orig = btn.textContent;
-          btn.textContent = 'Copied!';
-          setTimeout(function() { btn.textContent = orig; }, 2000);
-        }
-      });
+    function _fallbackCopyText(text) {
+      try {
+        var ta = document.createElement('textarea');
+        ta.value = String(text);
+        ta.setAttribute('readonly', '');
+        ta.style.position = 'fixed';
+        ta.style.top = '-1000px';
+        ta.style.left = '-1000px';
+        ta.style.opacity = '0';
+        document.body.appendChild(ta);
+        ta.focus();
+        ta.select();
+        ta.setSelectionRange(0, ta.value.length);
+        var ok = document.execCommand('copy');
+        document.body.removeChild(ta);
+        return !!ok;
+      } catch (e) {
+        return false;
+      }
+    }
+
+    function _copyFeedback(el) {
+      if (!el) return;
+
+      var tag = (el.tagName || '').toLowerCase();
+      if (tag === 'svg' || tag === 'path') {
+        var origColor = el.style.color;
+        el.style.color = 'var(--success, #16a34a)';
+        setTimeout(function() { el.style.color = origColor; }, 1500);
+        return;
+      }
+
+      var orig = el.textContent;
+      el.textContent = 'Copied!';
+      setTimeout(function() { el.textContent = orig; }, 2000);
+    }
+
+    function copyToClipboard(text, el) {
+      // navigator.clipboard requires a secure context (https or localhost). On LAN http
+      // it will fail, so we fall back to execCommand.
+      if (navigator.clipboard && window.isSecureContext) {
+        navigator.clipboard.writeText(String(text)).then(function() {
+          _copyFeedback(el);
+        }).catch(function() {
+          if (_fallbackCopyText(text)) _copyFeedback(el);
+        });
+        return;
+      }
+
+      if (_fallbackCopyText(text)) _copyFeedback(el);
     }
 
     function _syncDarkToggle(isDark) {
@@ -548,8 +606,56 @@
       _syncDarkToggle(isDark);
     }
 
+    function startJobsPolling() {
+      var banner = document.getElementById('jobsBanner');
+      var textEl = document.getElementById('jobsBannerText');
+      if (!banner || !textEl || !window.fetch) return;
+
+      var nextDelay = 5000;
+
+      async function poll() {
+        try {
+          var res = await fetch('/api/jobs', { cache: 'no-store' });
+          if (!res.ok) throw new Error('HTTP ' + res.status);
+          var data = await res.json();
+
+          var filtered = (data.filtered_refresh && data.filtered_refresh.inflight) ? data.filtered_refresh.inflight : [];
+          var epg = (data.epg && data.epg.inflight) ? true : false;
+          var epgCooldown = (data.epg && typeof data.epg.cooldown_remaining_s === 'number') ? data.epg.cooldown_remaining_s : 0;
+
+          var parts = [];
+          if (filtered.length) {
+            parts.push('Applying filters for provider ' + filtered.join(', '));
+          }
+          if (epg) {
+            parts.push('Building EPG');
+          } else if (epgCooldown > 0) {
+            parts.push('EPG cooldown (' + epgCooldown.toFixed(0) + 's)');
+          }
+
+          if (parts.length) {
+            banner.style.display = 'block';
+            textEl.textContent = 'Background jobs: ' + parts.join(' · ');
+            nextDelay = 1500;
+          } else {
+            banner.style.display = 'none';
+            nextDelay = 5000;
+          }
+        } catch (e) {
+          // If the endpoint is unavailable, just hide the banner.
+          banner.style.display = 'none';
+          nextDelay = 8000;
+        } finally {
+          setTimeout(poll, nextDelay);
+        }
+      }
+
+      poll();
+    }
+
     document.addEventListener('DOMContentLoaded', function() {
       initFlashMessages();
+      startJobsPolling();
       _syncDarkToggle(document.documentElement.classList.contains('dark'));
       document.querySelectorAll('button[type="submit"]').forEach(function(btn) {
         btn.addEventListener('click', function() {

@@ -57,12 +57,45 @@
   </div>
 </div>
 
+{% if items and items|length > 1 %}
+<!-- Provider Selection (only shown when multiple providers exist) -->
+<div class="card">
+  <div class="card-title">Provider Settings</div>
+  <form method="POST" action="/hdhomerun/select_provider">
+    <div class="form-group">
+      <label class="form-label">Channel Source</label>
+      <select name="provider_id" class="form-select" style="max-width: 300px;">
+        <option value="" {% if not hdhr_provider_id %}selected{% endif %}>Merge All Providers</option>
+        {% for p in items %}
+        <option value="{{ p.id }}" {% if hdhr_provider_id and hdhr_provider_id|int == p.id %}selected{% endif %}>
+          {{ p.name }}
+        </option>
+        {% endfor %}
+      </select>
+      <div class="form-help">Which provider's channels to expose to Plex/Jellyfin/Emby. "Merge All" combines channels from every provider.</div>
+    </div>
+    <div class="form-group">
+      <label class="form-label">Streaming Provider</label>
+      <select name="stream_provider_id" class="form-select" style="max-width: 300px;">
+        {% for p in items %}
+        <option value="{{ p.id }}" {% if hdhr_stream_provider_id and hdhr_stream_provider_id|int == p.id %}selected{% elif not hdhr_stream_provider_id and loop.first %}selected{% endif %}>
+          {{ p.name }} (max {{ p.max_sessions or 1 }} stream{{ 's' if (p.max_sessions or 1)|int != 1 else '' }})
+        </option>
+        {% endfor %}
+      </select>
+      <div class="form-help">All HDHomeRun streams count against this provider's concurrent stream limit. Pick the provider your IPTV subscription belongs to.</div>
+    </div>
+    <button type="submit" class="btn btn-primary btn-sm">Save</button>
+  </form>
+</div>
+{% endif %}
+
 {% if item %}
 <!-- Channel Configuration -->
 <div class="card">
   <form method="POST" action="/hdhomerun">
     <input type="hidden" name="item_id" value="{{ item.id }}" />
-    <div class="card-title">Channel Filters</div>
+    <div class="card-title">Channel Filters — {{ item.name }}{% if items and items|length > 1 %} <span class="text-muted" style="font-size:12px; font-weight:400;">(selected provider)</span>{% endif %}</div>
 
     <div class="info-box mb-12">
       <p class="text-sm">These filters control which channels are exposed to <strong>Plex, Jellyfin, and Emby</strong> via the HDHomeRun tuner. Only channels listed here will appear in your DVR guide and be available for recording. Xtream apps (TiviMate etc.) use separate filters on the Xtream page.</p>
@@ -84,7 +117,7 @@
       <button type="submit" name="save_filters" value="save_filters" class="btn btn-primary">Save &amp; Apply Filters</button>
 
       {% if item.has_filtered %}
-      <a href="/channels" target="_blank" class="btn btn-outline">View Plex Lineup</a>
+      <a href="/channels" target="_blank" class="btn btn-outline">Channel Guide</a>
       {% endif %}
     </div>
   </form>

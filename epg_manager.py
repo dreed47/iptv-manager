@@ -30,6 +30,7 @@ from datetime import datetime, timezone, timedelta
 
 import config
 import requests
+from services import write_count_to_cache
 
 logger = logging.getLogger(__name__)
 
@@ -99,10 +100,11 @@ def _normalize(s: str) -> str:
 # Read our channel list from filtered M3U files
 # ---------------------------------------------------------------------------
 
-def get_channels_from_m3u() -> list[dict]:
+def get_channels_from_m3u(item_ids: list[int] | None = None) -> list[dict]:
     """
-    Parse all filtered_playlist_*.m3u files and return a de-duplicated list
+    Parse filtered_playlist_*.m3u files and return a de-duplicated list
     of channel dicts: {tvg_id, tvg_chno, raw_name, clean_name, norm, logo}
+    If item_ids is provided, only files for those provider IDs are read.
     """
     channels: list[dict] = []
     seen_ids: set[str] = set()
@@ -111,6 +113,13 @@ def get_channels_from_m3u() -> list[dict]:
     for filename in sorted(os.listdir(m3u_dir)):
         if not (filename.startswith("filtered_playlist_") and filename.endswith(".m3u")):
             continue
+        if item_ids is not None:
+            try:
+                fid = int(filename[len("filtered_playlist_"):-len(".m3u")])
+            except ValueError:
+                continue
+            if fid not in item_ids:
+                continue
         filepath = os.path.join(m3u_dir, filename)
         try:
             with open(filepath, 'r', encoding='utf-8') as f:
@@ -123,6 +132,12 @@ def get_channels_from_m3u() -> list[dict]:
             line = line.strip()
             if not line.startswith('#EXTINF') or i + 1 >= len(lines):
                 continue
+
+            # Skip VOD and series — only live streams have EPG data
+            url_line = lines[i + 1].strip()
+            if '/movie/' in url_line or '/series/' in url_line:
+                continue
+
             tvg_id_m = re.search(r'tvg-id="([^"]+)"', line)
             tvg_name_m = re.search(r'tvg-name="([^"]+)"', line)
             tvg_chno_m = re.search(r'tvg-chno="([^"]+)"', line)
@@ -189,6 +204,19 @@ def _fetch_epg_source(url: str):
                 os.unlink(tmp_path)
             except OSError:
                 pass
+
+
+def _load_epg_from_file(path: str):
+    """Parse a local XMLTV file. Returns (channel_elements, programme_elements) or (None, None)."""
+    try:
+        root = ET.parse(path).getroot()
+        channels = root.findall('channel')
+        programmes = root.findall('programme')
+        logger.debug(f"EPG: loaded {len(channels)} channels, {len(programmes)} programmes from {path}")
+        return channels, programmes
+    except Exception as exc:
+        logger.warning(f"EPG: failed to parse {path}: {exc}")
+        return None, None
 
 
 # ---------------------------------------------------------------------------
@@ -420,14 +448,23 @@ def build_epg_xml(our_channels: list[dict], epg_sources: list) -> str:
 # Public API
 # ---------------------------------------------------------------------------
 
-def build_and_cache_epg() -> str:
+def build_and_cache_epg(item_ids: list[int] | None = None) -> str:
     """Fetch sources, build XMLTV, write cache, return XML string."""
-    our_channels = get_channels_from_m3u()
+    our_channels = get_channels_from_m3u(item_ids=item_ids)
     if not our_channels:
         logger.warning("EPG: no channels found in filtered M3U files — returning empty guide")
         return '<?xml version="1.0" encoding="UTF-8"?>\n<tv></tv>'
 
     sources_data = []
+
+    # Provider EPG first (already on disk from M3U sync, no HTTP needed)
+    for filename in sorted(os.listdir(config.M3U_DIR)):
+        if filename.startswith("epg_") and filename.endswith(".xml"):
+            path = os.path.join(config.M3U_DIR, filename)
+            chs, progs = _load_epg_from_file(path)
+            sources_data.append((chs, progs))
+
+    # External sources as fallback for channels not covered by provider EPG
     for url in config.EPG_XML_SOURCES:
         chs, progs = _fetch_epg_source(url)
         sources_data.append((chs, progs))
@@ -439,11 +476,12 @@ def build_and_cache_epg() -> str:
     with open(tmp_cache, 'w', encoding='utf-8') as f:
         f.write(xml_content)
     os.replace(tmp_cache, EPG_CACHE_PATH)
+    write_count_to_cache(config.M3U_DIR, "generated", "epg_count", xml_content.count("<channel "), EPG_CACHE_PATH)
     logger.info(f"EPG cached at {EPG_CACHE_PATH} ({len(xml_content) // 1024} KB)")
     return xml_content
 
 
-def get_epg(force_refresh: bool = False) -> str:
+def get_epg(force_refresh: bool = False, item_ids: list[int] | None = None) -> str:
     """Return EPG XML, using on-disk cache unless stale or force_refresh=True."""
     if not force_refresh and os.path.exists(EPG_CACHE_PATH):
         age = time.time() - os.path.getmtime(EPG_CACHE_PATH)
@@ -451,4 +489,12 @@ def get_epg(force_refresh: bool = False) -> str:
             logger.debug(f"EPG: serving from cache (age {age / 3600:.1f}h)")
             with open(EPG_CACHE_PATH, 'r', encoding='utf-8') as f:
                 return f.read()
-    return build_and_cache_epg()
+    return build_and_cache_epg(item_ids=item_ids)
+
+
+def run_epg_build(force_refresh: bool = True, item_ids: list[int] | None = None) -> None:
+    """Entry point for running EPG builds in a separate process."""
+    try:
+        get_epg(force_refresh=force_refresh, item_ids=item_ids)
+    except Exception as exc:
+        logger.warning(f"EPG build failed: {exc}", exc_info=True)

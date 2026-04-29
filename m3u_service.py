@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import re
+import fnmatch
 import threading
 import time
 import unicodedata
@@ -14,7 +15,8 @@ import urllib.parse
 import requests
 
 import config
-from models import Item, SessionLocal
+from models import Item, SessionLocal, get_app_config
+from services import write_count_to_cache
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +30,48 @@ def do_fetch_m3u(item_id: int, db) -> tuple:
     if not item:
         return False, f"Item {item_id} not found", 0
 
+    # If another provider points to the same server URL and has a recent M3U,
+    # reuse that data (substituting this item's credentials in stream URLs) to
+    # avoid re-fetching tens of thousands of records from the same source.
+    refresh_secs = (item.m3u_refresh_hours or 24) * 3600
+    peers = db.query(Item).filter(Item.server_url == item.server_url, Item.id != item_id).all()
+    for peer in peers:
+        peer_m3u = os.path.join(config.M3U_DIR, f"xtream_playlist_{peer.id}.m3u")
+        if not os.path.exists(peer_m3u):
+            continue
+        age = time.time() - os.path.getmtime(peer_m3u)
+        if age >= refresh_secs:
+            continue
+        # Reuse: swap credentials in stream URLs, copy EPG
+        with open(peer_m3u, 'r', encoding='utf-8') as f:
+            content = f.read()
+        old_seg = f'/{peer.username}/{peer.user_pass}/'
+        new_seg = f'/{item.username}/{item.user_pass}/'
+        content = content.replace(old_seg, new_seg)
+        m3u_path = os.path.join(config.M3U_DIR, f"xtream_playlist_{item_id}.m3u")
+        tmp = m3u_path + ".tmp"
+        with open(tmp, 'w', encoding='utf-8') as f:
+            f.write(content)
+        os.replace(tmp, m3u_path)
+        num_records = content.count('#EXTINF')
+        write_count_to_cache(config.M3U_DIR, str(item_id), "m3u_count", num_records, m3u_path)
+        peer_epg = os.path.join(config.M3U_DIR, f"epg_{peer.id}.xml")
+        dest_epg = os.path.join(config.M3U_DIR, f"epg_{item_id}.xml")
+        if os.path.exists(peer_epg):
+            import shutil
+            shutil.copy2(peer_epg, dest_epg)
+            peer_cache_path = os.path.join(config.M3U_DIR, f"counts_{peer.id}.json")
+            try:
+                import json as _json
+                with open(peer_cache_path) as _f:
+                    peer_cache = _json.load(_f)
+                write_count_to_cache(config.M3U_DIR, str(item_id), "epg_count", peer_cache.get("epg_count", 0), dest_epg)
+            except Exception:
+                pass
+        total_lines = len(content.splitlines())
+        logger.warning(f"M3U fetch [{item.name}]: reused data from '{peer.name}' (age {age/3600:.1f}h, {num_records} records)")
+        return True, f"Reused recent data from '{peer.name}' ({age/3600:.1f}h old)", total_lines
+
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36",
         "Accept": "application/json, text/plain, */*",
@@ -38,7 +82,7 @@ def do_fetch_m3u(item_id: int, db) -> tuple:
 
     base_url = f"{item.server_url.rstrip('/')}/player_api.php"
     auth_url = f"{base_url}?username={urllib.parse.quote(item.username)}&password={urllib.parse.quote(item.user_pass)}"
-    logger.debug(f"Attempting Xtream API auth to {base_url}")
+    logger.warning(f"M3U fetch starting for '{item.name}' ({item.server_url})")
 
     m3u_content = None
     num_records = 0
@@ -53,14 +97,15 @@ def do_fetch_m3u(item_id: int, db) -> tuple:
             logger.warning(f"Invalid Xtream Codes credentials for item {item_id}")
             raise ValueError("Invalid credentials")
 
-        logger.info(f"Authenticated with Xtream Codes for user {item.username}")
-
-        live_streams = requests.get(f"{auth_url}&action=get_live_streams", headers=headers, timeout=30).json()
-        vod_streams  = requests.get(f"{auth_url}&action=get_vod_streams",  headers=headers, timeout=30).json()
-        series       = requests.get(f"{auth_url}&action=get_series",        headers=headers, timeout=30).json()
+        logger.warning(f"M3U fetch [{item.name}]: auth OK, fetching live streams…")
+        live_streams = requests.get(f"{auth_url}&action=get_live_streams", headers=headers, timeout=120).json()
+        logger.warning(f"M3U fetch [{item.name}]: {len(live_streams)} live — fetching VOD…")
+        vod_streams  = requests.get(f"{auth_url}&action=get_vod_streams",  headers=headers, timeout=120).json()
+        logger.warning(f"M3U fetch [{item.name}]: {len(vod_streams)} VOD — fetching series…")
+        series       = requests.get(f"{auth_url}&action=get_series",        headers=headers, timeout=120).json()
+        logger.warning(f"M3U fetch [{item.name}]: {len(series)} series — building M3U…")
 
         num_records = len(live_streams) + len(vod_streams) + len(series)
-        logger.info(f"Fetched {len(live_streams)} live, {len(vod_streams)} VOD, {len(series)} series")
 
         base = item.server_url.rstrip('/')
         m3u_content = "#EXTM3U\n"
@@ -120,9 +165,10 @@ def do_fetch_m3u(item_id: int, db) -> tuple:
     with open(tmp_m3u, "w", encoding="utf-8") as f:
         f.write(m3u_content)
     os.replace(tmp_m3u, m3u_path)
+    write_count_to_cache(config.M3U_DIR, str(item_id), "m3u_count", num_records, m3u_path)
 
     total_lines = len(m3u_content.splitlines())
-    logger.info(f"Saved {source} playlist for item {item_id} ({num_records} records, {total_lines} lines)")
+    logger.warning(f"M3U fetch [{item.name}]: saved {num_records} records ({total_lines} lines) via {source}")
 
     # Fetch provider EPG
     epg_url = (
@@ -131,14 +177,24 @@ def do_fetch_m3u(item_id: int, db) -> tuple:
         f"&password={urllib.parse.quote(item.user_pass)}"
     )
     try:
-        epg_resp = requests.get(epg_url, headers=headers, timeout=30)
+        epg_resp = requests.get(epg_url, headers=headers, timeout=30, stream=True)
         epg_resp.raise_for_status()
         epg_path = os.path.join(config.M3U_DIR, f"epg_{item_id}.xml")
         tmp_epg  = epg_path + ".tmp"
-        with open(tmp_epg, "w", encoding="utf-8") as f:
-            f.write(epg_resp.text)
+        _epg_needle = b"<channel "
+        _epg_nlen = len(_epg_needle)
+        _epg_count = 0
+        _epg_buf = b""
+        with open(tmp_epg, "wb") as f:
+            for chunk in epg_resp.iter_content(chunk_size=65536):
+                if chunk:
+                    f.write(chunk)
+                    combined = _epg_buf + chunk
+                    _epg_count += combined.count(_epg_needle)
+                    _epg_buf = combined[-(_epg_nlen - 1):]
         os.replace(tmp_epg, epg_path)
-        logger.debug(f"Saved EPG for item {item_id}")
+        write_count_to_cache(config.M3U_DIR, str(item_id), "epg_count", _epg_count, epg_path)
+        logger.debug(f"Saved EPG for item {item_id} ({_epg_count} channels)")
     except requests.exceptions.RequestException as e:
         logger.warning(f"EPG fetch failed for item {item_id}: {e}")
 
@@ -161,9 +217,10 @@ def start_m3u_scheduler():
         while True:
             time.sleep(1800)  # check every 30 minutes
             try:
+                # Collect work items quickly, then release the DB session before heavy I/O
+                work = []
                 with SessionLocal() as db:
-                    items = db.query(Item).all()
-                    for item in items:
+                    for item in db.query(Item).all():
                         interval_h = item.m3u_refresh_hours or 0
                         if interval_h <= 0:
                             continue
@@ -171,17 +228,28 @@ def start_m3u_scheduler():
                         try:
                             age_h = (time.time() - os.path.getmtime(playlist_path)) / 3600
                         except FileNotFoundError:
-                            continue  # never fetched — skip until user does it manually
+                            continue
                         if age_h >= interval_h:
-                            logger.debug(
-                                f"Scheduler: refreshing M3U for item {item.id} "
-                                f"(age={age_h:.1f}h >= interval={interval_h}h)"
-                            )
-                            ok, msg, _ = do_fetch_m3u(item.id, db)
-                            logger.info(f"Scheduler: item {item.id} fetch {'ok' if ok else 'failed'}: {msg}")
+                            work.append(item.id)
+
+                for item_id in work:
+                    try:
+                        with SessionLocal() as db:
+                            item = db.query(Item).filter(Item.id == item_id).first()
+                            if not item:
+                                continue
+                            logger.debug(f"Scheduler: refreshing M3U for item {item_id}")
+                            ok, msg, _ = do_fetch_m3u(item_id, db)
+                            logger.info(f"Scheduler: item {item_id} fetch {'ok' if ok else 'failed'}: {msg}")
                             if ok:
-                                from epg_manager import get_epg
-                                get_epg(True)
+                                refresh_filtered_playlist(item)
+                                hdhr_id = get_app_config(db, "hdhr_provider_id")
+                        if ok:
+                            from epg_manager import get_epg
+                            epg_item_ids = [int(hdhr_id)] if hdhr_id else None
+                            get_epg(force_refresh=True, item_ids=epg_item_ids)
+                    except Exception as e:
+                        logger.error(f"Scheduler: item {item_id} error: {e}")
             except Exception as e:
                 logger.error(f"M3U scheduler error: {e}")
 
@@ -194,11 +262,23 @@ def start_m3u_scheduler():
 # Filter helpers
 # ---------------------------------------------------------------------------
 
+_PREFIX_RE = re.compile(r"^[A-Za-z]{2,6}\s*:\s*")
+_RATIO_PREFIX_RE = re.compile(r"^\d+\s*/\s*\d+\s*:\s*")
+_SUPERSCRIPT_RE = re.compile(r"[\u00B2\u00B3\u00B9\u2070-\u2079]+")
+
+
 def normalize_channel(s: str) -> str:
-    s = s.lower().strip()
-    s = unicodedata.normalize('NFKD', s)
-    s = ''.join(c for c in s if not unicodedata.combining(c))
-    return ' '.join(s.split())
+    s = (s or "").strip()
+    s = unicodedata.normalize("NFKD", s)
+    s = "".join(c for c in s if not unicodedata.combining(c))
+
+    # Strip common provider prefixes before lowercasing (e.g. "US: ", "1/2: ").
+    s = _RATIO_PREFIX_RE.sub("", s).strip()
+    s = _PREFIX_RE.sub("", s).strip()
+    s = _SUPERSCRIPT_RE.sub(" ", s).strip()
+
+    s = s.lower()
+    return " ".join(s.split())
 
 
 def strict_normalize(s: str) -> str:
@@ -314,3 +394,140 @@ def apply_m3u_filter(
         i += 2
 
     return "".join(parts), num_records, input_record_count
+
+
+def _xi_display_norm(s: str) -> str:
+    s = normalize_channel(s)
+    s = re.sub(r"[^a-z0-9]+", " ", s).strip()
+    return " ".join(s.split())
+
+
+def _compile_xtream_includes(raw: str):
+    patterns = [p.strip() for p in (raw or "").split(",") if p.strip()]
+    if not patterns:
+        return None
+
+    compiled = []
+    for p in patterns:
+        if "*" in p:
+            if p.startswith("*") and p.endswith("*") and p.count("*") == 2:
+                inner = _xi_display_norm(p[1:-1])
+                if inner:
+                    words = inner.split()
+                    rx = re.compile(r"\b" + r"\s+".join(re.escape(w) for w in words) + r"\b")
+                    compiled.append(("word", rx))
+            else:
+                compiled.append(("fnmatch", re.sub(r"[^a-z0-9*]+", "", p.lower())))
+        else:
+            inner = _xi_display_norm(p)
+            if inner:
+                words = inner.split()
+                rx = re.compile(r"\b" + r"\s+".join(re.escape(w) for w in words) + r"\b")
+                compiled.append(("word", rx))
+
+    if not compiled:
+        return None
+
+    def _matches(display: str) -> bool:
+        norm_d = _xi_display_norm(display)
+        for kind, matcher in compiled:
+            if kind == "word":
+                if matcher.search(norm_d):
+                    return True
+            else:
+                if fnmatch.fnmatch(re.sub(r"\s+", "", norm_d), matcher):
+                    return True
+        return False
+
+    return _matches
+
+
+def apply_xtream_includes_filter(lines: list[str], raw_xtream_includes: str) -> tuple[str, int, int]:
+    """Include-only filter for IPTV-app (Xtream) live-channel patterns."""
+    matcher = _compile_xtream_includes(raw_xtream_includes)
+    input_record_count = sum(1 for ln in lines if ln.startswith("#EXTINF"))
+    if not matcher:
+        return "#EXTM3U\n", 0, input_record_count
+
+    parts = ["#EXTM3U\n"]
+    num_records = 0
+    i = 1 if (lines and lines[0].strip() == "#EXTM3U") else 0
+
+    while i < len(lines):
+        if not (lines[i].startswith("#EXTINF") and i + 1 < len(lines) and not lines[i + 1].startswith("#")):
+            i += 1
+            continue
+
+        extinf, url = lines[i], lines[i + 1]
+
+        attributes: dict[str, str] = {}
+        channel_name = ""
+        if " " in extinf and "," in extinf:
+            attr_part, channel_name = extinf.split(",", 1)
+            for key, value in re.findall(r'(\S+?)="([^"]*)"', attr_part):
+                attributes[key.lower()] = value
+        else:
+            channel_name = extinf.split(",", 1)[1] if "," in extinf else ""
+
+        group_title = (attributes.get("group-title") or "").strip().lower()
+        if group_title in ("vod", "series"):
+            i += 2
+            continue
+
+        tvg_name = (attributes.get("tvg-name") or "").strip()
+        if matcher(f"{tvg_name} {channel_name}"):
+            parts.append(f"{extinf}\n{url}\n")
+            num_records += 1
+
+        i += 2
+
+    return "".join(parts), num_records, input_record_count
+
+
+def refresh_filtered_playlist(item) -> tuple[int, int]:
+    """Re-apply the current filter config to the full M3U and rewrite filtered_playlist.
+    Returns (kept, total). Skips rewrite if the filter produces 0 channels."""
+    m3u_path = os.path.join(config.M3U_DIR, f"xtream_playlist_{item.id}.m3u")
+    if not os.path.exists(m3u_path):
+        return 0, 0
+    with open(m3u_path, 'r', encoding='utf-8') as f:
+        lines = f.read().splitlines()
+
+    languages, includes_map, _, excludes, has_wildcard = build_filter_config(item)
+    raw_xtream_includes = getattr(item, "xtream_includes", None) or ""
+
+    if not includes_map and not languages and not excludes and not raw_xtream_includes.strip():
+        total = sum(1 for ln in lines if ln.startswith("#EXTINF"))
+        logger.warning(f"No filter configured for item {item.id} — skipping filtered playlist rewrite")
+        return 0, total
+
+    if includes_map or languages or excludes:
+        filtered_content, kept, total = apply_m3u_filter(lines, languages, includes_map, excludes, has_wildcard)
+    else:
+        filtered_content, kept, total = apply_xtream_includes_filter(lines, raw_xtream_includes)
+
+    if kept == 0:
+        logger.warning(f"Filter produced 0 channels for item {item.id} — not overwriting filtered playlist")
+        return 0, total
+    filtered_path = os.path.join(config.M3U_DIR, f"filtered_playlist_{item.id}.m3u")
+    tmp_path = filtered_path + ".tmp"
+    with open(tmp_path, 'w', encoding='utf-8') as f:
+        f.write(filtered_content)
+    os.replace(tmp_path, filtered_path)
+    write_count_to_cache(config.M3U_DIR, str(item.id), "filtered_count", kept, filtered_path)
+    logger.info(f"Refreshed filtered playlist for item {item.id}: {kept}/{total} channels")
+    return kept, total
+
+
+def run_filtered_refresh(item_id: int) -> None:
+    """Entry point for rebuilding filtered playlists in a separate process."""
+    try:
+        from models import SessionLocal, Item
+        with SessionLocal() as db:
+            item = db.query(Item).filter(Item.id == item_id).first()
+            if not item:
+                return
+            refresh_filtered_playlist(item)
+    except Exception as exc:
+        logger.warning(f"Filtered playlist refresh failed for item {item_id}: {exc}", exc_info=True)
+

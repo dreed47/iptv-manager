@@ -1,9 +1,11 @@
 *.pyc
 *.m3u
 *.xml
-data.db
+*.db
 
 startup.log
 
 .env
 .claude/settings.local.json
+m3u_files/
+

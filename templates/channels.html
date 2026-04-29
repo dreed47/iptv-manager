@@ -337,9 +337,27 @@
 
   function copyUrl(e, url) {
     e.preventDefault();
-    navigator.clipboard.writeText(url)
-      .then(() => showToast("Stream URL copied!"))
-      .catch(() => showToast("Copy failed"));
+
+    // navigator.clipboard requires a secure context (https or localhost). On LAN http
+    // it will fail, so fall back to the base_slim helper.
+    if (navigator.clipboard && window.isSecureContext) {
+      navigator.clipboard.writeText(url)
+        .then(() => showToast("Stream URL copied!"))
+        .catch(() => {
+          if (typeof _fallbackCopyText === 'function' && _fallbackCopyText(url)) {
+            showToast("Stream URL copied!");
+          } else {
+            showToast("Copy failed");
+          }
+        });
+      return;
+    }
+
+    if (typeof _fallbackCopyText === 'function' && _fallbackCopyText(url)) {
+      showToast("Stream URL copied!");
+    } else {
+      showToast("Copy failed");
+    }
   }
 
   function showToast(msg) {

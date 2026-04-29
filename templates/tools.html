@@ -9,48 +9,58 @@
 {% if success %}<div class="flash flash-success">✓ {{ success }}</div>{% endif %}
 {% if error %}<div class="flash flash-error">✗ {{ error }}</div>{% endif %}
 
+<!-- System Information -->
+<div class="card">
+  <div class="card-title">System Information</div>
+  <div class="grid-3">
+    <div>
+      <div class="form-label mb-8">Base URL</div>
+      <div class="mono-box">{{ base_url }}</div>
+    </div>
+    <div>
+      <div class="form-label mb-8">Container Name</div>
+      <div class="mono-box">{{ container_name if container_name else '—' }}</div>
+    </div>
+    <div>
+      <div class="form-label mb-8">Time Zone</div>
+      <div class="mono-box">{{ timezone }}</div>
+    </div>
+    <div>
+      <div class="form-label mb-8">HDHomeRun Discovery</div>
+      <span class="badge {{ 'badge-success' if hdhr_running else 'badge-neutral' }}">
+        {{ 'Enabled' if hdhr_running else 'Disabled' }}
+      </span>
+    </div>
+    <div>
+      <div class="form-label mb-8">IPTV Providers</div>
+      <span class="badge {{ 'badge-success' if provider_count > 0 else 'badge-neutral' }}">
+        {{ provider_count }} configured
+      </span>
+    </div>
+    <div>
+      <div class="form-label mb-8">MQTT Devices</div>
+      <span class="badge {{ 'badge-success' if mqtt_device_count > 0 else 'badge-neutral' }}">
+        {{ mqtt_device_count }} active
+      </span>
+    </div>
+    <div>
+      <div class="form-label mb-8">VPN Status</div>
+      <span class="badge {{ 'badge-success' if vpn_running else 'badge-neutral' }}">
+        {% if vpn_running %}Connected{% if vpn_interface %} ({{ vpn_interface }}){% endif %}{% else %}Not running{% endif %}
+      </span>
+    </div>
+    <div>
+      <div class="form-label mb-8">Xtream Proxy</div>
+      <span class="badge badge-success">Active</span>
+    </div>
+  </div>
+</div>
+
 <!-- Stream Tester -->
 <div class="card">
   <div class="card-title">Stream Tester</div>
   <p class="text-muted text-sm mb-12">Test if a channel plays correctly and verify stream URLs. Also includes a <strong>health check endpoint</strong> you can monitor with Uptime Kuma, Grafana, or any HTTP monitoring tool.</p>
   <a href="/stream_test" target="_blank" class="btn btn-warning">Open Stream Tester</a>
-</div>
-
-<!-- M3U Browser -->
-<div class="card">
-  <div class="card-title">M3U Browser</div>
-  <p class="text-muted text-sm mb-12">Browse and search your M3U playlist to find channel names for creating filters.</p>
-  {% if item and item.has_m3u %}
-  <a href="/m3u_browser/{{ item.id }}" target="_blank" class="btn btn-primary">Browse Full M3U</a>
-  {% else %}
-  <button disabled class="btn btn-secondary" title="Fetch M3U first">Browse Full M3U</button>
-  {% endif %}
-</div>
-
-<!-- Downloads -->
-<div class="card">
-  <div class="card-title">Downloads</div>
-  <p class="text-muted text-sm mb-12">Download M3U playlists and EPG data for manual use or backup.</p>
-  {% if item %}
-  <div class="flex flex-wrap gap-8">
-    {% if item.has_m3u %}
-    <a href="/download_m3u/{{ item.id }}" download class="btn btn-success">Full M3U</a>
-    {% endif %}
-    {% if item.has_filtered %}
-    <a href="/download_filtered_m3u/{{ item.id }}" download class="btn btn-primary">Filtered M3U</a>
-    {% endif %}
-    {% if item.has_epg %}
-    <a href="/epg.xml" download class="btn btn-outline">EPG XML</a>
-    {% endif %}
-    {% if not item.has_m3u and not item.has_filtered and not item.has_epg %}
-    <p class="text-muted text-sm" style="font-style: italic;">No files available yet — fetch M3U first.</p>
-    {% endif %}
-  </div>
-  {% else %}
-  <p class="text-muted text-sm" style="font-style: italic;">
-    No provider configured. <a href="/settings" style="color: var(--primary);">Configure provider →</a>
-  </p>
-  {% endif %}
 </div>
 
 <!-- Log Viewer -->
@@ -71,183 +81,164 @@
   </div>
 </div>
 
-<!-- System Information -->
+<!-- MQTT Global Settings -->
 <div class="card">
-  <div class="card-title">System Information</div>
-  <div class="grid-3">
-    <div>
-      <div class="form-label mb-8">Base URL</div>
-      <div class="mono-box">{{ base_url }}</div>
-    </div>
-    <div>
-      <div class="form-label mb-8">HDHomeRun Discovery</div>
-      <span class="badge {{ 'badge-success' if hdhr_running else 'badge-neutral' }}">
-        {{ 'Enabled' if hdhr_running else 'Disabled' }}
-      </span>
-    </div>
-    <div>
-      <div class="form-label mb-8">Xtream Proxy</div>
-      <span class="badge badge-success">Active</span>
-    </div>
+  <div class="card-title collapsible" id="mqttToolsTitle" onclick="toggleCard('mqttToolsTitle','mqttToolsBody','mqttToolsChevron')">
+    MQTT / Home Assistant
+    <span class="chevron" id="mqttToolsChevron">▶</span>
   </div>
-</div>
-
-{% if item %}
-<!-- MQTT Integration -->
-<div class="card">
-  <div class="card-title collapsible" id="mqttCardTitle" onclick="toggleMqttCard()" style="cursor:pointer; user-select:none;">
-    MQTT Integration
-    <span class="chevron" id="mqttChevron">▶</span>
-  </div>
-
-  <div id="mqttCardBody" style="display: none;">
-    <form method="POST" action="/mqtt/settings">
+  <div id="mqttToolsBody" style="display:none;">
+  <p class="text-muted text-sm mb-12">
+    Global broker connection. Topic prefix and device name are set per provider on each
+    <a href="/providers" style="color:var(--primary);">provider's settings page</a>.
+  </p>
+  {% if item %}
+  <form method="POST" action="/mqtt/settings">
+    <div class="form-group">
+      <label class="form-label" style="display:flex; align-items:center; gap:8px; cursor:pointer;">
+        <input type="checkbox" name="mqtt_enabled" value="1"
+          {% if item.mqtt_enabled %}checked{% endif %}
+          style="width:16px; height:16px;" />
+        Enable MQTT publishing
+      </label>
+      <p class="form-help">Publishes stream/VPN state to the broker on change.</p>
+    </div>
+    <div class="grid-2">
       <div class="form-group">
-        <label class="form-label" style="display:flex; align-items:center; gap:8px; cursor:pointer;">
-          <input type="checkbox" name="mqtt_enabled" value="1"
-            {% if item.mqtt_enabled %}checked{% endif %}
-            style="width:16px; height:16px;" />
-          Enable MQTT publishing
-        </label>
-        <p class="form-help">When enabled, stream and VPN state are published to the broker every 10 seconds on change.</p>
+        <label class="form-label">Broker Host</label>
+        <input type="text" name="mqtt_host" value="{{ item.mqtt_host }}"
+          placeholder="192.168.1.x or mqtt.local" class="form-input" />
       </div>
-
-      <div class="grid-2">
-        <div class="form-group">
-          <label class="form-label">Broker Host</label>
-          <input type="text" name="mqtt_host" value="{{ item.mqtt_host }}"
-            placeholder="192.168.1.x or mqtt.local" class="form-input" />
-        </div>
-        <div class="form-group">
-          <label class="form-label">Port</label>
-          <input type="number" name="mqtt_port" value="{{ item.mqtt_port }}"
-            placeholder="1883" class="form-input" />
-        </div>
+      <div class="form-group">
+        <label class="form-label">Port</label>
+        <input type="number" name="mqtt_port" value="{{ item.mqtt_port }}"
+          placeholder="1883" class="form-input" />
       </div>
-
-      <div class="grid-2">
-        <div class="form-group" style="margin-bottom:0;">
-          <label class="form-label">Username <span class="text-muted" style="font-weight:400;">(optional)</span></label>
-          <input type="text" name="mqtt_username" value="{{ item.mqtt_username }}"
-            placeholder="mqtt username" class="form-input" autocomplete="username" />
-        </div>
-        <div class="form-group" style="margin-bottom:0;">
-          <label class="form-label">Password <span class="text-muted" style="font-weight:400;">(optional)</span></label>
-          <input type="password" name="mqtt_password" value=""
-            placeholder="{% if item.mqtt_password %}(saved — leave blank to keep){% else %}mqtt password{% endif %}"
-            class="form-input" autocomplete="new-password" />
-        </div>
+    </div>
+    <div class="grid-2">
+      <div class="form-group" style="margin-bottom:0;">
+        <label class="form-label">Username <span class="text-muted" style="font-weight:400;">(optional)</span></label>
+        <input type="text" name="mqtt_username" value="{{ item.mqtt_username }}"
+          placeholder="mqtt username" class="form-input" />
       </div>
-
-      <div class="grid-2 mt-12">
-        <div class="form-group">
-          <label class="form-label">Topic Prefix</label>
-          <input type="text" name="mqtt_topic_prefix" value="{{ item.mqtt_topic_prefix }}"
-            placeholder="iptv-manager" class="form-input" />
-          <p class="form-help">e.g. <code>{{ item.mqtt_topic_prefix or 'iptv-manager' }}/streams/count</code></p>
-        </div>
-        <div class="form-group">
-          <label class="form-label">Device / Sensor Name</label>
-          <input type="text" name="mqtt_device_name" value="{{ item.mqtt_device_name }}"
-            placeholder="IPTV Manager" class="form-input" />
-          <p class="form-help">Shown in Home Assistant as the device name. Use a unique name per instance (e.g. "IPTV Bedroom").</p>
-        </div>
+      <div class="form-group" style="margin-bottom:0;">
+        <label class="form-label">Password <span class="text-muted" style="font-weight:400;">(optional)</span></label>
+        <input type="password" name="mqtt_password" value=""
+          placeholder="{% if item.mqtt_password %}(saved — leave blank to keep){% else %}mqtt password{% endif %}"
+          class="form-input" />
       </div>
-
-      <div class="flex flex-center flex-wrap gap-12">
-        <button type="submit" class="btn btn-primary btn-sm">💾 Save MQTT Settings</button>
-        <button type="button" class="btn btn-outline btn-sm" id="mqttTestBtn" onclick="testMqtt()">
-          🔌 Test Connection
-        </button>
-        <button type="button" class="btn btn-outline btn-sm" id="mqttHaBtn" onclick="publishHaDiscovery()">
-          🏠 Publish HA Discovery
-        </button>
-        <span id="mqttTestResult" class="text-sm"></span>
-      </div>
-      <p class="form-help mt-8">HA Discovery publishes sensor/binary_sensor configs to <code>homeassistant/</code> so Home Assistant creates entities automatically. One-time action — retained by the broker.</p>
-    </form>
-
-    <hr class="divider" />
-
-    <div class="flex flex-center flex-wrap gap-12">
-      <span class="status-item">
+    </div>
+    <div class="flex flex-center flex-wrap gap-12 mt-12">
+      <button type="submit" class="btn btn-primary btn-sm">💾 Save MQTT</button>
+      <button type="button" class="btn btn-outline btn-sm" id="mqttTestBtn" onclick="testMqtt()">🔌 Test</button>
+      <button type="button" class="btn btn-outline btn-sm" id="mqttAddBtn" onclick="manageHaDiscovery('add')">🏠 Add HA Devices</button>
+      <button type="button" class="btn btn-outline btn-sm" id="mqttRemoveBtn" onclick="manageHaDiscovery('remove')">🗑️ Remove HA Devices</button>
+      <span id="mqttTestResult" class="text-sm"></span>
+      <span class="status-item" style="margin-left:auto;">
         <span class="status-dot" id="mqttDot" style="background:#cbd5e1;"></span>
         <span id="mqttStatusText" class="text-sm">Checking…</span>
       </span>
     </div>
+  </form>
+  {% else %}
+  <p class="text-muted text-sm" style="font-style:italic;">No provider configured. <a href="/providers/new" style="color:var(--primary);">Add one →</a></p>
+  {% endif %}
   </div>
 </div>
-{% endif %}
+
+<!-- VPN (Global) -->
+<div class="card">
+  <div class="card-title collapsible" id="vpnToolsTitle" onclick="toggleCard('vpnToolsTitle','vpnToolsBody','vpnToolsChevron')">
+    VPN
+    <span class="chevron" id="vpnToolsChevron">▶</span>
+  </div>
+  <div id="vpnToolsBody" style="display:none;">
+  <p class="text-muted text-sm mb-12">Global OpenVPN connection — applies to all providers. Only one connection can be active at a time.</p>
+  {% if item %}
+  <form method="POST" action="/vpn/settings" id="vpnSettingsForm">
+    <input type="hidden" name="item_id" value="{{ item.id }}" />
+    <div class="form-group">
+      <label class="form-label">OpenVPN Config (.ovpn)</label>
+      <textarea name="vpn_config" class="form-textarea" style="min-height:120px; font-size:11px;"
+        placeholder="Paste .ovpn file content here…">{{ item.vpn_config or '' }}</textarea>
+    </div>
+    <div class="grid-2">
+      <div class="form-group" style="margin-bottom:0;">
+        <label class="form-label">Username</label>
+        <input type="text" name="vpn_username" value="{{ item.vpn_username or '' }}"
+          placeholder="VPN service username" class="form-input" />
+      </div>
+      <div class="form-group" style="margin-bottom:0;">
+        <label class="form-label">Password</label>
+        <input type="password" name="vpn_password" value=""
+          placeholder="{% if item.vpn_configured %}(saved — leave blank to keep){% else %}VPN service password{% endif %}"
+          class="form-input" />
+      </div>
+    </div>
+    <div class="flex flex-center flex-wrap gap-12 mt-12">
+      <button type="submit" class="btn btn-primary btn-sm">💾 Save VPN</button>
+      <form method="POST" action="/vpn/enable" style="display:inline; margin:0;">
+        <input type="hidden" name="next" value="/tools" />
+        <button type="submit" class="btn btn-success btn-sm"
+          {% if not item.vpn_configured %}disabled title="Save VPN settings first"{% endif %}>Enable VPN</button>
+      </form>
+      <form method="POST" action="/vpn/disable" style="display:inline; margin:0;">
+        <input type="hidden" name="next" value="/tools" />
+        <button type="submit" class="btn btn-danger btn-sm">Disable VPN</button>
+      </form>
+      <span class="status-item" style="margin-left:auto;">
+        <span class="status-dot" id="vpnDot" style="background:#cbd5e1;"></span>
+        <span id="vpnStatusText" class="text-sm">Checking…</span>
+      </span>
+    </div>
+  </form>
+  {% else %}
+  <p class="text-muted text-sm" style="font-style:italic;">No provider configured. <a href="/providers/new" style="color:var(--primary);">Add one →</a></p>
+  {% endif %}
+  </div>
+</div>
 
 <script>
-  function toggleMqttCard() {
-    var body    = document.getElementById('mqttCardBody');
-    var title   = document.getElementById('mqttCardTitle');
-    var chevron = document.getElementById('mqttChevron');
+  function toggleCard(titleId, bodyId, chevronId) {
+    var body    = document.getElementById(bodyId);
+    var title   = document.getElementById(titleId);
+    var chevron = document.getElementById(chevronId);
     if (body.style.display === 'none') {
       body.style.display = 'block';
       title.classList.add('open');
       chevron.textContent = '▼';
-      localStorage.setItem('mqttCardOpen', '1');
-      loadMqttStatus();
+      localStorage.setItem(bodyId + 'Open', '1');
     } else {
       body.style.display = 'none';
       title.classList.remove('open');
       chevron.textContent = '▶';
-      localStorage.setItem('mqttCardOpen', '0');
+      localStorage.setItem(bodyId + 'Open', '0');
     }
-  }
-
-  function loadMqttStatus() {
-    fetch('/mqtt/status')
-      .then(function(r) { return r.json(); })
-      .then(function(data) {
-        var dot  = document.getElementById('mqttDot');
-        var text = document.getElementById('mqttStatusText');
-        if (!dot || !text) return;
-        if (data.connected) {
-          dot.style.background = 'var(--success)';
-          text.textContent = 'Connected' + (data.broker ? ' (' + data.broker + ')' : '');
-        } else {
-          dot.style.background = '#cbd5e1';
-          text.textContent = 'Disconnected';
-        }
-      })
-      .catch(function() {
-        var text = document.getElementById('mqttStatusText');
-        if (text) text.textContent = 'Status unknown';
-      });
-  }
-
-  function publishHaDiscovery() {
-    var btn    = document.getElementById('mqttHaBtn');
-    var result = document.getElementById('mqttTestResult');
-    btn.disabled = true;
-    btn.textContent = 'Publishing…';
-    result.textContent = '';
-    fetch('/mqtt/ha_discovery', { method: 'POST' })
-      .then(function(r) { return r.json(); })
-      .then(function(data) {
-        result.textContent = (data.ok ? '✓ ' : '✗ ') + (data.message || data.error || '');
-        result.style.color = data.ok ? 'var(--success)' : 'var(--danger)';
-      })
-      .catch(function() {
-        result.textContent = '✗ Request failed';
-        result.style.color = 'var(--danger)';
-      })
-      .finally(function() {
-        btn.disabled = false;
-        btn.textContent = '🏠 Publish HA Discovery';
-      });
   }
 
   function testMqtt() {
-    var btn    = document.getElementById('mqttTestBtn');
+    var btn = document.getElementById('mqttTestBtn');
     var result = document.getElementById('mqttTestResult');
-    btn.disabled = true;
-    btn.textContent = 'Testing…';
-    result.textContent = '';
-    fetch('/mqtt/test', { method: 'POST' })
+    btn.disabled = true; btn.textContent = 'Testing…'; result.textContent = '';
+    fetch('/mqtt/test', {method: 'POST'})
+      .then(function(r) { return r.json(); })
+      .then(function(data) {
+        result.textContent = (data.ok ? '✓ ' : '✗ ') + (data.message || '');
+        result.style.color = data.ok ? 'var(--success)' : 'var(--danger)';
+      })
+      .catch(function() { result.textContent = '✗ Failed'; result.style.color = 'var(--danger)'; })
+      .finally(function() { btn.disabled = false; btn.textContent = '🔌 Test'; });
+  }
+
+  function manageHaDiscovery(action) {
+    var addBtn    = document.getElementById('mqttAddBtn');
+    var removeBtn = document.getElementById('mqttRemoveBtn');
+    var result    = document.getElementById('mqttTestResult');
+    var url       = action === 'remove' ? '/mqtt/ha_discovery/remove' : '/mqtt/ha_discovery';
+    addBtn.disabled = removeBtn.disabled = true;
+    result.textContent = action === 'remove' ? 'Removing…' : 'Publishing…';
+    result.style.color = '';
+    fetch(url, {method: 'POST'})
       .then(function(r) { return r.json(); })
       .then(function(data) {
         result.textContent = (data.ok ? '✓ ' : '✗ ') + (data.message || data.error || '');
@@ -257,24 +248,51 @@
         result.textContent = '✗ Request failed';
         result.style.color = 'var(--danger)';
       })
-      .finally(function() {
-        btn.disabled = false;
-        btn.textContent = '🔌 Test Connection';
-      });
+      .finally(function() { addBtn.disabled = removeBtn.disabled = false; });
   }
 
   document.addEventListener('DOMContentLoaded', function() {
-    if (localStorage.getItem('mqttCardOpen') === '1') {
-      var body    = document.getElementById('mqttCardBody');
-      var title   = document.getElementById('mqttCardTitle');
-      var chevron = document.getElementById('mqttChevron');
-      if (body) {
+    // Restore collapsible state
+    ['mqttToolsBody', 'vpnToolsBody'].forEach(function(id) {
+      var prefix = id.replace('Body', '');
+      var body    = document.getElementById(id);
+      var title   = document.getElementById(prefix + 'Title');
+      var chevron = document.getElementById(prefix + 'Chevron');
+      if (body && localStorage.getItem(id + 'Open') === '1') {
         body.style.display = 'block';
-        title.classList.add('open');
-        chevron.textContent = '▼';
-        loadMqttStatus();
+        if (title) title.classList.add('open');
+        if (chevron) chevron.textContent = '▼';
       }
-    }
+    });
+
+    // MQTT status
+    fetch('/mqtt/status').then(function(r) { return r.json(); }).then(function(data) {
+      var dot = document.getElementById('mqttDot');
+      var text = document.getElementById('mqttStatusText');
+      if (!dot) return;
+      if (data.connected) {
+        dot.style.background = 'var(--success)';
+        text.textContent = 'Connected' + (data.broker ? ' (' + data.broker + ')' : '');
+      } else {
+        dot.style.background = '#cbd5e1';
+        text.textContent = data.broker ? 'Disconnected' : 'Not configured';
+      }
+    }).catch(function() {});
+
+    // VPN status
+    fetch('/vpn/status').then(function(r) { return r.json(); }).then(function(data) {
+      var dot = document.getElementById('vpnDot');
+      var text = document.getElementById('vpnStatusText');
+      if (!dot) return;
+      if (data.running) {
+        dot.style.background = 'var(--success)';
+        text.textContent = 'Connected' + (data.interface ? ' (' + data.interface + ')' : '');
+      } else {
+        dot.style.background = '#cbd5e1';
+        text.textContent = 'Not running';
+      }
+    }).catch(function() {});
   });
 </script>
+
 {% endblock %}
