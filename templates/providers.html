@@ -27,7 +27,7 @@
   <div class="flex flex-center" style="justify-content: space-between; flex-wrap: wrap; gap: 12px; margin-bottom: 14px;">
     <div>
       <div class="card-title" style="margin-bottom: 4px;">{{ item.name }}</div>
-      <code style="font-size: 12px; color: var(--text-muted);">/{{ item.slug }}/</code>
+      <code style="font-size: 12px; color: var(--text-muted);">user: {{ item.proxy_username }}</code>
     </div>
     <div class="flex gap-12 flex-wrap flex-center">
       {% if item.provider_status %}
@@ -52,8 +52,8 @@
       <strong>Server:</strong> {{ item.server_url }}
     </span>
     <span class="text-sm" style="color: var(--text-muted);">
-      <strong>Proxy URL:</strong> <span id="proxy-url-{{ item.id }}">{{ base_url }}/{{ item.slug }}</span>
-      <button type="button" onclick="copyProxyUrl('{{ base_url }}/{{ item.slug }}', 'proxy-copy-{{ item.id }}')" title="Copy to clipboard" style="background:none;border:none;cursor:pointer;padding:0 4px;color:var(--text-muted);vertical-align:middle;">
+      <strong>Server:</strong> <span id="proxy-url-{{ item.id }}">{{ base_url }}</span>
+      <button type="button" onclick="copyProxyUrl('{{ base_url }}', 'proxy-copy-{{ item.id }}')" title="Copy server URL" style="background:none;border:none;cursor:pointer;padding:0 4px;color:var(--text-muted);vertical-align:middle;">
         <svg id="proxy-copy-{{ item.id }}" xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
       </button>
     </span>

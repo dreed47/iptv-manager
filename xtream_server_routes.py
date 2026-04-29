@@ -38,6 +38,37 @@ def verify_credentials(username: str, password: str, item: Item) -> bool:
     return username == expected_user and password == expected_pass
 
 
+def _get_item_by_credentials(username: str, password: str, db: Session):
+    """Look up provider by proxy credentials. Returns first match or None."""
+    items = db.query(Item).all()
+    matches = [
+        i for i in items
+        if (i.proxy_username or "iptv") == username
+        and (i.proxy_password or "iptv") == password
+    ]
+    if not matches:
+        return None
+    if len(matches) > 1:
+        logger.warning(
+            f"Multiple providers share credentials '{username}' — using '{matches[0].name}'. "
+            "Set unique proxy credentials per provider in Settings."
+        )
+    return matches[0]
+
+
+def _item_id_from_stream_id(stream_id: int) -> int:
+    """Extract provider item_id from a namespaced stream_id."""
+    if stream_id >= 1_000_000_000:
+        return stream_id // 1_000_000_000   # episode namespace: item_id * 1e9 + ep_id
+    return stream_id // 100_000_000          # live/VOD/series namespace: item_id * 1e8 + offset
+
+
+def _get_item_by_stream_id(stream_id: int, db: Session):
+    """Look up provider by extracting item_id from namespaced stream_id."""
+    item_id = _item_id_from_stream_id(stream_id)
+    return db.query(Item).filter(Item.id == item_id).first()
+
+
 def _unauthorized() -> JSONResponse:
     return JSONResponse({"user_info": {"auth": 0}}, status_code=401)
 
@@ -774,29 +805,53 @@ def _fetch_series_info_from_row(row, db: Session) -> dict:
         return _series_info_fallback_from_row(row)
 
     episodes_out = {}
-    for season_num, episodes in data.get("episodes", {}).items():
-        season_list = []
-        for ep in episodes:
-            try:
-                upstream_ep_id = int(ep.get("id", 0))
-            except (ValueError, TypeError):
-                continue
-            ext = ep.get("container_extension", "mp4")
-            local_id = _episode_id(row["item_id"], upstream_ep_id)
-            upstream_url = (
-                f"{base}/series/{item.username}/{item.user_pass}/{upstream_ep_id}.{ext}"
-            )
-            with _episode_cache_lock:
-                if len(_episode_cache) >= _CACHE_MAX:
-                    for k in list(_episode_cache)[: _CACHE_MAX // 2]:
-                        del _episode_cache[k]
-                _episode_cache[local_id] = upstream_url
-            ep_out = dict(ep)
-            ep_out["id"] = str(local_id)
-            ep_out["direct_source"] = ""
-            season_list.append(ep_out)
-        if season_list:
-            episodes_out[season_num] = season_list
+    episodes_data = data.get("episodes", {})
+
+    def _cache_episode(upstream_ep_id: int, ep_ext: str) -> int:
+        local_id = _episode_id(row["item_id"], upstream_ep_id)
+        upstream_url = f"{base}/series/{item.username}/{item.user_pass}/{upstream_ep_id}.{ep_ext}"
+        with _episode_cache_lock:
+            if len(_episode_cache) >= _CACHE_MAX:
+                for k in list(_episode_cache)[: _CACHE_MAX // 2]:
+                    del _episode_cache[k]
+            _episode_cache[local_id] = upstream_url
+        return local_id
+
+    def _process_ep(ep: dict) -> dict | None:
+        if not isinstance(ep, dict):
+            return None
+        try:
+            upstream_ep_id = int(ep.get("id", 0))
+        except (ValueError, TypeError):
+            return None
+        ep_ext = ep.get("container_extension", "mp4")
+        local_id = _cache_episode(upstream_ep_id, ep_ext)
+        ep_out = dict(ep)
+        ep_out["id"] = str(local_id)
+        ep_out["direct_source"] = ""
+        return ep_out
+
+    if isinstance(episodes_data, list):
+        if episodes_data and isinstance(episodes_data[0], list):
+            # List-of-seasons: [[ep, ep, ...], [ep, ep, ...], ...]
+            for season_idx, season_episodes in enumerate(episodes_data):
+                season_list = [r for ep in season_episodes
+                               if (r := _process_ep(ep)) is not None]
+                if season_list:
+                    episodes_out[str(season_idx + 1)] = season_list
+        else:
+            # Flat list of episodes — all belong to season 1
+            season_list = [r for ep in episodes_data
+                           if (r := _process_ep(ep)) is not None]
+            if season_list:
+                episodes_out["1"] = season_list
+    else:
+        # Standard dict format: {"1": [ep, ...], "2": [ep, ...]}
+        for season_num, episodes in episodes_data.items():
+            season_list = [r for ep in episodes
+                           if (r := _process_ep(ep)) is not None]
+            if season_list:
+                episodes_out[season_num] = season_list
 
     info = data.get("info", {})
     info.setdefault("name", row["name"])
@@ -930,13 +985,49 @@ async def _m3u_generator(cache: XtreamCache, base_url: str, username: str, passw
             f"{url}\n"
         )
 
-    for sid, tvg_id, name, logo, cat in await asyncio.to_thread(_fetch_rows, "series"):
-        url = f"{base_url}/{slug}/series/{username}/{password}/{sid}.m3u8"
-        yield (
-            f'#EXTINF:-1 tvg-id="{tvg_id}" tvg-name="{name}" '
-            f'tvg-logo="{logo}" group-title="{cat}",{name}\n'
-            f"{url}\n"
-        )
+    # Series: serve individual episode entries from raw upstream M3U (so M3U-mode apps can browse episodes).
+    # The raw M3U has one entry per episode; our generated M3U has one per series (wrong for M3U mode).
+    raw_path = os.path.join(M3U_DIR, f"raw_playlist_{cache.item_id}.m3u")
+
+    def _read_raw_series_episodes() -> list:
+        """Extract series episode entries from raw upstream M3U, rewriting stream URLs to our proxy."""
+        rows = []
+        proxy_series_base = f"{base_url}/{slug}/series/{username}/{password}/"
+        for e in _stream_m3u_file(raw_path):
+            url = e["url"]
+            if "/series/" not in url:
+                continue
+            # Extract {episode_id}.{ext} — the part after /series/{user}/{pass}/
+            try:
+                after = url.split("/series/", 1)[1]   # "user/pass/12345.mkv"
+                id_ext = after.split("/", 2)[2]        # "12345.mkv"
+            except (IndexError, ValueError):
+                continue
+            proxy_url = proxy_series_base + id_ext
+            name = (e["tvg_name"] or e["display_name"]).strip()
+            rows.append((e["tvg_id"], name, e["logo"] or "", e["group_title"] or "Series", proxy_url))
+        return rows
+
+    raw_episodes = []
+    if os.path.exists(raw_path) and os.path.getsize(raw_path) > 0:
+        raw_episodes = await asyncio.to_thread(_read_raw_series_episodes)
+
+    if raw_episodes:
+        for tvg_id, name, logo, group_title, url in raw_episodes:
+            yield (
+                f'#EXTINF:-1 tvg-id="{tvg_id}" tvg-name="{name}" '
+                f'tvg-logo="{logo}" group-title="{group_title}",{name}\n'
+                f"{url}\n"
+            )
+    else:
+        # Fallback: series-level entries from catalog (one per series, .m3u8 URL)
+        for sid, tvg_id, name, logo, cat in await asyncio.to_thread(_fetch_rows, "series"):
+            url = f"{base_url}/{slug}/series/{username}/{password}/{sid}.m3u8"
+            yield (
+                f'#EXTINF:-1 tvg-id="{tvg_id}" tvg-name="{name}" '
+                f'tvg-logo="{logo}" group-title="{cat}",{name}\n'
+                f"{url}\n"
+            )
 
 
 @router.get("/{provider_slug}/get.php")
@@ -1069,6 +1160,188 @@ def _stream_live_direct(source_url: str, channel_name: str, client_ip: str,
     finally:
         logger.info(f"Live stream ended: '{channel_name}', {bytes_sent} bytes sent")
         _active_streams.pop(session_id, None)
+
+
+# ---------------------------------------------------------------------------
+# Root-level stream routes (no provider slug) — credential/stream-ID routing
+# Must be defined BEFORE the slug routes so FastAPI doesn't swallow them as
+# /{provider_slug}/live/... with provider_slug="live".
+# ---------------------------------------------------------------------------
+
+@router.get("/live/{username}/{password}/{stream_id_ext:path}")
+async def proxy_live_root(
+    username: str,
+    password: str,
+    stream_id_ext: str,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    stream_id_str = stream_id_ext.split(".")[0]
+    try:
+        stream_id = int(stream_id_str)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid stream ID")
+
+    item = _get_item_by_stream_id(stream_id, db)
+    if not item or not verify_credentials(username, password, item):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    client_ip = request.client.host if request.client else "unknown"
+    if is_ip_blocked(client_ip):
+        raise HTTPException(status_code=429, detail="Stream was terminated — reconnect blocked briefly")
+
+    cache = await get_xtream_cache(db, item)
+    entry = cache.live_stream_map.get(stream_id)
+    if not entry:
+        raise HTTPException(status_code=404, detail=f"Live stream {stream_id} not found")
+
+    max_sessions = int(item.max_sessions) if item.max_sessions is not None else 1
+    active_count = auto_replace_ip_session(client_ip, entry.name, item_id=item.id)
+    if active_count >= max_sessions:
+        raise HTTPException(status_code=429,
+                            detail=f"Session limit reached ({active_count}/{max_sessions} active streams)")
+
+    session_id = str(uuid.uuid4())
+    logger.info(f"proxy_live_root [{item.name}]: '{entry.name}' → {entry.url}")
+    return StreamingResponse(
+        _stream_live_direct(entry.url, entry.name, client_ip,
+                            request.headers.get("user-agent", "unknown"),
+                            session_id, max_sessions, item_id=item.id),
+        media_type="video/mp2t",
+        headers={"Cache-Control": "no-cache"},
+    )
+
+
+@router.get("/movie/{username}/{password}/{stream_id_ext:path}")
+async def proxy_vod_root(
+    username: str,
+    password: str,
+    stream_id_ext: str,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    stream_id_str = stream_id_ext.split(".")[0]
+    try:
+        stream_id = int(stream_id_str)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid stream ID")
+
+    item = _get_item_by_stream_id(stream_id, db)
+    if not item or not verify_credentials(username, password, item):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    client_ip = request.client.host if request.client else "unknown"
+    if is_ip_blocked(client_ip):
+        raise HTTPException(status_code=429,
+                            detail="Stream was terminated — reconnect blocked briefly",
+                            headers={"Retry-After": str(KILL_BLOCK_SECONDS)})
+
+    cache = await get_xtream_cache(db, item)
+    row = await asyncio.to_thread(_catalog_lookup, cache.db_path, stream_id)
+    if not row or row["stream_type"] != "movie":
+        raise HTTPException(status_code=404, detail=f"VOD stream {stream_id} not found")
+
+    provider_item = db.query(Item).filter(Item.id == row["item_id"]).first()
+    max_sessions = int(provider_item.max_sessions) if provider_item and provider_item.max_sessions is not None else 1
+    active_count = auto_replace_ip_session(client_ip, f"VOD:{stream_id}")
+    if active_count >= max_sessions:
+        raise HTTPException(status_code=429,
+                            detail=f"Session limit reached ({active_count}/{max_sessions} active streams)",
+                            headers={"Retry-After": "30"})
+
+    with _vod_url_cache_lock:
+        resolved_url = _vod_url_cache.get(stream_id)
+
+    if resolved_url is None:
+        resolved_url = await asyncio.to_thread(
+            _fetch_vod_url, stream_id, row["tvg_id"], row["item_id"], db
+        ) or row["url"]
+
+    result = _proxy_finite_stream(resolved_url, request, "video/mp4",
+                                   stream_label=f"VOD:{stream_id}", item_id=row["item_id"])
+    if isinstance(result, JSONResponse) and result.status_code == 502:
+        with _vod_url_cache_lock:
+            _vod_url_cache.pop(stream_id, None)
+    return result
+
+
+@router.get("/series/{username}/{password}/{stream_id_ext:path}")
+async def proxy_series_root(
+    username: str,
+    password: str,
+    stream_id_ext: str,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    parts = stream_id_ext.split(".")
+    stream_id_str = parts[0]
+    ext = parts[-1] if len(parts) > 1 else ""
+    try:
+        stream_id = int(stream_id_str)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid stream ID")
+
+    item = _get_item_by_stream_id(stream_id, db)
+    if not item or not verify_credentials(username, password, item):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    client_ip = request.client.host if request.client else "unknown"
+    if is_ip_blocked(client_ip):
+        raise HTTPException(status_code=429,
+                            detail="Stream was terminated — reconnect blocked briefly",
+                            headers={"Retry-After": str(KILL_BLOCK_SECONDS)})
+
+    max_sessions = int(item.max_sessions) if item.max_sessions is not None else 1
+
+    if ext == "m3u8":
+        cache = await get_xtream_cache(db, item)
+        row = await asyncio.to_thread(_catalog_lookup, cache.db_path, stream_id)
+        if not row or row["stream_type"] != "series":
+            return JSONResponse({"error": f"Series {stream_id} not found"}, status_code=404)
+        series_info = await asyncio.to_thread(_fetch_series_info_from_row, row, db)
+        base_url = _get_base_url()
+        m3u_lines = ["#EXTM3U"]
+        for season_num, episodes in series_info.get("episodes", {}).items():
+            for ep in episodes:
+                local_ep_id = ep["id"]
+                ep_ext = ep.get("container_extension", "mp4")
+                title = ep.get("title") or f"S{ep.get('season', season_num)}E{ep.get('episode_num', '')}"
+                url = f"{base_url}/series/{username}/{password}/{local_ep_id}.{ep_ext}"
+                m3u_lines.append(f'#EXTINF:-1 tvg-name="{title}",{title}')
+                m3u_lines.append(url)
+        return Response("\n".join(m3u_lines) + "\n", media_type="application/vnd.apple.mpegurl")
+
+    active_count = auto_replace_ip_session(client_ip, f"Series:{stream_id}")
+    if active_count >= max_sessions:
+        raise HTTPException(status_code=429,
+                            detail=f"Session limit reached ({active_count}/{max_sessions} active streams)",
+                            headers={"Retry-After": "30"})
+
+    with _episode_cache_lock:
+        upstream_url = _episode_cache.get(stream_id)
+
+    if upstream_url:
+        return _proxy_finite_stream(upstream_url, request, "video/mp4",
+                                    stream_label=f"Series:{stream_id}", item_id=item.id)
+
+    item_id_guess = stream_id // 1_000_000_000
+    upstream_ep_id = stream_id % 1_000_000_000
+    if item_id_guess == item.id and upstream_ep_id > 0:
+        base = item.server_url.rstrip("/")
+        ep_ext = ext if ext and ext != "m3u8" else "mp4"
+        upstream_url = f"{base}/series/{item.username}/{item.user_pass}/{upstream_ep_id}.{ep_ext}"
+        with _episode_cache_lock:
+            _episode_cache[stream_id] = upstream_url
+        return _proxy_finite_stream(upstream_url, request, "video/mp4",
+                                    stream_label=f"Series:{stream_id}", item_id=item.id)
+
+    base = item.server_url.rstrip("/")
+    ep_ext = ext if ext and ext not in ("m3u8", "") else "mp4"
+    upstream_url = f"{base}/series/{item.username}/{item.user_pass}/{stream_id}.{ep_ext}"
+    with _episode_cache_lock:
+        _episode_cache[stream_id] = upstream_url
+    return _proxy_finite_stream(upstream_url, request, "video/mp4",
+                                stream_label=f"Series:{stream_id}", item_id=item.id)
 
 
 @router.get("/{provider_slug}/live/{username}/{password}/{stream_id_ext:path}")
@@ -1282,7 +1555,9 @@ async def proxy_series(
     if not verify_credentials(username, password, item):
         raise HTTPException(status_code=401, detail="Unauthorized")
 
-    stream_id_str = stream_id_ext.split(".")[0]
+    parts = stream_id_ext.split(".")
+    stream_id_str = parts[0]
+    ext = parts[-1] if len(parts) > 1 else ""
     try:
         stream_id = int(stream_id_str)
     except ValueError:
@@ -1297,6 +1572,28 @@ async def proxy_series(
         )
 
     max_sessions = int(item.max_sessions) if item.max_sessions is not None else 1
+
+    if ext == "m3u8":
+        # M3U-mode app requesting series playlist — generate episode M3U and populate cache
+        cache = await get_xtream_cache(db, item)
+        row = await asyncio.to_thread(_catalog_lookup, cache.db_path, stream_id)
+        if not row or row["stream_type"] != "series":
+            return JSONResponse({"error": f"Series {stream_id} not found"}, status_code=404)
+
+        series_info = await asyncio.to_thread(_fetch_series_info_from_row, row, db)
+        base_url = _get_base_url()
+        m3u_lines = ["#EXTM3U"]
+        for season_num, episodes in series_info.get("episodes", {}).items():
+            for ep in episodes:
+                local_ep_id = ep["id"]  # str(local_id) — _episode_cache already populated
+                ep_ext = ep.get("container_extension", "mp4")
+                title = ep.get("title") or f"S{ep.get('season', season_num)}E{ep.get('episode_num', '')}"
+                url = f"{base_url}/{provider_slug}/series/{username}/{password}/{local_ep_id}.{ep_ext}"
+                m3u_lines.append(f'#EXTINF:-1 tvg-name="{title}",{title}')
+                m3u_lines.append(url)
+        return Response("\n".join(m3u_lines) + "\n", media_type="application/vnd.apple.mpegurl")
+
+    # Episode playback
     active_count = auto_replace_ip_session(client_ip, f"Series:{stream_id}")
     if active_count >= max_sessions:
         raise HTTPException(
@@ -1313,55 +1610,143 @@ async def proxy_series(
         return _proxy_finite_stream(upstream_url, request, "video/mp4",
                                     stream_label=f"Series:{stream_id}", item_id=item.id)
 
-    logger.warning(f"Series episode {stream_id} not in episode cache")
-    cache = await get_xtream_cache(db, item)
-    row = await asyncio.to_thread(_catalog_lookup, cache.db_path, stream_id)
-    if not row or row["stream_type"] != "series":
-        return JSONResponse({"error": f"Series stream {stream_id} not found"}, status_code=404)
+    # Cache miss — try to reconstruct episode URL from _episode_id encoding.
+    # _episode_id(item_id, upstream_ep_id) = item_id * 1_000_000_000 + upstream_ep_id
+    item_id_guess = stream_id // 1_000_000_000
+    upstream_ep_id = stream_id % 1_000_000_000
+    if item_id_guess == item.id and upstream_ep_id > 0:
+        base = item.server_url.rstrip("/")
+        ep_ext = ext if ext and ext != "m3u8" else "mp4"
+        upstream_url = f"{base}/series/{item.username}/{item.user_pass}/{upstream_ep_id}.{ep_ext}"
+        logger.info(f"Series episode {stream_id}: cache miss, reconstructed URL → {upstream_url}")
+        with _episode_cache_lock:
+            _episode_cache[stream_id] = upstream_url
+        return _proxy_finite_stream(upstream_url, request, "video/mp4",
+                                    stream_label=f"Series:{stream_id}", item_id=item.id)
 
-    return _proxy_finite_stream(
-        row["url"], request, "application/vnd.apple.mpegurl",
-        stream_label=f"Series:{stream_id}", item_id=row["item_id"],
-    )
+    # Final fallback: treat stream_id as raw upstream episode ID (from raw M3U episode entries).
+    # Raw IDs have no namespace — just proxy directly using item credentials.
+    base = item.server_url.rstrip("/")
+    ep_ext = ext if ext and ext not in ("m3u8", "") else "mp4"
+    upstream_url = f"{base}/series/{item.username}/{item.user_pass}/{stream_id}.{ep_ext}"
+    logger.info(f"Series {stream_id}: raw episode ID, proxying to {upstream_url}")
+    with _episode_cache_lock:
+        _episode_cache[stream_id] = upstream_url
+    return _proxy_finite_stream(upstream_url, request, "video/mp4",
+                                stream_label=f"Series:{stream_id}", item_id=item.id)
 
 
 # ---------------------------------------------------------------------------
-# Backward-compat: old root-level Xtream paths return a helpful error
+# Root-level API routes — credential-based provider lookup (no slug needed)
+# Apps that strip the slug from the server URL hit these.
 # ---------------------------------------------------------------------------
 
-def _provider_not_found_response(db: Session) -> JSONResponse:
-    all_items = db.query(Item).all()
-    available = [f"/{i.slug}/" for i in all_items if i.slug]
-    return JSONResponse(
-        {
-            "error": "Provider path required. Reconfigure your IPTV app to use a provider-specific URL.",
-            "available_providers": available,
-            "example": f"{available[0]}player_api.php" if available else "/provider-slug/player_api.php",
-        },
-        status_code=404,
-    )
+def _resolve_item_for_api(username: str, password: str, vod_id, series_id, db: Session):
+    """
+    For player_api.php actions that include a stream ID, route by stream ID namespace.
+    This handles providers that share proxy credentials — the namespaced ID encodes item_id.
+    Fall back to credential lookup for list actions (no stream ID).
+    """
+    for sid_str in (series_id, vod_id):
+        if sid_str:
+            try:
+                item = _get_item_by_stream_id(int(sid_str), db)
+                if item and verify_credentials(username, password, item):
+                    return item
+            except (ValueError, TypeError):
+                pass
+    return _get_item_by_credentials(username, password, db)
 
 
 @router.get("/player_api.php")
-async def player_api_legacy(db: Session = Depends(get_db)):
-    return _provider_not_found_response(db)
+async def player_api_root(
+    username: str = Query(...),
+    password: str = Query(...),
+    action: Optional[str] = Query(None),
+    vod_id: Optional[str] = Query(None),
+    series_id: Optional[str] = Query(None),
+    db: Session = Depends(get_db),
+):
+    item = _resolve_item_for_api(username, password, vod_id, series_id, db)
+    if not item:
+        return _unauthorized()
+    return await _handle_player_api(username, password, action, vod_id, series_id, db, item)
 
 
 @router.post("/player_api.php")
-async def player_api_legacy_post(db: Session = Depends(get_db)):
-    return _provider_not_found_response(db)
+async def player_api_root_post(
+    username: str = Form(...),
+    password: str = Form(...),
+    action: Optional[str] = Form(None),
+    vod_id: Optional[str] = Form(None),
+    series_id: Optional[str] = Form(None),
+    db: Session = Depends(get_db),
+):
+    item = _resolve_item_for_api(username, password, vod_id, series_id, db)
+    if not item:
+        return _unauthorized()
+    return await _handle_player_api(username, password, action, vod_id, series_id, db, item)
 
 
 @router.get("/get.php")
-async def get_m3u_legacy(db: Session = Depends(get_db)):
-    return _provider_not_found_response(db)
-
-
-@router.get("/iptv/playlist.m3u")
-async def playlist_legacy(db: Session = Depends(get_db)):
-    return _provider_not_found_response(db)
+async def get_m3u_root(
+    username: str = Query(...),
+    password: str = Query(...),
+    type: str = Query("m3u_plus"),
+    output: str = Query("ts"),
+    db: Session = Depends(get_db),
+):
+    item = _get_item_by_credentials(username, password, db)
+    if not item:
+        return Response("Unauthorized", status_code=401)
+    base_url = _get_base_url()
+    cache = await get_xtream_cache(db, item)
+    slug = item.slug or str(item.id)
+    return StreamingResponse(
+        _m3u_generator(cache, base_url, username, password, slug),
+        media_type="application/x-mpegurl",
+        headers={"Content-Disposition": 'attachment; filename="playlist.m3u"'},
+    )
 
 
 @router.get("/xmltv.php")
-async def xmltv_legacy(db: Session = Depends(get_db)):
-    return _provider_not_found_response(db)
+async def xmltv_root(
+    username: str = Query(...),
+    password: str = Query(...),
+    db: Session = Depends(get_db),
+):
+    item = _get_item_by_credentials(username, password, db)
+    if not item:
+        return Response("Unauthorized", status_code=401)
+    epg_path = os.path.join(config.M3U_DIR, f"epg_{item.id}.xml")
+    if not os.path.exists(epg_path):
+        return Response("EPG not available", status_code=404)
+    return FileResponse(epg_path, media_type="application/xml")
+
+
+@router.get("/iptv/playlist.m3u")
+async def playlist_root(
+    username: Optional[str] = Query(None),
+    password: Optional[str] = Query(None),
+    db: Session = Depends(get_db),
+):
+    if not username or not password:
+        items = db.query(Item).all()
+        if len(items) == 1:
+            item = items[0]
+        else:
+            return JSONResponse({"error": "Username and password required for multi-provider setup"}, status_code=401)
+    else:
+        item = _get_item_by_credentials(username, password, db)
+        if not item:
+            return Response("Unauthorized", status_code=401)
+    proxy_user = item.proxy_username or "iptv"
+    proxy_pass = item.proxy_password or "iptv"
+    base_url = _get_base_url()
+    cache = await get_xtream_cache(db, item)
+    slug = item.slug or str(item.id)
+    return StreamingResponse(
+        _m3u_generator(cache, base_url, proxy_user, proxy_pass, slug),
+        media_type="application/x-mpegurl",
+        headers={"Content-Disposition": 'attachment; filename="playlist.m3u"'},
+    )
