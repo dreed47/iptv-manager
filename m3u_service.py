@@ -11,6 +11,7 @@ import threading
 import time
 import unicodedata
 import urllib.parse
+import hashlib
 
 import requests
 
@@ -19,6 +20,22 @@ from models import Item, SessionLocal, get_app_config
 from services import write_count_to_cache
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# ID generation helpers (copied from xtream_server_routes.py)
+# ---------------------------------------------------------------------------
+
+def _make_id(item_id: int, tvg_id_str: str, type_offset: int) -> int:
+    base = item_id * 100_000_000 + type_offset
+    try:
+        return base + int(tvg_id_str)
+    except (ValueError, TypeError):
+        return base + (int(hashlib.md5(tvg_id_str.encode()).hexdigest(), 16) % 9_000_000)
+
+
+def _vod_id(item_id: int, tvg_id: str) -> int:
+    return _make_id(item_id, tvg_id, 10_000_000)
+
 
 # ---------------------------------------------------------------------------
 # M3U fetch
@@ -119,11 +136,12 @@ def do_fetch_m3u(item_id: int, db) -> tuple:
                 f'group-title="{stream.get("category_name","Live")}", {name}\n{url}\n'
             )
         for stream in vod_streams:
-            sid  = stream.get('stream_id')
+            upstream_sid  = stream.get('stream_id')
+            local_sid = _vod_id(item.id, upstream_sid)
             name = stream.get('name', 'Unknown')
-            url  = f"{base}/movie/{item.username}/{item.user_pass}/{sid}.mp4"
+            url  = f"{base}/movie/{item.username}/{item.user_pass}/{local_sid}.mp4"
             m3u_content += (
-                f'#EXTINF:-1 tvg-id="{sid}" tvg-name="{name}" '
+                f'#EXTINF:-1 tvg-id="{upstream_sid}" tvg-name="{name}" '
                 f'tvg-logo="{stream.get("stream_icon","")}" '
                 f'group-title="{stream.get("category_name","VOD")}", {name}\n{url}\n'
             )

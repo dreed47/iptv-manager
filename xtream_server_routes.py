@@ -774,29 +774,58 @@ def _fetch_series_info_from_row(row, db: Session) -> dict:
         return _series_info_fallback_from_row(row)
 
     episodes_out = {}
-    for season_num, episodes in data.get("episodes", {}).items():
-        season_list = []
-        for ep in episodes:
-            try:
-                upstream_ep_id = int(ep.get("id", 0))
-            except (ValueError, TypeError):
-                continue
-            ext = ep.get("container_extension", "mp4")
-            local_id = _episode_id(row["item_id"], upstream_ep_id)
-            upstream_url = (
-                f"{base}/series/{item.username}/{item.user_pass}/{upstream_ep_id}.{ext}"
-            )
-            with _episode_cache_lock:
-                if len(_episode_cache) >= _CACHE_MAX:
-                    for k in list(_episode_cache)[: _CACHE_MAX // 2]:
-                        del _episode_cache[k]
-                _episode_cache[local_id] = upstream_url
-            ep_out = dict(ep)
-            ep_out["id"] = str(local_id)
-            ep_out["direct_source"] = ""
-            season_list.append(ep_out)
-        if season_list:
-            episodes_out[season_num] = season_list
+    episodes_data = data.get("episodes", {})
+    if isinstance(episodes_data, list):
+        # Handle if episodes is a list of seasons
+        for season_idx, season_episodes in enumerate(episodes_data):
+            season_num = str(season_idx + 1)
+            season_list = []
+            for ep in season_episodes if isinstance(season_episodes, list) else [season_episodes]:
+                try:
+                    upstream_ep_id = int(ep.get("id", 0))
+                except (ValueError, TypeError):
+                    continue
+                ext = ep.get("container_extension", "mp4")
+                local_id = _episode_id(row["item_id"], upstream_ep_id)
+                upstream_url = (
+                    f"{base}/series/{item.username}/{item.user_pass}/{upstream_ep_id}.{ext}"
+                )
+                with _episode_cache_lock:
+                    if len(_episode_cache) >= _CACHE_MAX:
+                        for k in list(_episode_cache)[: _CACHE_MAX // 2]:
+                            del _episode_cache[k]
+                    _episode_cache[local_id] = upstream_url
+                ep_out = dict(ep)
+                ep_out["id"] = str(local_id)
+                ep_out["direct_source"] = ""
+                season_list.append(ep_out)
+            if season_list:
+                episodes_out[season_num] = season_list
+    else:
+        # Original dict format
+        for season_num, episodes in episodes_data.items():
+            season_list = []
+            for ep in episodes:
+                try:
+                    upstream_ep_id = int(ep.get("id", 0))
+                except (ValueError, TypeError):
+                    continue
+                ext = ep.get("container_extension", "mp4")
+                local_id = _episode_id(row["item_id"], upstream_ep_id)
+                upstream_url = (
+                    f"{base}/series/{item.username}/{item.user_pass}/{upstream_ep_id}.{ext}"
+                )
+                with _episode_cache_lock:
+                    if len(_episode_cache) >= _CACHE_MAX:
+                        for k in list(_episode_cache)[: _CACHE_MAX // 2]:
+                            del _episode_cache[k]
+                    _episode_cache[local_id] = upstream_url
+                ep_out = dict(ep)
+                ep_out["id"] = str(local_id)
+                ep_out["direct_source"] = ""
+                season_list.append(ep_out)
+            if season_list:
+                episodes_out[season_num] = season_list
 
     info = data.get("info", {})
     info.setdefault("name", row["name"])
