@@ -285,7 +285,7 @@ def load_channel_lineup(db: Session = Depends(get_db)) -> list:
         ch.pop("_SourceURL", None)
         ch.pop("_ItemId", None)
 
-    logger.debug(f"Total: Loaded {len(channels)} channels for HDHomeRun lineup from {len(items)} configuration(s)")
+    logger.debug(f"Total: Loaded {len(channels)} channels for HDHomeRun lineup")
 
     if channels:
         logger.debug("First channel example: %s", json.dumps(channels[0], indent=2))
