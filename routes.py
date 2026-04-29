@@ -122,9 +122,16 @@ async def index(request: Request, error: str = None, success: str = None):
         with SessionLocal() as db:
             items = get_all_item_contexts(db, base_url, config.M3U_DIR)
         epg_count = get_generated_epg_count(config.M3U_DIR)
-        return items, epg_count
+        from m3u_service import HDHR_PLAYLIST_FILENAME
+        from services import _cached_count, _count_extinf, _load_count_cache
+        hdhr_playlist_path = os.path.join(config.M3U_DIR, HDHR_PLAYLIST_FILENAME)
+        hdhr_has_filtered = os.path.exists(hdhr_playlist_path)
+        cache_path = os.path.join(config.M3U_DIR, "counts_hdhr.json")
+        cache = _load_count_cache(cache_path)
+        hdhr_filtered_count, _ = _cached_count(hdhr_playlist_path, _count_extinf, cache, "filtered_count", "filtered_mtime")
+        return items, epg_count, hdhr_filtered_count, hdhr_has_filtered
 
-    items, epg_count = await asyncio.to_thread(_load_dashboard_context)
+    items, epg_count, hdhr_filtered_count, hdhr_has_filtered = await asyncio.to_thread(_load_dashboard_context)
 
     # Keep single `item` for templates that still expect it (VPN quick actions etc.)
     item = items[0] if items else None
@@ -142,7 +149,8 @@ async def index(request: Request, error: str = None, success: str = None):
         "can_enable_ssdp": not ssdp_disabled_by_env,
         "friendly_name": config.HDHR_FRIENDLY_NAME,
         "active_page": "dashboard",
-        "hdhr_filtered_count": sum(i["filtered_count"] for i in items),
+        "hdhr_filtered_count": hdhr_filtered_count,
+        "hdhr_has_filtered": hdhr_has_filtered,
         "hdhr_epg_count": epg_count,
     })
     logger.debug(f"Template render duration: {time.perf_counter() - start:.3f}s")
@@ -683,6 +691,7 @@ async def hdhomerun_page(request: Request, error: str = None, success: str = Non
             items = get_all_item_contexts(db, base_url, config.M3U_DIR)
             hdhr_provider_id = get_app_config(db, "hdhr_provider_id")
             hdhr_stream_provider_id = get_app_config(db, "hdhr_stream_provider_id")
+            hdhr_includes = get_app_config(db, "hdhr_includes") or ""
 
         selected_item = None
         if hdhr_provider_id:
@@ -694,9 +703,12 @@ async def hdhomerun_page(request: Request, error: str = None, success: str = Non
         if selected_item is None:
             selected_item = items[0] if items else None
 
-        return items, hdhr_provider_id, hdhr_stream_provider_id, selected_item
+        from m3u_service import HDHR_PLAYLIST_FILENAME
+        hdhr_has_filtered = os.path.exists(os.path.join(config.M3U_DIR, HDHR_PLAYLIST_FILENAME))
 
-    items, hdhr_provider_id, hdhr_stream_provider_id, selected_item = await asyncio.to_thread(_load)
+        return items, hdhr_provider_id, hdhr_stream_provider_id, selected_item, hdhr_includes, hdhr_has_filtered
+
+    items, hdhr_provider_id, hdhr_stream_provider_id, selected_item, hdhr_includes, hdhr_has_filtered = await asyncio.to_thread(_load)
 
     ssdp_disabled_by_env = hdhomerun_emulator.is_env_disabled()
     start = time.perf_counter()
@@ -707,6 +719,8 @@ async def hdhomerun_page(request: Request, error: str = None, success: str = Non
         "items": items,
         "hdhr_provider_id": hdhr_provider_id,
         "hdhr_stream_provider_id": hdhr_stream_provider_id,
+        "hdhr_includes": hdhr_includes,
+        "hdhr_has_filtered": hdhr_has_filtered,
         "friendly_name": config.HDHR_FRIENDLY_NAME,
         "active_page": "hdhomerun",
         "hdhr_running": hdhomerun_emulator.is_running(),
@@ -721,12 +735,16 @@ async def hdhomerun_page(request: Request, error: str = None, success: str = Non
 
 @router.post("/hdhomerun/select_provider", response_class=RedirectResponse)
 async def hdhomerun_select_provider(
+    background_tasks: BackgroundTasks,
     provider_id: str = Form(""),
     stream_provider_id: str = Form(""),
     db: Session = Depends(get_db),
 ):
     set_app_config(db, "hdhr_provider_id", provider_id or None)
     set_app_config(db, "hdhr_stream_provider_id", stream_provider_id or None)
+    # Rebuild HDHR playlist from new channel source in background
+    from m3u_service import run_hdhr_playlist_build
+    background_tasks.add_task(run_hdhr_playlist_build)
     return RedirectResponse(url="/hdhomerun?success=Provider+selection+saved", status_code=303)
 
 
@@ -735,76 +753,38 @@ async def handle_hdhomerun_form(
     request: Request,
     background_tasks: BackgroundTasks,
     save_filters: str = Form(None),
-    item_id: int = Form(None),
     new_includes: str = Form(None),
-    m3u_refresh_hours: int = Form(None),
     db: Session = Depends(get_db),
 ):
-    if save_filters and item_id:
+    if save_filters:
         if new_includes and '\n' in new_includes:
             new_includes = ','.join([inc.strip() for inc in new_includes.split('\n') if inc.strip()])
-        result = update_item(db, item_id, includes=new_includes or None, m3u_refresh_hours=m3u_refresh_hours)
-        if not result:
-            return RedirectResponse(url="/hdhomerun?error=Failed to save filters", status_code=303)
+        new_includes = new_includes or ""
 
-        m3u_path = os.path.join(config.M3U_DIR, f"xtream_playlist_{item_id}.m3u")
-        if not os.path.exists(m3u_path):
-            return RedirectResponse(
-                url="/hdhomerun?success=Filters saved — fetch M3U first to generate filtered playlist",
-                status_code=303,
-            )
+        set_app_config(db, "hdhr_includes", new_includes or None)
 
         try:
-            def _do_hdhr_filter():
-                # Don't pass SQLAlchemy ORM objects across threads; reload inside the worker.
-                from models import SessionLocal, Item as _Item
-                with SessionLocal() as thread_db:
-                    it = thread_db.query(_Item).filter(_Item.id == item_id).first()
-                    if not it:
-                        return None, 0, 0
-                    languages, includes_map, raw_includes, excludes, has_wildcard = build_filter_config(it)
+            from m3u_service import build_hdhr_playlist
+            kept, raw_total = await asyncio.to_thread(build_hdhr_playlist)
 
-                with open(m3u_path, "r", encoding="utf-8", errors="replace") as f:
-                    lines = f.read().splitlines()
-
-                if not includes_map and not languages and not excludes:
-                    return None, 0, 0
-                filtered_content, num_records, input_record_count = apply_m3u_filter(
-                    lines, languages, includes_map, excludes, has_wildcard
-                )
-                if num_records == 0:
-                    return filtered_content, 0, input_record_count
-                os.makedirs(config.M3U_DIR, exist_ok=True)
-                filtered_path = os.path.join(config.M3U_DIR, f"filtered_playlist_{item_id}.m3u")
-                tmp_path = filtered_path + ".tmp"
-                with open(tmp_path, "w", encoding="utf-8") as f:
-                    f.write(filtered_content)
-                os.replace(tmp_path, filtered_path)
-                write_count_to_cache(config.M3U_DIR, str(item_id), "filtered_count", num_records, filtered_path)
-                return filtered_content, num_records, input_record_count
-
-            filtered_content, num_records, input_record_count = await asyncio.to_thread(_do_hdhr_filter)
-
-            if filtered_content is None:
+            if not new_includes:
                 return RedirectResponse(
                     url="/hdhomerun?error=Channel list is empty — add channels in the format: 100|ESPN",
                     status_code=303,
                 )
-            if num_records == 0:
+            if kept == 0:
                 return RedirectResponse(
-                    url="/hdhomerun?error=Filters saved but no channels matched — check your filter list",
+                    url="/hdhomerun?error=Filters saved but no channels matched — check your filter list (fetch M3U first if needed)",
                     status_code=303,
                 )
 
             background_tasks.add_task(_do_epg_refresh)
-            success_msg = urllib.parse.quote(
-                f"Filters saved — {num_records} of {input_record_count} channels matched"
-            )
+            success_msg = urllib.parse.quote(f"Filters saved — {kept} of {raw_total} channels matched")
             return RedirectResponse(url=f"/hdhomerun?success={success_msg}", status_code=303)
         except Exception as e:
-            logger.error(f"Failed to generate filtered M3U after save: {e}")
+            logger.error(f"Failed to build HDHR playlist after save: {e}")
             return RedirectResponse(
-                url=f"/hdhomerun?error=Filters saved but filtering failed: {urllib.parse.quote(str(e))}",
+                url=f"/hdhomerun?error=Filters saved but playlist build failed: {urllib.parse.quote(str(e))}",
                 status_code=303,
             )
 

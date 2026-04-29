@@ -494,17 +494,13 @@ def refresh_filtered_playlist(item) -> tuple[int, int]:
         lines = f.read().splitlines()
 
     languages, includes_map, _, excludes, has_wildcard = build_filter_config(item)
-    raw_xtream_includes = getattr(item, "xtream_includes", None) or ""
 
-    if not includes_map and not languages and not excludes and not raw_xtream_includes.strip():
+    if not includes_map:
         total = sum(1 for ln in lines if ln.startswith("#EXTINF"))
-        logger.warning(f"No filter configured for item {item.id} — skipping filtered playlist rewrite")
+        logger.warning(f"No HDHR includes for item {item.id} — skipping filtered playlist rewrite")
         return 0, total
 
-    if includes_map or languages or excludes:
-        filtered_content, kept, total = apply_m3u_filter(lines, languages, includes_map, excludes, has_wildcard)
-    else:
-        filtered_content, kept, total = apply_xtream_includes_filter(lines, raw_xtream_includes)
+    filtered_content, kept, total = apply_m3u_filter(lines, languages, includes_map, excludes, has_wildcard)
 
     if kept == 0:
         logger.warning(f"Filter produced 0 channels for item {item.id} — not overwriting filtered playlist")
@@ -530,4 +526,98 @@ def run_filtered_refresh(item_id: int) -> None:
             refresh_filtered_playlist(item)
     except Exception as exc:
         logger.warning(f"Filtered playlist refresh failed for item {item_id}: {exc}", exc_info=True)
+
+
+HDHR_PLAYLIST_FILENAME = "hdhr_filtered_playlist.m3u"
+
+
+def build_hdhr_playlist() -> tuple[int, int]:
+    """Rebuild the global HDHR playlist from AppConfig hdhr_includes + hdhr_provider_id.
+
+    Reads hdhr_includes (global channel filter) and hdhr_provider_id from AppConfig.
+    Filters the selected provider's raw M3U (or merges all providers if no selection).
+    Writes hdhr_filtered_playlist.m3u. Returns (kept, total).
+    """
+    from models import SessionLocal, Item, get_app_config
+
+    with SessionLocal() as db:
+        hdhr_includes_str = get_app_config(db, "hdhr_includes") or ""
+        hdhr_provider_id = get_app_config(db, "hdhr_provider_id")
+
+        if hdhr_provider_id:
+            try:
+                item = db.query(Item).filter(Item.id == int(hdhr_provider_id)).first()
+                items = [item] if item else list(db.query(Item).all())
+            except (ValueError, TypeError):
+                items = list(db.query(Item).all())
+        else:
+            items = list(db.query(Item).all())
+
+    hdhr_path = os.path.join(config.M3U_DIR, HDHR_PLAYLIST_FILENAME)
+    os.makedirs(config.M3U_DIR, exist_ok=True)
+
+    # Parse hdhr_includes into includes_map (same format as item.includes: "100|ESPN,200|FOX")
+    includes_map: dict[str, str | None] = {}
+    for inc in hdhr_includes_str.split(","):
+        inc = inc.strip()
+        if not inc:
+            continue
+        if '|' in inc:
+            num, name = inc.split('|', 1)
+            includes_map[strict_normalize(name)] = num.strip()
+        else:
+            includes_map[strict_normalize(inc)] = None
+
+    if not includes_map or not items:
+        tmp_path = hdhr_path + ".tmp"
+        with open(tmp_path, 'w', encoding='utf-8') as f:
+            f.write("#EXTM3U\n")
+        os.replace(tmp_path, hdhr_path)
+        logger.info("HDHR includes empty — wrote empty hdhr_filtered_playlist.m3u")
+        return 0, 0
+
+    # Filter each provider's M3U separately so we can tag channels with x-item-id.
+    # This allows stream routing to track which provider each channel belongs to.
+    all_parts = ["#EXTM3U\n"]
+    kept_total = 0
+    raw_total = 0
+    for item in items:
+        m3u_path = os.path.join(config.M3U_DIR, f"xtream_playlist_{item.id}.m3u")
+        if not os.path.exists(m3u_path):
+            logger.warning(f"Raw M3U not found for item {item.id} — skipping in HDHR build")
+            continue
+        with open(m3u_path, 'r', encoding='utf-8') as f:
+            raw_lines = f.read().splitlines()
+        raw_total += sum(1 for ln in raw_lines if ln.startswith("#EXTINF"))
+        item_content, kept, _ = apply_m3u_filter(raw_lines, [], includes_map, [], False)
+        if kept == 0:
+            continue
+        # Tag each EXTINF line with x-item-id so load_channel_lineup can track routing
+        tagged_lines = []
+        for ln in item_content.splitlines():
+            if ln.startswith("#EXTINF") and "," in ln:
+                idx = ln.rfind(",")
+                ln = ln[:idx] + f' x-item-id="{item.id}"' + ln[idx:]
+            tagged_lines.append(ln + "\n")
+        # Skip the #EXTM3U header from each item's filtered output
+        start = 1 if (tagged_lines and tagged_lines[0].strip() == "#EXTM3U") else 0
+        all_parts.extend(tagged_lines[start:])
+        kept_total += kept
+
+    filtered_content = "".join(all_parts)
+    tmp_path = hdhr_path + ".tmp"
+    with open(tmp_path, 'w', encoding='utf-8') as f:
+        f.write(filtered_content)
+    os.replace(tmp_path, hdhr_path)
+    write_count_to_cache(config.M3U_DIR, "hdhr", "filtered_count", kept_total, hdhr_path)
+    logger.info(f"Rebuilt hdhr_filtered_playlist.m3u: {kept_total}/{raw_total} channels")
+    return kept_total, raw_total
+
+
+def run_hdhr_playlist_build() -> None:
+    """Entry point for rebuilding HDHR playlist in a background thread/process."""
+    try:
+        build_hdhr_playlist()
+    except Exception as exc:
+        logger.warning(f"HDHR playlist build failed: {exc}", exc_info=True)
 

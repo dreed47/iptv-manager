@@ -94,11 +94,14 @@
 <!-- Channel Configuration -->
 <div class="card">
   <form method="POST" action="/hdhomerun">
-    <input type="hidden" name="item_id" value="{{ item.id }}" />
-    <div class="card-title">Channel Filters — {{ item.name }}{% if items and items|length > 1 %} <span class="text-muted" style="font-size:12px; font-weight:400;">(selected provider)</span>{% endif %}</div>
+    <div class="card-title">Channel Filters
+      {% if items and items|length > 1 %}
+      <span class="text-muted" style="font-size:12px; font-weight:400;">(global — applies to selected channel source)</span>
+      {% endif %}
+    </div>
 
     <div class="info-box mb-12">
-      <p class="text-sm">These filters control which channels are exposed to <strong>Plex, Jellyfin, and Emby</strong> via the HDHomeRun tuner. Only channels listed here will appear in your DVR guide and be available for recording. Xtream apps (TiviMate etc.) use separate filters on the Xtream page.</p>
+      <p class="text-sm">These filters control which channels are exposed to <strong>Plex, Jellyfin, and Emby</strong> via the HDHomeRun tuner. This list is global — it applies regardless of which provider is selected as the channel source. Only channels listed here will appear in your DVR guide and be available for recording. Xtream apps (TiviMate etc.) use separate filters on the provider page.</p>
     </div>
 
     <div class="form-group">
@@ -108,7 +111,7 @@
       </label>
       <textarea name="new_includes" class="form-textarea"
         placeholder="One per line&#10;100|ESPN&#10;200|HBO&#10;300|Sports"
-        maxlength="10000">{{ item.includes | replace(',', '\n') if item.includes else '' }}</textarea>
+        maxlength="10000">{{ hdhr_includes | replace(',', '\n') if hdhr_includes else '' }}</textarea>
       <div class="form-help">Format: number|channel name (e.g. 100|ESPN). Only channels listed here are sent to Plex/Jellyfin/Emby. Saving automatically regenerates your filtered playlist.</div>
     </div>
 
@@ -116,7 +119,7 @@
     <div class="flex flex-wrap gap-8">
       <button type="submit" name="save_filters" value="save_filters" class="btn btn-primary">Save &amp; Apply Filters</button>
 
-      {% if item.has_filtered %}
+      {% if hdhr_has_filtered %}
       <a href="/channels" target="_blank" class="btn btn-outline">Channel Guide</a>
       {% endif %}
     </div>
@@ -131,7 +134,6 @@
     <div class="mono-box" style="flex: 1;">{{ item.epg_url }}</div>
     <button onclick="copyToClipboard('{{ item.epg_url }}', this)" class="btn btn-success btn-sm">Copy</button>
     <form method="POST" action="/epg/refresh" style="display:inline; margin:0;">
-      <input type="hidden" name="item_id" value="{{ item.id }}" />
       <button type="submit" class="btn btn-warning btn-sm">Refresh</button>
     </form>
   </div>

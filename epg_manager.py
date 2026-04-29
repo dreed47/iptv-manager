@@ -102,25 +102,22 @@ def _normalize(s: str) -> str:
 
 def get_channels_from_m3u(item_ids: list[int] | None = None) -> list[dict]:
     """
-    Parse filtered_playlist_*.m3u files and return a de-duplicated list
+    Parse hdhr_filtered_playlist.m3u and return a de-duplicated list
     of channel dicts: {tvg_id, tvg_chno, raw_name, clean_name, norm, logo}
-    If item_ids is provided, only files for those provider IDs are read.
+    item_ids is accepted for API compatibility but ignored (channels come from
+    the global HDHR playlist, not per-provider filtered playlists).
     """
     channels: list[dict] = []
     seen_ids: set[str] = set()
     m3u_dir = config.M3U_DIR
 
-    for filename in sorted(os.listdir(m3u_dir)):
-        if not (filename.startswith("filtered_playlist_") and filename.endswith(".m3u")):
-            continue
-        if item_ids is not None:
-            try:
-                fid = int(filename[len("filtered_playlist_"):-len(".m3u")])
-            except ValueError:
-                continue
-            if fid not in item_ids:
-                continue
+    from m3u_service import HDHR_PLAYLIST_FILENAME
+    hdhr_files = [HDHR_PLAYLIST_FILENAME]
+
+    for filename in hdhr_files:
         filepath = os.path.join(m3u_dir, filename)
+        if not os.path.exists(filepath):
+            continue
         try:
             with open(filepath, 'r', encoding='utf-8') as f:
                 lines = f.readlines()
