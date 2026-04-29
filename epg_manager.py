@@ -107,61 +107,74 @@ def get_channels_from_m3u(item_ids: list[int] | None = None) -> list[dict]:
     item_ids is accepted for API compatibility but ignored (channels come from
     the global HDHR playlist, not per-provider filtered playlists).
     """
-    channels: list[dict] = []
     seen_ids: set[str] = set()
+    # Name-based dedup mirrors load_channel_lineup: prefer explicit tvg_chno over auto-assigned.
+    # hdhr_filtered_playlist.m3u merges all providers, so the same channel can appear with
+    # different tvg_ids from each provider — EPG must emit exactly one <channel> per name,
+    # and its id must match the GuideSourceID the lineup picks for that channel.
+    channels_by_norm: dict[str, dict] = {}
     m3u_dir = config.M3U_DIR
 
     from m3u_service import HDHR_PLAYLIST_FILENAME
-    hdhr_files = [HDHR_PLAYLIST_FILENAME]
+    filepath = os.path.join(m3u_dir, HDHR_PLAYLIST_FILENAME)
+    if not os.path.exists(filepath):
+        logger.info("EPG: hdhr_filtered_playlist.m3u not found — returning empty channel list")
+        return []
 
-    for filename in hdhr_files:
-        filepath = os.path.join(m3u_dir, filename)
-        if not os.path.exists(filepath):
+    try:
+        with open(filepath, 'r', encoding='utf-8') as f:
+            lines = f.readlines()
+    except Exception as exc:
+        logger.warning(f"Could not read {filepath}: {exc}")
+        return []
+
+    for i, line in enumerate(lines):
+        line = line.strip()
+        if not line.startswith('#EXTINF') or i + 1 >= len(lines):
             continue
-        try:
-            with open(filepath, 'r', encoding='utf-8') as f:
-                lines = f.readlines()
-        except Exception as exc:
-            logger.warning(f"Could not read {filepath}: {exc}")
+
+        # Skip VOD and series — only live streams have EPG data
+        url_line = lines[i + 1].strip()
+        if '/movie/' in url_line or '/series/' in url_line:
             continue
 
-        for i, line in enumerate(lines):
-            line = line.strip()
-            if not line.startswith('#EXTINF') or i + 1 >= len(lines):
-                continue
+        tvg_id_m = re.search(r'tvg-id="([^"]+)"', line)
+        tvg_name_m = re.search(r'tvg-name="([^"]+)"', line)
+        tvg_chno_m = re.search(r'tvg-chno="([^"]+)"', line)
+        logo_m = re.search(r'tvg-logo="([^"]+)"', line)
 
-            # Skip VOD and series — only live streams have EPG data
-            url_line = lines[i + 1].strip()
-            if '/movie/' in url_line or '/series/' in url_line:
-                continue
+        if not tvg_id_m or not tvg_name_m:
+            continue
+        tvg_id = tvg_id_m.group(1)
+        if tvg_id in seen_ids:
+            continue
+        seen_ids.add(tvg_id)
 
-            tvg_id_m = re.search(r'tvg-id="([^"]+)"', line)
-            tvg_name_m = re.search(r'tvg-name="([^"]+)"', line)
-            tvg_chno_m = re.search(r'tvg-chno="([^"]+)"', line)
-            logo_m = re.search(r'tvg-logo="([^"]+)"', line)
+        raw_name = tvg_name_m.group(1)
+        clean = _strip_prefix(raw_name)
+        # Channels with a "24/7:" style prefix are loop/replay streams — their
+        # programme schedule won't match broadcast EPG data, so skip matching.
+        is_loop = bool(_LOOP_PREFIX_RE.match(raw_name))
+        tvg_chno = tvg_chno_m.group(1) if tvg_chno_m else ''
+        ch = {
+            'tvg_id': tvg_id,
+            'tvg_chno': tvg_chno,
+            'raw_name': raw_name,
+            'clean_name': clean,
+            'norm': _normalize(clean),
+            'logo': logo_m.group(1) if logo_m else '',
+            'epg_skip': is_loop,
+        }
 
-            if not tvg_id_m or not tvg_name_m:
-                continue
-            tvg_id = tvg_id_m.group(1)
-            if tvg_id in seen_ids:
-                continue
-            seen_ids.add(tvg_id)
+        norm_key = ch['norm']
+        existing = channels_by_norm.get(norm_key)
+        if existing is None:
+            channels_by_norm[norm_key] = ch
+        elif tvg_chno and not existing['tvg_chno']:
+            # Replace non-explicit with explicit channel number — same priority as load_channel_lineup
+            channels_by_norm[norm_key] = ch
 
-            raw_name = tvg_name_m.group(1)
-            clean = _strip_prefix(raw_name)
-            # Channels with a "24/7:" style prefix are loop/replay streams — their
-            # programme schedule won't match broadcast EPG data, so skip matching.
-            is_loop = bool(_LOOP_PREFIX_RE.match(raw_name))
-            channels.append({
-                'tvg_id': tvg_id,
-                'tvg_chno': tvg_chno_m.group(1) if tvg_chno_m else '',
-                'raw_name': raw_name,
-                'clean_name': clean,
-                'norm': _normalize(clean),
-                'logo': logo_m.group(1) if logo_m else '',
-                'epg_skip': is_loop,
-            })
-
+    channels = list(channels_by_norm.values())
     logger.info(f"EPG: found {len(channels)} unique channels in filtered M3U files")
     return channels
 
