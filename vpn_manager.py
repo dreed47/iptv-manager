@@ -223,6 +223,45 @@ def start_vpn(config_str: str, username: str, password: str) -> tuple[bool, str]
                 # Let OpenVPN finish adding its own routes (redirect-gateway) before we override.
                 time.sleep(3)
                 if gw_ip and gw_iface:
+                    # Set up policy routing so that replies to connections arriving on the
+                    # Docker bridge (eth0) always leave via eth0, not the VPN tunnel.
+                    # Without this, Docker Desktop on Mac forwards connections using a public
+                    # IP (outside RFC 1918) and the SYN-ACK is swallowed by the VPN tunnel.
+                    try:
+                        # Table 100: eth0-only routing table
+                        subprocess.run(
+                            ["ip", "route", "replace", "default", "via", gw_ip, "dev", gw_iface, "table", "100"],
+                            check=True, capture_output=True,
+                        )
+                        # Route marked packets (mark=1) through table 100
+                        subprocess.run(
+                            ["ip", "rule", "add", "fwmark", "1", "table", "100", "priority", "100"],
+                            capture_output=True,  # ignore error if rule already exists
+                        )
+                        # Mark all new inbound connections on eth0 and restore the mark on replies
+                        for ipt_cmd in [
+                            ["iptables", "-t", "mangle", "-C", "PREROUTING", "-i", gw_iface, "-j", "CONNMARK", "--set-mark", "1"],
+                        ]:
+                            chk = subprocess.run(ipt_cmd, capture_output=True)
+                            if chk.returncode != 0:  # rule not yet present
+                                subprocess.run(
+                                    ["iptables", "-t", "mangle", "-A", "PREROUTING",
+                                     "-i", gw_iface, "-j", "CONNMARK", "--set-mark", "1"],
+                                    check=True, capture_output=True,
+                                )
+                        chk = subprocess.run(
+                            ["iptables", "-t", "mangle", "-C", "OUTPUT", "-j", "CONNMARK", "--restore-mark"],
+                            capture_output=True,
+                        )
+                        if chk.returncode != 0:
+                            subprocess.run(
+                                ["iptables", "-t", "mangle", "-A", "OUTPUT", "-j", "CONNMARK", "--restore-mark"],
+                                check=True, capture_output=True,
+                            )
+                        logger.info(f"VPN: policy routing active — eth0 inbound replies pinned to {gw_iface}")
+                    except Exception as e:
+                        logger.warning(f"VPN: could not set up policy routing: {e}")
+
                     # Override: keep RFC 1918 LAN traffic on the original gateway
                     for net in ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"]:
                         try:

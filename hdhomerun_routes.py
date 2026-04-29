@@ -126,21 +126,8 @@ def get_advertised_base_url() -> str:
     return config.ADVERTISED_BASE_URL
 
 def load_channel_lineup(db: Session = Depends(get_db)) -> list:
-    """Load and merge channels from all filtered M3U files with de-duplication and explicit numbering preference"""
+    """Load channels from the global hdhr_filtered_playlist.m3u with de-duplication and explicit numbering preference."""
     channels = []
-    # Check if a specific provider is selected for HDHomeRun
-    hdhr_provider_id = get_app_config(db, "hdhr_provider_id")
-    if hdhr_provider_id:
-        try:
-            selected = db.query(Item).filter(Item.id == int(hdhr_provider_id)).first()
-            items = [selected] if selected else db.query(Item).all()
-        except (ValueError, TypeError):
-            items = db.query(Item).all()
-    else:
-        items = db.query(Item).all()
-    if not items:
-        logger.warning("No IPTV configurations found")
-        return channels
 
     # Update device ID based on advertised IP/port
     base_url = get_advertised_base_url()
@@ -150,7 +137,11 @@ def load_channel_lineup(db: Session = Depends(get_db)) -> list:
     port = int(parsed.port) if parsed.port else 5005
     hdhomerun_emulator.update_device_id((ip, port))
 
-    logger.debug(f"Loading channels from {len(items)} IPTV configuration(s)")
+    from m3u_service import HDHR_PLAYLIST_FILENAME
+    hdhr_path = os.path.join(config.M3U_DIR, HDHR_PLAYLIST_FILENAME)
+    if not os.path.exists(hdhr_path):
+        logger.warning("hdhr_filtered_playlist.m3u not found — HDHR lineup empty")
+        return channels
 
     # Helpers for name normalization
     import unicodedata
@@ -168,129 +159,110 @@ def load_channel_lineup(db: Session = Depends(get_db)) -> list:
     used_guide_numbers = set()
     next_available_number = 1
     channels_by_name = {}
+    channel_count = 0
 
-    for item in items:
-        filtered_path = os.path.join(config.M3U_DIR, f"filtered_playlist_{item.id}.m3u")
-        if not os.path.exists(filtered_path):
-            logger.warning(f"Filtered M3U not found for config '{item.name}' (ID {item.id})")
-            continue
+    with open(hdhr_path, 'r') as f:
+        lines = f.readlines()
 
-        logger.debug(f"Loading channels from '{item.name}' ({filtered_path})")
+    i = 0
+    while i < len(lines):
+        line = lines[i].strip()
+        if line.startswith('#EXTINF'):
+            if i + 1 < len(lines):
+                # Parse the EXTINF line
+                if ',' in line:
+                    attrs, name = line.split(',', 1)
+                    name = name.strip()
 
-        with open(filtered_path, 'r') as f:
-            lines = f.readlines()
+                    # Extract metadata
+                    tvg_id = ""
+                    tvg_name = ""
+                    tvg_chno = ""
+                    group = ""
+                    item_id = None
 
-        i = 0
-        config_channel_count = 0
+                    id_match = re.search(r'tvg-id="([^"]+)"', attrs)
+                    if id_match:
+                        tvg_id = id_match.group(1)
 
-        while i < len(lines):
-            line = lines[i].strip()
-            if line.startswith('#EXTINF'):
-                if i + 1 < len(lines):
-                    # Parse the EXTINF line
-                    if ',' in line:
-                        attrs, name = line.split(',', 1)
-                        name = name.strip()
+                    name_match = re.search(r'tvg-name="([^"]+)"', attrs)
+                    if name_match:
+                        tvg_name = name_match.group(1)
 
-                        # Extract metadata
-                        tvg_id = ""
-                        tvg_name = ""
-                        tvg_chno = ""
-                        group = ""
+                    chno_match = re.search(r'tvg-chno="([^"]+)"', attrs)
+                    if chno_match:
+                        tvg_chno = chno_match.group(1)
 
-                        id_match = re.search(r'tvg-id="([^"]+)"', attrs)
-                        if id_match:
-                            tvg_id = id_match.group(1)
+                    group_match = re.search(r'group-title="([^"]+)"', attrs)
+                    if group_match:
+                        group = group_match.group(1)
 
-                        name_match = re.search(r'tvg-name="([^"]+)"', attrs)
-                        if name_match:
-                            tvg_name = name_match.group(1)
+                    logo = ""
+                    logo_match = re.search(r'tvg-logo="([^"]+)"', attrs)
+                    if logo_match:
+                        logo = logo_match.group(1)
 
-                        chno_match = re.search(r'tvg-chno="([^"]+)"', attrs)
-                        if chno_match:
-                            tvg_chno = chno_match.group(1)
+                    # x-item-id is embedded by build_hdhr_playlist for stream routing
+                    item_id_match = re.search(r'x-item-id="([^"]+)"', attrs)
+                    if item_id_match:
+                        try:
+                            item_id = int(item_id_match.group(1))
+                        except ValueError:
+                            pass
 
-                        group_match = re.search(r'group-title="([^"]+)"', attrs)
-                        if group_match:
-                            group = group_match.group(1)
+                    # Prefer tvg-name over channel name if available
+                    display_name = tvg_name or name
+                    display_name = display_name.replace('_', ' ').strip()
 
-                        logo = ""
-                        logo_match = re.search(r'tvg-logo="([^"]+)"', attrs)
-                        if logo_match:
-                            logo = logo_match.group(1)
+                    url = lines[i + 1].strip()
 
-                        # Prefer tvg-name over channel name if available
-                        display_name = tvg_name or name
-                        # Clean up common name issues
-                        display_name = display_name.replace('_', ' ').strip()
-
-                        # Get the URL
-                        url = lines[i + 1].strip()
-
-                        # Determine guide number - prefer explicit tvg-chno when present
-                        explicit_number = False
-                        if tvg_chno:
-                            guide_number = tvg_chno
-                            explicit_number = True
-                        else:
-                            # Find next available sequential number avoiding conflicts
-                            while str(next_available_number) in used_guide_numbers:
-                                next_available_number += 1
-                            guide_number = str(next_available_number)
+                    # Determine guide number - prefer explicit tvg-chno when present
+                    explicit_number = False
+                    if tvg_chno:
+                        guide_number = tvg_chno
+                        explicit_number = True
+                    else:
+                        while str(next_available_number) in used_guide_numbers:
                             next_available_number += 1
+                        guide_number = str(next_available_number)
+                        next_available_number += 1
 
-                        # We'll manage used_guide_numbers when finalizing insert/replace
+                    channel_data = {
+                        "GuideNumber": guide_number,
+                        "GuideName": display_name,
+                        "GuideSourceID": tvg_id,
+                        "HD": 1,
+                        "URL": f"{base_url}/auto/v{guide_number}",
+                        "Favorite": 0,
+                        "DRM": 0,
+                        "VideoCodec": "H264",
+                        "AudioCodec": "AAC",
+                        "_ExplicitNumber": 1 if explicit_number else 0,
+                        "_SourceURL": url,
+                        "_ItemId": item_id,
+                    }
+                    if logo:
+                        channel_data["ImageURL"] = logo
+                    if group:
+                        channel_data["NetworkName"] = group
+                        channel_data["NetworkAffiliate"] = group
 
-                        # Add required fields for Plex
-                        channel_data = {
-                            "GuideNumber": guide_number,
-                            "GuideName": display_name,
-                            "GuideSourceID": tvg_id,  # Important for EPG matching
-                            "HD": 1,
-                            # Use local proxy URL so Plex hits this server, not the provider directly
-                            "URL": f"{base_url}/auto/v{guide_number}",
-                            "Favorite": 0,
-                            "DRM": 0,
-                            "VideoCodec": "H264",
-                            "AudioCodec": "AAC",
-                            # Internal fields stripped before returning lineup
-                            "_ExplicitNumber": 1 if explicit_number else 0,
-                            "_SourceURL": url,
-                            "_ItemId": item.id,
-                        }
-                        if logo:
-                            channel_data["ImageURL"] = logo
+                    norm_name = _strict_norm(display_name)
+                    existing = channels_by_name.get(norm_name)
+                    if existing is None:
+                        channels_by_name[norm_name] = channel_data
+                        used_guide_numbers.add(guide_number)
+                        channel_count += 1
+                    elif (not existing.get("_ExplicitNumber")) and channel_data.get("_ExplicitNumber"):
+                        used_guide_numbers.discard(existing.get("GuideNumber", ""))
+                        channels_by_name[norm_name] = channel_data
+                        used_guide_numbers.add(guide_number)
 
-                        # Optional group/network info
-                        if group:
-                            channel_data["NetworkName"] = group
-                            channel_data["NetworkAffiliate"] = group
+            i += 2
+        else:
+            i += 1
 
-                        # Deduplicate by normalized name; prefer explicit-number entries
-                        norm_name = _strict_norm(display_name)
-                        existing = channels_by_name.get(norm_name)
-                        if existing is None:
-                            channels_by_name[norm_name] = channel_data
-                            used_guide_numbers.add(guide_number)
-                            config_channel_count += 1
-                        else:
-                            if (not existing.get("_ExplicitNumber")) and channel_data.get("_ExplicitNumber"):
-                                # Replace non-explicit with explicit; update used numbers
-                                try:
-                                    used_guide_numbers.discard(existing.get("GuideNumber", ""))
-                                except Exception:
-                                    pass
-                                channels_by_name[norm_name] = channel_data
-                                used_guide_numbers.add(guide_number)
-                            else:
-                                # Keep existing (either both non-explicit or existing already explicit)
-                                pass
-
-                i += 2
-            else:
-                i += 1
-
-        logger.debug(f"  Loaded {config_channel_count} channels from '{item.name}'")
+    logger.debug(f"Loaded {channel_count} channels from hdhr_filtered_playlist.m3u")
 
     # Produce final channel list from dedup map
     channels = list(channels_by_name.values())
