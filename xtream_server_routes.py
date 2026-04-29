@@ -1243,7 +1243,7 @@ async def proxy_vod_root(
 
     provider_item = db.query(Item).filter(Item.id == row["item_id"]).first()
     max_sessions = int(provider_item.max_sessions) if provider_item and provider_item.max_sessions is not None else 1
-    active_count = auto_replace_ip_session(client_ip, f"VOD:{stream_id}")
+    active_count = auto_replace_ip_session(client_ip, f"VOD:{stream_id}", item_id=row["item_id"])
     if active_count >= max_sessions:
         raise HTTPException(status_code=429,
                             detail=f"Session limit reached ({active_count}/{max_sessions} active streams)",
@@ -1311,7 +1311,7 @@ async def proxy_series_root(
                 m3u_lines.append(url)
         return Response("\n".join(m3u_lines) + "\n", media_type="application/vnd.apple.mpegurl")
 
-    active_count = auto_replace_ip_session(client_ip, f"Series:{stream_id}")
+    active_count = auto_replace_ip_session(client_ip, f"Series:{stream_id}", item_id=item.id)
     if active_count >= max_sessions:
         raise HTTPException(status_code=429,
                             detail=f"Session limit reached ({active_count}/{max_sessions} active streams)",
@@ -1444,17 +1444,18 @@ def _proxy_finite_stream(source_url: str, request: Request, media_type: str, str
     session_id = str(uuid.uuid4())
 
     def generate():
-        _active_streams[session_id] = {
-            "session_id": session_id,
-            "channel": stream_label,
-            "item_id": item_id,
-            "client_ip": client_ip,
-            "user_agent": user_agent,
-            "started_at": time.time(),
-            "last_chunk_at": time.time(),
-            "bytes_sent": 0,
-            "killed": False,
-        }
+        with _active_streams_lock:
+            _active_streams[session_id] = {
+                "session_id": session_id,
+                "channel": stream_label,
+                "item_id": item_id,
+                "client_ip": client_ip,
+                "user_agent": user_agent,
+                "started_at": time.time(),
+                "last_chunk_at": time.time(),
+                "bytes_sent": 0,
+                "killed": False,
+            }
         bytes_sent = 0
         try:
             for chunk in resp.iter_content(chunk_size=chunk_size):
@@ -1469,7 +1470,8 @@ def _proxy_finite_stream(source_url: str, request: Request, media_type: str, str
         except Exception as exc:
             logger.error(f"Stream error mid-transfer for {source_url}: {exc}")
         finally:
-            _active_streams.pop(session_id, None)
+            with _active_streams_lock:
+                _active_streams.pop(session_id, None)
             resp.close()
 
     return StreamingResponse(
@@ -1514,7 +1516,7 @@ async def proxy_vod(
 
     provider_item = db.query(Item).filter(Item.id == row["item_id"]).first()
     max_sessions = int(provider_item.max_sessions) if provider_item and provider_item.max_sessions is not None else 1
-    active_count = auto_replace_ip_session(client_ip, f"VOD:{stream_id}")
+    active_count = auto_replace_ip_session(client_ip, f"VOD:{stream_id}", item_id=row["item_id"])
     if active_count >= max_sessions:
         raise HTTPException(
             status_code=429,
@@ -1594,7 +1596,7 @@ async def proxy_series(
         return Response("\n".join(m3u_lines) + "\n", media_type="application/vnd.apple.mpegurl")
 
     # Episode playback
-    active_count = auto_replace_ip_session(client_ip, f"Series:{stream_id}")
+    active_count = auto_replace_ip_session(client_ip, f"Series:{stream_id}", item_id=item.id)
     if active_count >= max_sessions:
         raise HTTPException(
             status_code=429,
