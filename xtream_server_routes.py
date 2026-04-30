@@ -1144,11 +1144,10 @@ def _stream_live_direct(source_url: str, channel_name: str, client_ip: str,
     try:
         while attempt <= max_retries:
             if attempt > 0:
-                logger.warning(f"Live reconnect {attempt}/{max_retries} for '{channel_name}' after {bytes_sent} bytes")
+                logger.warning(f"Live reconnect {attempt}/{max_retries} for '{channel_name}' after {bytes_sent} bytes — waiting {retry_delay}s")
                 time.sleep(retry_delay)
                 if bytes_sent > 0:
                     prebuffering = False
-            attempt += 1
             try:
                 bytes_at_last_connect = bytes_sent
                 resp = session.get(source_url, headers=proxy_headers, stream=True,
@@ -1156,6 +1155,7 @@ def _stream_live_direct(source_url: str, channel_name: str, client_ip: str,
                 resp.raise_for_status()
             except Exception as exc:
                 logger.warning(f"Live upstream error for '{channel_name}': {exc}")
+                attempt += 1
                 continue
             try:
                 for chunk in resp.iter_content(chunk_size=chunk_size):
@@ -1185,7 +1185,9 @@ def _stream_live_direct(source_url: str, channel_name: str, client_ip: str,
                             s["bytes_sent"] = bytes_sent
                             s["last_chunk_at"] = time.time()
                         yield chunk
-                # Flush any partial prebuffer on clean upstream close
+                # Upstream closed cleanly — flush partial prebuf, reset budget, reconnect.
+                # Do NOT break: fall through so the while loop reconnects immediately
+                # (attempt unchanged → no sleep). Client never sees a disconnect.
                 if prebuf:
                     for c in prebuf:
                         bytes_sent += len(c)
@@ -1193,14 +1195,15 @@ def _stream_live_direct(source_url: str, channel_name: str, client_ip: str,
                     prebuf = []
                     prebuf_size = 0
                     prebuffering = False
-                # Reset retry budget if this connection delivered substantial data — prevents
-                # retry exhaustion on long-running streams with occasional upstream drops.
                 delivered = bytes_sent - bytes_at_last_connect
                 if delivered >= 10 * 1024 * 1024:
                     attempt = 0
-                break
+                logger.warning(
+                    f"Upstream closed '{channel_name}' after {delivered} bytes — reconnecting immediately"
+                )
             except Exception as exc:
                 logger.warning(f"Live read error for '{channel_name}': {exc}")
+                attempt += 1
             finally:
                 resp.close()
     finally:
