@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse, RedirectResponse, Response, HTMLResponse, FileResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
@@ -46,9 +46,6 @@ _SESSION_STALE_SECONDS = config.STREAM_SESSION_STALE_SECONDS
 _blocked_ips: dict[str, float] = {}
 _blocked_ips_lock = threading.Lock()
 KILL_BLOCK_SECONDS = 60
-# Don't auto-replace a same-channel session that hasn't delivered data yet if it's younger than
-# this threshold — killing a connecting session just restarts the problem and creates a death spiral.
-_MIN_REPLACE_AGE_SECS = 15
 
 
 def _purge_stale_sessions():
@@ -95,7 +92,18 @@ def is_ip_blocked(ip: str) -> bool:
 
 
 def _close_session_connection(s: dict):
-    """Close the upstream HTTP connection stored in a session dict, interrupting any blocking read."""
+    """Interrupt a streaming session as fast as possible.
+
+    Hub-based consumers (Xtream live): inject a None sentinel into the consumer queue
+    to wake a blocked queue.get() without closing the shared hub connection.
+    Legacy per-session producers (HDHomeRun): close the http_session to interrupt iter_content.
+    """
+    consumer_q = s.get("consumer_q")
+    if consumer_q is not None:
+        try:
+            consumer_q.put_nowait(None)
+        except Exception:
+            pass
     http_session = s.get("http_session")
     if http_session:
         try:
@@ -105,36 +113,38 @@ def _close_session_connection(s: dict):
 
 
 def auto_replace_ip_session(client_ip: str, new_channel: str, item_id: int | None = None) -> int:
-    """Kill any non-killed active sessions from client_ip on the same provider (channel switch).
-    No IP block is added. Returns the count of non-killed live streams for this provider after replacement."""
+    """Kill sessions from this IP that are on a DIFFERENT channel (tuner/channel switch).
+    Same-channel connections from the same IP (e.g. Apple TV multi-probe) are left alive.
+    Returns: count of unique OTHER client IPs currently streaming this provider,
+    used for the max_sessions gate (current IP = 1 slot regardless of N connections)."""
     now = time.time()
     killed_sessions = []
     with _active_streams_lock:
-        for sid, s in _active_streams.items():
-            if (s.get("client_ip") == client_ip and not s.get("killed")
+        for sid, s in list(_active_streams.items()):
+            if (s.get("client_ip") == client_ip
+                    and not s.get("killed")
                     and (item_id is None or s.get("item_id") == item_id)):
                 old_ch = s.get("channel_name") or s.get("channel", "?")
-                age = now - s.get("started_at", now)
-                # Don't kill a same-channel session that is still connecting (0 bytes, very young).
-                # Killing it just restarts the problem and creates a reconnect death spiral where
-                # each new session gets killed before it can deliver a single chunk.
-                if (old_ch == new_channel
-                        and s.get("bytes_sent", 0) == 0
-                        and age < _MIN_REPLACE_AGE_SECS):
-                    logger.debug(
-                        f"Auto-replace skipped: session {sid} ('{old_ch}') is {age:.1f}s old "
-                        f"with 0 bytes — letting it finish connecting"
-                    )
-                    continue
+                if old_ch == new_channel:
+                    continue  # same channel: multi-connection client, leave alive
+                # Different channel = real channel/tuner switch, kill old session
                 s["killed"] = True
                 killed_sessions.append((sid, old_ch, s))
+        # Count unique OTHER IPs as viewer slots (current IP always = 1 slot regardless of N connections)
+        cutoff = now - _SESSION_STALE_SECONDS
+        other_ips: set[str] = {
+            s["client_ip"]
+            for s in _active_streams.values()
+            if not s.get("killed")
+            and s.get("last_chunk_at", 0) >= cutoff
+            and (item_id is None or s.get("item_id") == item_id)
+            and s.get("client_ip") != client_ip
+        }
+        live_count = len(other_ips)
     for sid, old_ch, s in killed_sessions:
         _close_session_connection(s)
         logger.info(f"Auto-replaced session {sid}: IP {client_ip} switched from '{old_ch}' to '{new_channel}'")
-    return sum(
-        1 for s in _live_streams()
-        if not s.get("killed") and (item_id is None or s.get("item_id") == item_id)
-    )
+    return live_count
 
 
 def kill_stream(session_id: str, block_ip: bool = True) -> bool:
@@ -613,11 +623,16 @@ async def serve_epg(db: Session = Depends(get_db)):
     import asyncio
     import multiprocessing as mp
     from epg_manager import run_epg_build, EPG_CACHE_PATH
+    from models import get_epg_channel_map
     hdhr_provider_id = get_app_config(db, "hdhr_provider_id")
     item_ids = [int(hdhr_provider_id)] if hdhr_provider_id else None
+    channel_map = get_epg_channel_map(db)
+    raw_offset = get_app_config(db, "epg_time_offset_hours")
+    time_offset = int(raw_offset) if raw_offset is not None else None
 
     def _build():
-        p = mp.Process(target=run_epg_build, args=(False, item_ids), daemon=True)
+        p = mp.Process(target=run_epg_build,
+                       args=(False, item_ids, channel_map, time_offset), daemon=True)
         p.start()
         p.join()
 
@@ -635,11 +650,16 @@ async def refresh_epg(db: Session = Depends(get_db)):
     import asyncio
     import multiprocessing as mp
     from epg_manager import run_epg_build
+    from models import get_epg_channel_map
     hdhr_provider_id = get_app_config(db, "hdhr_provider_id")
     item_ids = [int(hdhr_provider_id)] if hdhr_provider_id else None
+    channel_map = get_epg_channel_map(db)
+    raw_offset = get_app_config(db, "epg_time_offset_hours")
+    time_offset = int(raw_offset) if raw_offset is not None else None
 
     def _build():
-        p = mp.Process(target=run_epg_build, args=(True, item_ids), daemon=True)
+        p = mp.Process(target=run_epg_build,
+                       args=(True, item_ids, channel_map, time_offset), daemon=True)
         p.start()
         p.join()
 
@@ -679,26 +699,26 @@ def ensure_emulator_started(force=False) -> bool:
         return False
 
 @router.post("/hdhr/enable")
-async def enable_discovery():
+async def enable_discovery(next: str = Form(default="/hdhomerun")):
     """Enable HDHomeRun discovery"""
     # Use force=True to override environment variable
     if ensure_emulator_started(force=True):
         success_msg = "HDHomeRun discovery enabled successfully"
         if hdhomerun_emulator.is_env_disabled():
             success_msg += " (Note: Port 1900/UDP may not be exposed - check docker-compose.yml)"
-        return RedirectResponse(url=f"/?success={success_msg}", status_code=303)
-    return RedirectResponse(url="/?error=Failed to start HDHomeRun emulator - port 1900/UDP may not be exposed", status_code=303)
+        return RedirectResponse(url=f"{next}?success={success_msg}", status_code=303)
+    return RedirectResponse(url=f"{next}?error=Failed to start HDHomeRun emulator - port 1900/UDP may not be exposed", status_code=303)
 
 @router.post("/hdhr/disable")
-async def disable_discovery():
+async def disable_discovery(next: str = Form(default="/hdhomerun")):
     """Disable HDHomeRun discovery"""
     try:
         if hdhomerun_emulator.stop():
-            return RedirectResponse(url="/?success=HDHomeRun discovery disabled", status_code=303)
-        return RedirectResponse(url="/?error=Failed to stop HDHomeRun emulator", status_code=303)
+            return RedirectResponse(url=f"{next}?success=HDHomeRun discovery disabled", status_code=303)
+        return RedirectResponse(url=f"{next}?error=Failed to stop HDHomeRun emulator", status_code=303)
     except Exception as e:
         logger.error(f"Failed to stop emulator: {e}")
-        return RedirectResponse(url="/?error=Failed to stop HDHomeRun emulator", status_code=303)
+        return RedirectResponse(url=f"{next}?error=Failed to stop HDHomeRun emulator", status_code=303)
 
 @router.get("/discover.json")
 async def hdhr_discover():

@@ -20,10 +20,12 @@
     <div class="flex flex-center gap-12 mb-12">
       {% if not hdhr_running %}
       <form method="POST" action="/hdhr/enable" style="display:inline;">
+        <input type="hidden" name="next" value="/hdhomerun">
         <button type="submit" class="btn btn-primary">Enable Discovery</button>
       </form>
       {% else %}
       <form method="POST" action="/hdhr/disable" style="display:inline;">
+        <input type="hidden" name="next" value="/hdhomerun">
         <button type="submit" class="btn btn-secondary">Disable Discovery</button>
       </form>
       {% endif %}
@@ -130,12 +132,32 @@
 <div class="card">
   <div class="card-title">EPG (Electronic Program Guide)</div>
   <p class="text-muted text-sm mb-12">Use this URL in Plex/Jellyfin/Emby DVR settings instead of a zip code.</p>
-  <div class="flex-center gap-8">
+  <div class="flex-center gap-8 mb-12">
     <div class="mono-box" style="flex: 1;">{{ item.epg_url }}</div>
     <button onclick="copyToClipboard('{{ item.epg_url }}', this)" class="btn btn-success btn-sm">Copy</button>
     <form method="POST" action="/epg/refresh" style="display:inline; margin:0;">
       <button type="submit" class="btn btn-warning btn-sm">Refresh</button>
     </form>
+  </div>
+
+  <hr class="divider">
+
+  <form method="POST" action="/hdhomerun">
+    <div class="form-group" style="max-width: 260px;">
+      <label class="form-label">Time Offset (hours)</label>
+      <input type="number" name="epg_time_offset_hours" class="form-input"
+             value="{{ epg_time_offset_hours }}" min="-23" max="23" step="1"
+             style="width: 100px;">
+      <div class="form-help">Shift all programme times. 0 = correct (UTC normalization handles timezone-tagged data automatically). Only change if shows display at the wrong time.</div>
+    </div>
+    <button type="submit" class="btn btn-primary btn-sm">Save Offset</button>
+  </form>
+
+  <hr class="divider">
+
+  <div class="flex-center gap-8" style="margin-top: 8px;">
+    <a href="/epg/channel-map" class="btn btn-outline btn-sm">Channel → EPG Mapping</a>
+    <span class="text-muted text-sm">Override which EPG source ID is used for each channel</span>
   </div>
 </div>
 

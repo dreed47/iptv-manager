@@ -19,6 +19,7 @@ Configuration via environment variables:
   EPG_CACHE_HOURS  Cache lifetime in hours. Default: 12
 """
 
+import json
 import os
 import re
 import tempfile
@@ -75,6 +76,42 @@ _ALIASES: dict[str, list[str]] = {
     "wpxi pittsburgh":             ["wpxi", "wpxi nbc"],
 }
 
+
+def _normalize_time_to_utc(time_str: str) -> str:
+    """Normalize an XMLTV timestamp to UTC.
+    
+    Handles formats like:
+    - 20260428224500 +0200
+    - 20260428224500 -0500
+    Returns the same format but always with +0000
+    """
+    if not time_str or len(time_str) < 14:
+        return time_str
+    
+    try:
+        from datetime import datetime, timezone, timedelta
+        
+        # Parse the datetime and timezone offset
+        dt_str = time_str[:14]  # YYYYMMDDHHMMSS
+        offset_str = time_str[15:] if len(time_str) > 15 and time_str[14] in '+-' else '+0000'
+        
+        dt = datetime.strptime(dt_str, '%Y%m%d%H%M%S')
+        
+        # Parse offset
+        sign = 1 if offset_str[0] == '+' else -1
+        offset_hours = int(offset_str[1:3])
+        offset_minutes = int(offset_str[3:5]) if len(offset_str) >= 5 else 0
+        offset = timedelta(hours=sign * offset_hours, minutes=sign * offset_minutes)
+        
+        # Create timezone-aware datetime with the source offset
+        dt_with_tz = dt.replace(tzinfo=timezone(offset))
+        
+        # Convert to UTC
+        dt_utc = dt_with_tz.astimezone(timezone.utc)
+        
+        return dt_utc.strftime('%Y%m%d%H%M%S') + ' +0000'
+    except Exception:
+        return time_str
 
 def _strip_prefix(name: str) -> str:
     """Remove SLING:, US:, GO:, PRIME:, 24/7: etc. and trailing superscripts."""
@@ -311,29 +348,38 @@ def _chno_sort_key(ch: dict):
         return (1, 9999, ch.get('clean_name', ''))
 
 
+_DUMMY_PREFIX_RE = re.compile(r'^(?:\d+/\d+|[A-Za-z]{2,6})\s*:\s*', re.IGNORECASE)
+
 def _dummy_programmes(tvg_id: str, ch_name: str, chno: str = '') -> list[str]:
     """2-hour placeholder blocks for 7 days so Plex shows the channel name in the guide."""
+    from datetime import datetime, timezone, timedelta
+
+    # Strip provider/loop prefix (e.g. "24/7: " or "GO: ") for a cleaner programme title
+    stripped = _DUMMY_PREFIX_RE.sub('', ch_name).strip() or ch_name
+    display_title = f"{chno} {stripped}".strip() if chno else stripped
+    is_loop = bool(_DUMMY_PREFIX_RE.match(ch_name))
+    desc = "24/7 loop channel — no guide data available." if is_loop else "No guide data available for this channel."
+
     now = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
-    # Align to the nearest 2-hour boundary
     now = now.replace(hour=(now.hour // 2) * 2)
-    display_title = f"{chno} {ch_name}".strip() if chno else ch_name
     result = []
-    for block in range(7 * 12):  # 7 days × 12 two-hour blocks
+    for block in range(7 * 12):
         start = now + timedelta(hours=block * 2)
         stop  = start + timedelta(hours=2)
-        sfmt  = start.strftime('%Y%m%d%H%M%S +0000')
-        efmt  = stop.strftime('%Y%m%d%H%M%S +0000')
+        sfmt  = start.strftime('%Y%m%d%H%M%S') + ' +0000'
+        efmt  = stop.strftime('%Y%m%d%H%M%S') + ' +0000'
         result.append(
             f'  <programme start="{sfmt}" stop="{efmt}" channel="{_xml_esc(tvg_id)}">'
             f'<title>{_xml_esc(display_title)}</title>'
-            f'<sub-title>No Guide Data</sub-title>'
-            f'<desc>Guide data is not available for this channel.</desc>'
+            f'<desc>{_xml_esc(desc)}</desc>'
             f'</programme>'
         )
     return result
 
 
-def build_epg_xml(our_channels: list[dict], epg_sources: list) -> str:
+def build_epg_xml(our_channels: list[dict], epg_sources: list,
+                  channel_map: dict[str, str] | None = None,
+                  time_offset_hours: int | None = None) -> str:
     """
     Build XMLTV output:
     - channel id = our tvg-id (so Plex matches via GuideSourceID)
@@ -341,6 +387,8 @@ def build_epg_xml(our_channels: list[dict], epg_sources: list) -> str:
     - channels sorted by tvg_chno so guide is in channel-number order
     - <lcn> and numbered display-name carry channel numbers into the guide
     - unmatched channels get placeholder entries so Plex can still stream them
+    - channel_map: explicit {tvg_id: epg_source_id} overrides, win over auto-match
+    - time_offset_hours: overrides config.EPG_TIME_OFFSET_HOURS when provided
     """
     # Build norm -> first-channel dict for matching, and norm -> all-channels for dup propagation
     our_by_norm: dict[str, dict]       = {}
@@ -355,6 +403,13 @@ def build_epg_xml(our_channels: list[dict], epg_sources: list) -> str:
     matched: dict[str, dict] = {}          # tvg_id -> {'our': ch, 'src_id': str}
     programmes_by_src_id: dict[str, list] = {}  # src_id -> [ET.Element, ...]
 
+    # Build index: our tvg-id -> channel dict (for direct tvg-id matching)
+    our_by_tvg_id: dict[str, dict] = {
+        ch['tvg_id']: ch
+        for ch in our_channels
+        if ch.get('tvg_id') and not ch.get('epg_skip')
+    }
+
     for src_channels, src_programmes in epg_sources:
         if src_channels is None:
             continue
@@ -366,7 +421,19 @@ def build_epg_xml(our_channels: list[dict], epg_sources: list) -> str:
 
         for ch_elem in src_channels:
             src_id = ch_elem.get('id', '')
-            # Try all display-name elements (some sources put alt names in extra ones)
+
+            # Pass 1: direct tvg-id match — our M3U tvg-id == source channel id.
+            # This is the cleanest match; skips fuzzy name logic entirely.
+            if src_id and src_id in our_by_tvg_id:
+                our_ch = our_by_tvg_id[src_id]
+                if our_ch['tvg_id'] not in matched:
+                    matched[our_ch['tvg_id']] = {'our': our_ch, 'src_id': src_id, 'method': 'tvgid'}
+                    logger.debug(
+                        f"EPG tvg-id match: '{our_ch['clean_name']}' <-> src_id={src_id}"
+                    )
+                    continue
+
+            # Pass 2: normalized display-name matching (fallback)
             src_names = [dn.text or '' for dn in ch_elem.findall('display-name')]
             if not src_names:
                 continue
@@ -378,11 +445,19 @@ def build_epg_xml(our_channels: list[dict], epg_sources: list) -> str:
                 src_norm = _normalize(src_name)
                 our_ch = _find_match(src_norm, our_by_norm)
                 if our_ch and our_ch['tvg_id'] not in matched:
-                    matched[our_ch['tvg_id']] = {'our': our_ch, 'src_id': src_id}
+                    matched[our_ch['tvg_id']] = {'our': our_ch, 'src_id': src_id, 'method': 'name'}
                     logger.debug(
-                        f"EPG match: '{our_ch['clean_name']}' <-> '{src_name}' (src_id={src_id})"
+                        f"EPG name match: '{our_ch['clean_name']}' <-> '{src_name}' (src_id={src_id})"
                     )
                     break  # stop trying more display-names for this source channel
+
+    # Apply explicit channel_map overrides — these win over auto-matched results
+    if channel_map:
+        for tvg_id, epg_src_id in channel_map.items():
+            our_ch = our_by_tvg_id.get(tvg_id)
+            if our_ch and epg_src_id:
+                matched[tvg_id] = {'our': our_ch, 'src_id': epg_src_id, 'method': 'override'}
+                logger.debug(f"EPG explicit override: '{our_ch['clean_name']}' -> src_id={epg_src_id}")
 
     # Propagate matches to duplicate channels with the same name but different tvg-id
     # (same channel appearing across multiple filtered playlists)
@@ -396,7 +471,7 @@ def build_epg_xml(our_channels: list[dict], epg_sources: list) -> str:
         if src_id_for_group:
             for ch in ch_list:
                 if ch['tvg_id'] not in matched:
-                    matched[ch['tvg_id']] = {'our': ch, 'src_id': src_id_for_group}
+                    matched[ch['tvg_id']] = {'our': ch, 'src_id': src_id_for_group, 'method': 'dup'}
                     logger.debug(f"EPG dup-match: '{ch['clean_name']}' reuses src_id={src_id_for_group}")
 
     # Build src_id -> list of our tvg_ids (one source can feed multiple dup channels)
@@ -430,13 +505,27 @@ def build_epg_xml(our_channels: list[dict], epg_sources: list) -> str:
 
     # ---- programme elements ----
     prog_count = 0
+
+    offset_hours = time_offset_hours if time_offset_hours is not None else config.EPG_TIME_OFFSET_HOURS
+    if offset_hours != 0:
+        logger.info(f"EPG BUILD: applying time offset of {offset_hours} hours to all programmes")
+
     for src_id, tvg_ids in src_to_tvg_ids.items():
         progs = programmes_by_src_id.get(src_id, [])
         for prog_elem in progs:
+            # Normalize and offset ONCE per element — mutates in place, so must
+            # happen before the tvg_ids loop to avoid applying the offset N times.
+            start = prog_elem.get('start', '')
+            stop  = prog_elem.get('stop', '')
+            if start:
+                prog_elem.set('start', _apply_time_offset(_normalize_time_to_utc(start), offset_hours))
+            if stop:
+                prog_elem.set('stop', _apply_time_offset(_normalize_time_to_utc(stop), offset_hours))
             for tvg_id in tvg_ids:
                 prog_elem.set('channel', tvg_id)
                 parts.append('  ' + ET.tostring(prog_elem, encoding='unicode'))
                 prog_count += 1
+
 
     # ---- dummy programme blocks for unmatched channels ----
     for ch in unmatched_sorted:
@@ -451,14 +540,20 @@ def build_epg_xml(our_channels: list[dict], epg_sources: list) -> str:
     if unmatched_sorted:
         logger.debug(f"EPG unmatched channels: {[ch['clean_name'] for ch in unmatched_sorted]}")
 
-    return '\n'.join(parts)
+    match_results = {
+        tvg_id: {'src_id': m['src_id'], 'method': m.get('method', 'name')}
+        for tvg_id, m in matched.items()
+    }
+    return '\n'.join(parts), match_results
 
 
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
-def build_and_cache_epg(item_ids: list[int] | None = None) -> str:
+def build_and_cache_epg(item_ids: list[int] | None = None,
+                        channel_map: dict[str, str] | None = None,
+                        time_offset_hours: int | None = None) -> str:
     """Fetch sources, build XMLTV, write cache, return XML string."""
     our_channels = get_channels_from_m3u(item_ids=item_ids)
     if not our_channels:
@@ -467,31 +562,44 @@ def build_and_cache_epg(item_ids: list[int] | None = None) -> str:
 
     sources_data = []
 
-    # Provider EPG first (already on disk from M3U sync, no HTTP needed)
-    for filename in sorted(os.listdir(config.M3U_DIR)):
-        if filename.startswith("epg_") and filename.endswith(".xml"):
-            path = os.path.join(config.M3U_DIR, filename)
-            chs, progs = _load_epg_from_file(path)
-            sources_data.append((chs, progs))
-
-    # External sources as fallback for channels not covered by provider EPG
+    # External EPG sources FIRST (web-based, e.g. epg.pw, iptv-org) — these take priority
     for url in config.EPG_XML_SOURCES:
         chs, progs = _fetch_epg_source(url)
         sources_data.append((chs, progs))
 
-    xml_content = build_epg_xml(our_channels, sources_data)
+    # Provider EPG files SECOND (already on disk from M3U sync) — fallback only.
+    # Disabled by default: provider EPG is often non-English (e.g. Hungarian).
+    # Enable with EPG_USE_PROVIDER_DATA=1 in .env if your provider has good EPG.
+    if config.EPG_USE_PROVIDER_DATA:
+        for filename in sorted(os.listdir(config.M3U_DIR)):
+            if filename.startswith("epg_") and filename.endswith(".xml"):
+                path = os.path.join(config.M3U_DIR, filename)
+                chs, progs = _load_epg_from_file(path)
+                sources_data.append((chs, progs))
+
+    xml_content, match_results = build_epg_xml(our_channels, sources_data, channel_map=channel_map,
+                                               time_offset_hours=time_offset_hours)
 
     os.makedirs(os.path.dirname(EPG_CACHE_PATH), exist_ok=True)
     tmp_cache = EPG_CACHE_PATH + ".tmp"
     with open(tmp_cache, 'w', encoding='utf-8') as f:
         f.write(xml_content)
     os.replace(tmp_cache, EPG_CACHE_PATH)
+
+    matches_path = EPG_CACHE_PATH + ".matches.json"
+    tmp_matches = matches_path + ".tmp"
+    with open(tmp_matches, 'w', encoding='utf-8') as f:
+        json.dump(match_results, f)
+    os.replace(tmp_matches, matches_path)
+
     write_count_to_cache(config.M3U_DIR, "generated", "epg_count", xml_content.count("<channel "), EPG_CACHE_PATH)
     logger.info(f"EPG cached at {EPG_CACHE_PATH} ({len(xml_content) // 1024} KB)")
     return xml_content
 
 
-def get_epg(force_refresh: bool = False, item_ids: list[int] | None = None) -> str:
+def get_epg(force_refresh: bool = False, item_ids: list[int] | None = None,
+            channel_map: dict[str, str] | None = None,
+            time_offset_hours: int | None = None) -> str:
     """Return EPG XML, using on-disk cache unless stale or force_refresh=True."""
     if not force_refresh and os.path.exists(EPG_CACHE_PATH):
         age = time.time() - os.path.getmtime(EPG_CACHE_PATH)
@@ -499,12 +607,50 @@ def get_epg(force_refresh: bool = False, item_ids: list[int] | None = None) -> s
             logger.debug(f"EPG: serving from cache (age {age / 3600:.1f}h)")
             with open(EPG_CACHE_PATH, 'r', encoding='utf-8') as f:
                 return f.read()
-    return build_and_cache_epg(item_ids=item_ids)
+    return build_and_cache_epg(item_ids=item_ids, channel_map=channel_map,
+                               time_offset_hours=time_offset_hours)
 
 
-def run_epg_build(force_refresh: bool = True, item_ids: list[int] | None = None) -> None:
+def run_epg_build(force_refresh: bool = True, item_ids: list[int] | None = None,
+                  channel_map: dict[str, str] | None = None,
+                  time_offset_hours: int | None = None) -> None:
     """Entry point for running EPG builds in a separate process."""
     try:
-        get_epg(force_refresh=force_refresh, item_ids=item_ids)
+        get_epg(force_refresh=force_refresh, item_ids=item_ids,
+                channel_map=channel_map, time_offset_hours=time_offset_hours)
     except Exception as exc:
         logger.warning(f"EPG build failed: {exc}", exc_info=True)
+
+def _apply_time_offset(time_str: str, offset_hours: int) -> str:
+    """Apply a fixed hour offset to an XMLTV timestamp and normalize to UTC."""
+    if not time_str or offset_hours == 0:
+        return time_str
+    
+    try:
+        from datetime import datetime, timedelta, timezone
+        
+        # Parse the datetime portion
+        dt_str = time_str[:14]
+        dt = datetime.strptime(dt_str, '%Y%m%d%H%M%S')
+        
+        # Parse the timezone offset from the string
+        tz_str = time_str[14:].strip()
+        if tz_str and tz_str[0] in '+-' and len(tz_str) >= 5:
+            sign = 1 if tz_str[0] == '+' else -1
+            tz_hours = int(tz_str[1:3])
+            tz_mins = int(tz_str[3:5]) if len(tz_str) >= 5 else 0
+            tz_offset = timedelta(hours=sign * tz_hours, minutes=sign * tz_mins)
+            # Make the datetime timezone-aware with the source timezone
+            dt = dt.replace(tzinfo=timezone(tz_offset))
+        else:
+            # Assume UTC if no timezone
+            dt = dt.replace(tzinfo=timezone.utc)
+        
+        # Apply the offset
+        dt = dt + timedelta(hours=offset_hours)
+        
+        # Convert to UTC and output with +0000
+        dt_utc = dt.astimezone(timezone.utc)
+        return dt_utc.strftime('%Y%m%d%H%M%S') + ' +0000'
+    except Exception:
+        return time_str

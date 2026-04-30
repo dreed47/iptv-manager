@@ -4,6 +4,7 @@ from sqlalchemy.orm import Session
 from models import get_db, Item
 from hdhomerun_routes import register_extra_channels, _active_streams, _active_streams_lock, _SESSION_STALE_SECONDS, get_active_stream_count, is_ip_blocked, auto_replace_ip_session, KILL_BLOCK_SECONDS
 import asyncio
+import collections
 import config
 import gc
 import hashlib
@@ -14,6 +15,7 @@ import re
 import fnmatch
 import sqlite3
 import time
+import queue as _queue
 import threading
 import uuid
 import unicodedata
@@ -1097,6 +1099,184 @@ async def xmltv_endpoint(
 
 
 # ---------------------------------------------------------------------------
+# Per-channel shared upstream producer (ChannelHub)
+#
+# Instead of one upstream TCP connection per HTTP session, each active channel
+# keeps exactly one upstream connection shared by all consumers.  New consumers
+# are seeded from a ring buffer so they get data immediately (no startup gap).
+# This prevents Apple TV's rapid-reconnect / probe pattern from disrupting the
+# main streaming session.
+# ---------------------------------------------------------------------------
+
+_channel_hubs: dict[tuple[int, int], "_ChannelHub"] = {}
+_channel_hubs_lock = threading.Lock()
+
+_PROXY_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+    "Accept": "*/*",
+    "Connection": "keep-alive",
+}
+
+
+class _ChannelHub:
+    """Manages one upstream HTTP connection per channel.
+
+    A single producer thread reads from the provider and fans each chunk out to:
+      - a ring buffer (catch-up for new consumers)
+      - every attached consumer's dedicated queue
+
+    Consumers attach/detach without affecting the upstream connection.
+    The hub stops after HUB_IDLE_SECS with no consumers.
+    """
+
+    def __init__(self, key: tuple[int, int], source_url: str, channel_name: str):
+        self._key          = key
+        self.source_url    = source_url
+        self.channel_name  = channel_name
+        self._lock         = threading.Lock()
+        self._ring: collections.deque = collections.deque(maxlen=config.HUB_RING_CHUNKS)
+        self._consumers: dict[str, _queue.Queue] = {}
+        self._stop_event   = threading.Event()
+        self._grace_seq    = 0   # incremented on attach; lets grace threads self-cancel
+        self._http         = requests.Session()
+        self._thread       = threading.Thread(
+            target=self._run, daemon=True, name=f"hub-{key[1]}"
+        )
+        self._thread.start()
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+
+    def attach(self, consumer_id: str) -> _queue.Queue:
+        """Register a consumer and return its queue, pre-seeded from the ring buffer."""
+        q: _queue.Queue = _queue.Queue(maxsize=config.HUB_CONSUMER_Q)
+        with self._lock:
+            self._grace_seq += 1          # cancel any pending idle-stop
+            for chunk in self._ring:      # seed from recent history
+                try:
+                    q.put_nowait(chunk)
+                except _queue.Full:
+                    break
+            self._consumers[consumer_id] = q
+        logger.debug(f"Hub attach: consumer '{consumer_id[:8]}' on '{self.channel_name}' "
+                     f"(total={len(self._consumers)})")
+        return q
+
+    def detach(self, consumer_id: str):
+        """Unregister a consumer.  Schedules hub shutdown if no consumers remain."""
+        with self._lock:
+            self._consumers.pop(consumer_id, None)
+            remaining = len(self._consumers)
+            grace_seq = self._grace_seq
+        logger.debug(f"Hub detach: consumer '{consumer_id[:8]}' on '{self.channel_name}' "
+                     f"(remaining={remaining})")
+        if remaining == 0:
+            threading.Thread(
+                target=self._idle_stop, args=(grace_seq,),
+                daemon=True, name=f"hub-grace-{self._key[1]}"
+            ).start()
+
+    def interrupt_consumer(self, consumer_id: str):
+        """Wake a blocked consumer immediately by injecting the DONE sentinel."""
+        with self._lock:
+            q = self._consumers.get(consumer_id)
+        if q is not None:
+            try:
+                q.put_nowait(None)
+            except _queue.Full:
+                pass
+
+    # ------------------------------------------------------------------
+    # Internal
+    # ------------------------------------------------------------------
+
+    def _idle_stop(self, grace_seq: int):
+        time.sleep(config.HUB_IDLE_SECS)
+        with self._lock:
+            if self._grace_seq != grace_seq or self._consumers:
+                return   # a new consumer arrived; don't stop
+        self._stop_event.set()
+        self._http.close()
+        with _channel_hubs_lock:
+            if _channel_hubs.get(self._key) is self:
+                del _channel_hubs[self._key]
+        logger.info(f"Hub stopped (idle): '{self.channel_name}'")
+
+    def _run(self):
+        chunk_size   = config.STREAM_CHUNK_KB * 1024
+        max_retries  = config.STREAM_MAX_RETRIES
+        retry_delay  = config.STREAM_RETRY_DELAY
+        read_timeout = config.STREAM_READ_TIMEOUT
+        attempt      = 0
+        try:
+            while not self._stop_event.is_set() and attempt <= max_retries:
+                if attempt > 0:
+                    logger.warning(
+                        f"Hub reconnect {attempt}/{max_retries} for '{self.channel_name}' "
+                        f"— waiting {retry_delay}s"
+                    )
+                    time.sleep(retry_delay)
+                try:
+                    resp = self._http.get(
+                        self.source_url, headers=_PROXY_HEADERS,
+                        stream=True, timeout=(10, read_timeout),
+                    )
+                    resp.raise_for_status()
+                except Exception as exc:
+                    logger.warning(f"Hub upstream error for '{self.channel_name}': {exc}")
+                    attempt += 1
+                    continue
+                seg_bytes = 0
+                try:
+                    for chunk in resp.iter_content(chunk_size=chunk_size):
+                        if self._stop_event.is_set():
+                            return
+                        if not chunk:
+                            continue
+                        seg_bytes += len(chunk)
+                        with self._lock:
+                            self._ring.append(chunk)
+                            for q in list(self._consumers.values()):
+                                try:
+                                    q.put_nowait(chunk)
+                                except _queue.Full:
+                                    pass   # slow consumer; they catch up via ring on re-attach
+                    # Clean upstream close — reconnect immediately
+                    if seg_bytes >= 10 * 1024 * 1024:
+                        attempt = 0
+                    logger.warning(
+                        f"Upstream closed '{self.channel_name}' after {seg_bytes} bytes — reconnecting"
+                    )
+                except Exception as exc:
+                    logger.warning(f"Hub read error for '{self.channel_name}': {exc}")
+                    attempt += 1
+                finally:
+                    resp.close()
+        finally:
+            # Signal all consumers that the hub has stopped
+            with self._lock:
+                for q in self._consumers.values():
+                    try:
+                        q.put_nowait(None)
+                    except _queue.Full:
+                        pass
+            logger.info(f"Hub producer exited: '{self.channel_name}'")
+
+
+def _get_or_create_hub(item_id: int, stream_id: int, source_url: str, channel_name: str) -> _ChannelHub:
+    key = (item_id, stream_id)
+    with _channel_hubs_lock:
+        hub = _channel_hubs.get(key)
+        if hub is not None and not hub._stop_event.is_set():
+            return hub
+        hub = _ChannelHub(key, source_url, channel_name)
+        _channel_hubs[key] = hub
+        logger.info(f"Hub created: '{channel_name}' (item={item_id}, stream={stream_id})")
+        return hub
+
+
+# ---------------------------------------------------------------------------
 # Stream proxy endpoints
 # ---------------------------------------------------------------------------
 
@@ -1119,93 +1299,48 @@ def _register_session(session_id: str, channel_name: str, client_ip: str, user_a
 
 def _stream_live_direct(source_url: str, channel_name: str, client_ip: str,
                         user_agent: str, session_id: str, max_sessions: int,
-                        item_id: int | None = None):
-    """Generator that proxies a live stream directly from source_url with retry.
-    Session must be registered in _active_streams before this generator is iterated."""
-    chunk_size = config.STREAM_CHUNK_KB * 1024
-    prebuffer_bytes = config.STREAM_PREBUFFER_KB * 1024
-    max_retries = config.STREAM_MAX_RETRIES
-    retry_delay = config.STREAM_RETRY_DELAY
-    read_timeout = config.STREAM_READ_TIMEOUT
-    proxy_headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-        "Accept": "*/*",
-        "Connection": "keep-alive",
-    }
+                        item_id: int | None = None, stream_id: int | None = None):
+    """Generator that proxies a live stream via the per-channel _ChannelHub.
 
-    bytes_sent = 0
-    attempt = 0
-    prebuf: list[bytes] = []
-    prebuf_size = 0
-    prebuffering = prebuffer_bytes > 0
-    bytes_at_last_connect = 0
-    session = requests.Session()
+    The hub maintains one upstream TCP connection per channel and fans chunks
+    out to every attached consumer.  New consumers are seeded from the ring
+    buffer so they receive data immediately without waiting for the next
+    upstream chunk.  Session must be registered in _active_streams before
+    this generator is iterated.
+    """
+    read_timeout = config.STREAM_READ_TIMEOUT
+    hub = _get_or_create_hub(item_id or 0, stream_id or 0, source_url, channel_name)
+    consumer_q = hub.attach(session_id)
+
+    # Store the consumer queue so kill_stream / auto_replace can wake a
+    # blocked consumer_q.get() immediately via interrupt_consumer().
     with _active_streams_lock:
         if session_id in _active_streams:
-            _active_streams[session_id]["http_session"] = session
+            _active_streams[session_id]["consumer_q"] = consumer_q
+
+    bytes_sent = 0
     try:
-        while attempt <= max_retries:
-            if attempt > 0:
-                logger.warning(f"Live reconnect {attempt}/{max_retries} for '{channel_name}' after {bytes_sent} bytes")
-                time.sleep(retry_delay)
-                if bytes_sent > 0:
-                    prebuffering = False
-            attempt += 1
+        while True:
             try:
-                bytes_at_last_connect = bytes_sent
-                resp = session.get(source_url, headers=proxy_headers, stream=True,
-                                   timeout=(10, read_timeout))
-                resp.raise_for_status()
-            except Exception as exc:
-                logger.warning(f"Live upstream error for '{channel_name}': {exc}")
-                continue
-            try:
-                for chunk in resp.iter_content(chunk_size=chunk_size):
-                    if not chunk:
-                        continue
-                    if _active_streams.get(session_id, {}).get("killed"):
-                        logger.info(f"Live stream {session_id} ('{channel_name}') killed by admin")
-                        return
-                    if prebuffering:
-                        prebuf.append(chunk)
-                        prebuf_size += len(chunk)
-                        if prebuf_size >= prebuffer_bytes:
-                            for c in prebuf:
-                                bytes_sent += len(c)
-                                yield c
-                            s = _active_streams.get(session_id)
-                            if s:
-                                s["bytes_sent"] = bytes_sent
-                                s["last_chunk_at"] = time.time()
-                            prebuf = []
-                            prebuf_size = 0
-                            prebuffering = False
-                    else:
-                        bytes_sent += len(chunk)
-                        s = _active_streams.get(session_id)
-                        if s:
-                            s["bytes_sent"] = bytes_sent
-                            s["last_chunk_at"] = time.time()
-                        yield chunk
-                # Flush any partial prebuffer on clean upstream close
-                if prebuf:
-                    for c in prebuf:
-                        bytes_sent += len(c)
-                        yield c
-                    prebuf = []
-                    prebuf_size = 0
-                    prebuffering = False
-                # Reset retry budget if this connection delivered substantial data — prevents
-                # retry exhaustion on long-running streams with occasional upstream drops.
-                delivered = bytes_sent - bytes_at_last_connect
-                if delivered >= 10 * 1024 * 1024:
-                    attempt = 0
+                chunk = consumer_q.get(timeout=read_timeout + 5)
+            except _queue.Empty:
+                logger.warning(f"Consumer timeout waiting for '{channel_name}'")
                 break
-            except Exception as exc:
-                logger.warning(f"Live read error for '{channel_name}': {exc}")
-            finally:
-                resp.close()
+            if chunk is None:   # hub stopped or interrupt_consumer() called
+                break
+            s = _active_streams.get(session_id)
+            if s and s.get("killed"):
+                logger.info(f"Live stream {session_id} ('{channel_name}') killed by admin")
+                break
+            bytes_sent += len(chunk)
+            if s:
+                s["bytes_sent"] = bytes_sent
+                s["last_chunk_at"] = time.time()
+            yield chunk
+    except GeneratorExit:
+        pass
     finally:
+        hub.detach(session_id)
         logger.debug(f"Live stream ended: '{channel_name}', {bytes_sent} bytes sent")
         with _active_streams_lock:
             _active_streams.pop(session_id, None)
@@ -1257,7 +1392,8 @@ async def proxy_live_root(
     db.close()
     return StreamingResponse(
         _stream_live_direct(entry.url, entry.name, client_ip,
-                            user_agent, session_id, max_sessions, item_id=item.id),
+                            user_agent, session_id, max_sessions,
+                            item_id=item.id, stream_id=stream_id),
         media_type="video/mp2t",
         headers={"Cache-Control": "no-cache"},
     )
@@ -1442,7 +1578,8 @@ async def proxy_live(
     db.close()
     return StreamingResponse(
         _stream_live_direct(entry.url, entry.name, client_ip,
-                            user_agent, session_id, max_sessions, item_id=item.id),
+                            user_agent, session_id, max_sessions,
+                            item_id=item.id, stream_id=stream_id),
         media_type="video/mp2t",
         headers={"Cache-Control": "no-cache"},
     )

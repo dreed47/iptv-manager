@@ -5,7 +5,7 @@ import asyncio
 import time
 import threading
 from sqlalchemy.orm import Session
-from models import get_db, Item, AppConfig, get_app_config, set_app_config, SessionLocal
+from models import get_db, Item, AppConfig, get_app_config, set_app_config, SessionLocal, get_epg_channel_map, save_epg_channel_map, EpgChannelMap
 from services import create_item, update_item, get_item_context, get_all_item_contexts, get_item_by_slug, generate_slug, get_generated_epg_count, write_count_to_cache
 import config
 import logging
@@ -14,7 +14,7 @@ import re
 from hdhomerun_routes import hdhomerun_emulator, get_active_streams, kill_stream, KILL_BLOCK_SECONDS
 import urllib.parse
 import json
-from epg_manager import get_epg, run_epg_build
+from epg_manager import get_epg, run_epg_build, EPG_CACHE_PATH
 from m3u_service import do_fetch_m3u, build_filter_config, apply_m3u_filter, refresh_filtered_playlist
 
 # Configure logging
@@ -67,11 +67,16 @@ def queue_refresh_filtered(item_id: int) -> bool:
     return True
 
 
-def _resolve_epg_item_ids() -> list[int] | None:
+def _resolve_epg_params() -> tuple[list[int] | None, dict[str, str], int | None]:
+    """Read EPG build params from DB: item_ids, channel_map, time_offset_hours."""
     from models import SessionLocal
     with SessionLocal() as db:
         hdhr_id = get_app_config(db, "hdhr_provider_id")
-        return [int(hdhr_id)] if hdhr_id else None
+        item_ids = [int(hdhr_id)] if hdhr_id else None
+        channel_map = get_epg_channel_map(db)
+        raw_offset = get_app_config(db, "epg_time_offset_hours")
+        time_offset = int(raw_offset) if raw_offset is not None else None
+    return item_ids, channel_map, time_offset
 
 
 def queue_epg_refresh(force: bool = True) -> bool:
@@ -90,9 +95,10 @@ def queue_epg_refresh(force: bool = True) -> bool:
     def _run():
         global _EPG_REFRESH_INFLIGHT
         try:
-            item_ids = _resolve_epg_item_ids()
+            item_ids, channel_map, time_offset = _resolve_epg_params()
             import multiprocessing as mp
-            p = mp.Process(target=run_epg_build, args=(force, item_ids), daemon=True)
+            p = mp.Process(target=run_epg_build,
+                           args=(force, item_ids, channel_map, time_offset), daemon=True)
             p.start()
             p.join()
         except Exception as exc:
@@ -238,31 +244,41 @@ async def test_provider_connection(item_id: int, db: Session = Depends(get_db)):
 
 @router.get("/api/active_streams", response_class=JSONResponse)
 async def api_active_streams(db: Session = Depends(get_db)):
-    import math
     streams = get_active_streams()
     all_items = db.query(Item).all()
     max_sessions = sum(int(it.max_sessions or 1) for it in all_items) if all_items else 1
     item_names = {it.id: it.name for it in all_items}
-    out = []
-    now = time.time()
+
+    # Group by (client_ip, channel_name) — multi-connection clients (e.g. Apple TV) show as one entry
+    groups: dict[tuple, list] = {}
     for s in streams:
-        elapsed = int(now - s.get("started_at", now))
+        key = (s.get("client_ip", "?"), s.get("channel_name", s.get("channel", "?")))
+        groups.setdefault(key, []).append(s)
+
+    now = time.time()
+    out = []
+    for group in groups.values():
+        rep = max(group, key=lambda s: s.get("bytes_sent", 0))
+        elapsed = int(now - rep.get("started_at", now))
         hours, rem = divmod(elapsed, 3600)
         mins, secs = divmod(rem, 60)
         duration = f"{hours}h {mins}m" if hours else f"{mins}m {secs}s"
-        mb = s.get("bytes_sent", 0) / (1024 * 1024)
-        channel_num = s.get("channel", "?")
-        channel_name = s.get("channel_name", "")
+        mb = rep.get("bytes_sent", 0) / (1024 * 1024)
+        channel_num = rep.get("channel", "?")
+        channel_name = rep.get("channel_name", "")
         channel_display = f"{channel_num} — {channel_name}" if channel_name and channel_name != channel_num else channel_num
-        provider_name = item_names.get(s.get("item_id"), "")
-        out.append({
-            "session_id": s.get("session_id", ""),
+        provider_name = item_names.get(rep.get("item_id"), "")
+        entry = {
+            "session_id": rep.get("session_id", ""),
             "channel": channel_display,
-            "client_ip": s.get("client_ip", "?"),
+            "client_ip": rep.get("client_ip", "?"),
             "duration": duration,
             "mb_sent": round(mb, 1),
             "provider": provider_name,
-        })
+        }
+        if len(group) > 1:
+            entry["connections"] = len(group)
+        out.append(entry)
     return JSONResponse({"streams": out, "max_sessions": max_sessions})
 
 
@@ -369,7 +385,7 @@ async def generate_filtered_m3u(background_tasks: BackgroundTasks, item_id: int 
                 it = thread_db.query(_Item).filter(_Item.id == item_id).first()
                 if not it:
                     return None, 0, 0
-                languages, includes_map, raw_includes, excludes, has_wildcard = build_filter_config(it)
+                languages, includes_strict, includes_raw, raw_includes, excludes, has_wildcard = build_filter_config(it)
 
             with open(m3u_path, "r", encoding="utf-8") as f:
                 lines = f.read().splitlines()
@@ -379,7 +395,7 @@ async def generate_filtered_m3u(background_tasks: BackgroundTasks, item_id: int 
                 f"excludes={excludes} wildcard={has_wildcard}"
             )
             filtered_content, num_records, input_record_count = apply_m3u_filter(
-                lines, languages, includes_map, excludes, has_wildcard
+                lines, languages, includes_strict, includes_raw, excludes, has_wildcard
             )
             if num_records == 0:
                 return None, 0, input_record_count
@@ -692,6 +708,8 @@ async def hdhomerun_page(request: Request, error: str = None, success: str = Non
             hdhr_provider_id = get_app_config(db, "hdhr_provider_id")
             hdhr_stream_provider_id = get_app_config(db, "hdhr_stream_provider_id")
             hdhr_includes = get_app_config(db, "hdhr_includes") or ""
+            raw_offset = get_app_config(db, "epg_time_offset_hours")
+            epg_time_offset_hours = int(raw_offset) if raw_offset is not None else config.EPG_TIME_OFFSET_HOURS
 
         selected_item = None
         if hdhr_provider_id:
@@ -706,9 +724,9 @@ async def hdhomerun_page(request: Request, error: str = None, success: str = Non
         from m3u_service import HDHR_PLAYLIST_FILENAME
         hdhr_has_filtered = os.path.exists(os.path.join(config.M3U_DIR, HDHR_PLAYLIST_FILENAME))
 
-        return items, hdhr_provider_id, hdhr_stream_provider_id, selected_item, hdhr_includes, hdhr_has_filtered
+        return items, hdhr_provider_id, hdhr_stream_provider_id, selected_item, hdhr_includes, hdhr_has_filtered, epg_time_offset_hours
 
-    items, hdhr_provider_id, hdhr_stream_provider_id, selected_item, hdhr_includes, hdhr_has_filtered = await asyncio.to_thread(_load)
+    items, hdhr_provider_id, hdhr_stream_provider_id, selected_item, hdhr_includes, hdhr_has_filtered, epg_time_offset_hours = await asyncio.to_thread(_load)
 
     ssdp_disabled_by_env = hdhomerun_emulator.is_env_disabled()
     start = time.perf_counter()
@@ -726,6 +744,7 @@ async def hdhomerun_page(request: Request, error: str = None, success: str = Non
         "hdhr_running": hdhomerun_emulator.is_running(),
         "can_enable_ssdp": not ssdp_disabled_by_env,
         "allow_full_m3u_download": config.ALLOW_FULL_M3U_DOWNLOAD,
+        "epg_time_offset_hours": epg_time_offset_hours,
         "error": error,
         "success": success,
     })
@@ -754,8 +773,17 @@ async def handle_hdhomerun_form(
     background_tasks: BackgroundTasks,
     save_filters: str = Form(None),
     new_includes: str = Form(None),
+    epg_time_offset_hours: str = Form(None),
     db: Session = Depends(get_db),
 ):
+    # Save EPG time offset whenever submitted (independent of save_filters gate)
+    if epg_time_offset_hours is not None:
+        try:
+            offset_val = int(epg_time_offset_hours)
+            set_app_config(db, "epg_time_offset_hours", str(offset_val))
+        except ValueError:
+            pass
+
     if save_filters:
         if new_includes and '\n' in new_includes:
             new_includes = ','.join([inc.strip() for inc in new_includes.split('\n') if inc.strip()])
@@ -789,6 +817,56 @@ async def handle_hdhomerun_form(
             )
 
     return RedirectResponse(url="/hdhomerun", status_code=303)
+
+
+@router.get("/epg/channel-map", response_class=HTMLResponse)
+async def epg_channel_map_page(request: Request, error: str = None, success: str = None):
+    """Channel → EPG source ID mapping override page."""
+    import json as _json
+    from hdhomerun_routes import load_channel_lineup
+
+    def _load():
+        with SessionLocal() as db:
+            channels = load_channel_lineup(db)
+            existing_map = get_epg_channel_map(db)
+        matches_path = EPG_CACHE_PATH + ".matches.json"
+        try:
+            with open(matches_path, 'r', encoding='utf-8') as f:
+                match_results = _json.load(f)
+        except (FileNotFoundError, ValueError):
+            match_results = {}
+        return channels, existing_map, match_results
+
+    channels, existing_map, match_results = await asyncio.to_thread(_load)
+
+    template = templates.get_template("epg_channel_map.html")
+    rendered = template.render({
+        "request": request,
+        "channels": channels,
+        "existing_map": existing_map,
+        "match_results": match_results,
+        "active_page": "hdhomerun",
+        "error": error,
+        "success": success,
+    })
+    return HTMLResponse(content=rendered)
+
+
+@router.post("/epg/channel-map", response_class=RedirectResponse)
+async def epg_channel_map_save(request: Request, db: Session = Depends(get_db)):
+    """Save explicit tvg-id → EPG source ID mappings."""
+    form = await request.form()
+    mappings: dict[str, str] = {}
+    for key, value in form.items():
+        if key.startswith("epg_src_"):
+            tvg_id = key[len("epg_src_"):]
+            epg_src = (value or "").strip()
+            if tvg_id and epg_src:
+                mappings[tvg_id] = epg_src
+    save_epg_channel_map(db, mappings)
+    _do_epg_refresh()
+    return RedirectResponse(url="/epg/channel-map?success=EPG+mappings+saved+%E2%80%94+rebuilding+guide",
+                            status_code=303)
 
 
 @router.get("/xtream", response_class=RedirectResponse)

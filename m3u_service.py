@@ -336,38 +336,74 @@ def strict_normalize(s: str) -> str:
     return re.sub(r'[^a-z0-9]+', '', normalize_channel(s))
 
 
-def build_filter_config(item) -> tuple:
-    """Parse item filter fields into typed structures used by apply_m3u_filter."""
-    languages = [l.strip().lower() for l in (item.languages or "").split(",") if l.strip()]
+def _raw_normalize(s: str) -> str:
+    """Like strict_normalize but preserves provider prefixes (e.g. 'GO: TLC' → 'gotlc')."""
+    s = (s or "").strip()
+    s = unicodedata.normalize("NFKD", s)
+    s = "".join(c for c in s if not unicodedata.combining(c))
+    return re.sub(r'[^a-z0-9]+', '', s.lower())
 
-    includes_map: dict[str, str | None] = {}
+
+def _has_prefix(name: str) -> bool:
+    """True if name starts with a provider prefix that normalize_channel would strip."""
+    name = name.strip()
+    return bool(_PREFIX_RE.match(name) or _RATIO_PREFIX_RE.match(name))
+
+
+def _parse_includes(raw_str: str) -> tuple[dict, dict, list]:
+    """Parse an includes string into (includes_strict, includes_raw, raw_includes).
+
+    includes_strict: prefix-less filter names keyed by strict_normalize — matched via
+                     prefix-stripped normalization so "TLC" catches "US: TLC", "TLC HD", etc.
+    includes_raw:    prefix-having filter names keyed by _raw_normalize — matched only via
+                     raw normalization so "GO: TLC" matches only "Go: TLC", not "US: TLC".
+    raw_includes:    original (num, name) pairs for display/logging.
+    """
+    includes_strict: dict[str, str | None] = {}
+    includes_raw: dict[str, str | None] = {}
     raw_includes: list[tuple] = []
-    for inc in (item.includes or "").split(","):
+    for inc in (raw_str or "").split(","):
         inc = inc.strip()
         if not inc:
             continue
         if '|' in inc:
             num, name = inc.split('|', 1)
-            raw_includes.append((num.strip(), name.strip()))
-            includes_map[strict_normalize(name)] = num.strip()
+            num = num.strip()
+            raw_includes.append((num, name.strip()))
+            if _has_prefix(name):
+                includes_raw[_raw_normalize(name)] = num
+            else:
+                includes_strict[strict_normalize(name)] = num
         else:
             raw_includes.append((None, inc))
-            includes_map[strict_normalize(inc)] = None
+            if _has_prefix(inc):
+                includes_raw[_raw_normalize(inc)] = None
+            else:
+                includes_strict[strict_normalize(inc)] = None
+    return includes_strict, includes_raw, raw_includes
 
+
+def build_filter_config(item) -> tuple:
+    """Parse item filter fields into typed structures used by apply_m3u_filter."""
+    languages = [l.strip().lower() for l in (item.languages or "").split(",") if l.strip()]
+    includes_strict, includes_raw, raw_includes = _parse_includes(item.includes)
     excludes = [ex.strip().lower() for ex in (item.excludes or "").split(",") if ex.strip()]
     has_wildcard_exclude = "*" in excludes
-    return languages, includes_map, raw_includes, excludes, has_wildcard_exclude
+    return languages, includes_strict, includes_raw, raw_includes, excludes, has_wildcard_exclude
 
 
 def apply_m3u_filter(
     lines: list[str],
     languages: list[str],
-    includes_map: dict,
+    includes_strict: dict,
+    includes_raw: dict,
     excludes: list[str],
     has_wildcard_exclude: bool,
 ) -> tuple[str, int, int]:
     """Walk M3U lines and apply language/include/exclude rules.
 
+    includes_strict: matched via strict_normalize (prefix-stripped) — catches all variants.
+    includes_raw:    matched via _raw_normalize (prefix-preserved) — exact prefix match only.
     Returns (filtered_content, kept_count, total_count).
     """
     input_record_count = sum(1 for ln in lines if ln.startswith("#EXTINF"))
@@ -421,20 +457,31 @@ def apply_m3u_filter(
         # 3. Include logic
         included = False
         chno_to_apply = None
-        if includes_map:
-            for cand in (strict_normalize(channel_name), strict_normalize(tvg_name)):
-                if cand in includes_map:
-                    included, chno_to_apply = True, includes_map[cand]
-                    break
-                for inc_key, num in includes_map.items():
-                    if cand in (inc_key + sfx for sfx in ("hd", "4k", "fhd", "uhd")):
-                        included, chno_to_apply = True, num
-                        break
-                if included:
+        has_includes = bool(includes_strict or includes_raw)
+        if has_includes:
+            # Raw-keyed entries: only match via _raw_normalize (prefix preserved on both sides).
+            # "GO: TLC" key "gotlc" must only match M3U channels also normalized as "gotlc".
+            for cand in (_raw_normalize(channel_name), _raw_normalize(tvg_name)):
+                if cand in includes_raw:
+                    included, chno_to_apply = True, includes_raw[cand]
                     break
 
+            # Strict-keyed entries: match via strict_normalize (prefix stripped from M3U side).
+            # "TLC" key "tlc" catches "US: TLC", "EN: TLC", "TLC HD", etc.
+            if not included:
+                for cand in (strict_normalize(channel_name), strict_normalize(tvg_name)):
+                    if cand in includes_strict:
+                        included, chno_to_apply = True, includes_strict[cand]
+                        break
+                    for inc_key, num in includes_strict.items():
+                        if cand in (inc_key + sfx for sfx in ("hd", "4k", "fhd", "uhd")):
+                            included, chno_to_apply = True, num
+                            break
+                    if included:
+                        break
+
         # 4. Emit or skip
-        if includes_map:
+        if has_includes:
             if included:
                 if chno_to_apply:
                     extinf = re.sub(r'\s*tvg-chno="[^"]*"', '', extinf)
@@ -549,14 +596,14 @@ def refresh_filtered_playlist(item) -> tuple[int, int]:
     with open(m3u_path, 'r', encoding='utf-8') as f:
         lines = f.read().splitlines()
 
-    languages, includes_map, _, excludes, has_wildcard = build_filter_config(item)
+    languages, includes_strict, includes_raw, _, excludes, has_wildcard = build_filter_config(item)
 
-    if not includes_map:
+    if not includes_strict and not includes_raw:
         total = sum(1 for ln in lines if ln.startswith("#EXTINF"))
         logger.warning(f"No HDHR includes for item {item.id} — skipping filtered playlist rewrite")
         return 0, total
 
-    filtered_content, kept, total = apply_m3u_filter(lines, languages, includes_map, excludes, has_wildcard)
+    filtered_content, kept, total = apply_m3u_filter(lines, languages, includes_strict, includes_raw, excludes, has_wildcard)
 
     if kept == 0:
         logger.warning(f"Filter produced 0 channels for item {item.id} — not overwriting filtered playlist")
@@ -612,19 +659,10 @@ def build_hdhr_playlist() -> tuple[int, int]:
     hdhr_path = os.path.join(config.M3U_DIR, HDHR_PLAYLIST_FILENAME)
     os.makedirs(config.M3U_DIR, exist_ok=True)
 
-    # Parse hdhr_includes into includes_map (same format as item.includes: "100|ESPN,200|FOX")
-    includes_map: dict[str, str | None] = {}
-    for inc in hdhr_includes_str.split(","):
-        inc = inc.strip()
-        if not inc:
-            continue
-        if '|' in inc:
-            num, name = inc.split('|', 1)
-            includes_map[strict_normalize(name)] = num.strip()
-        else:
-            includes_map[strict_normalize(inc)] = None
+    # Parse hdhr_includes into strict/raw dicts (same format as item.includes: "100|ESPN,200|FOX")
+    includes_strict, includes_raw, _ = _parse_includes(hdhr_includes_str)
 
-    if not includes_map or not items:
+    if (not includes_strict and not includes_raw) or not items:
         tmp_path = hdhr_path + ".tmp"
         with open(tmp_path, 'w', encoding='utf-8') as f:
             f.write("#EXTM3U\n")
@@ -645,7 +683,7 @@ def build_hdhr_playlist() -> tuple[int, int]:
         with open(m3u_path, 'r', encoding='utf-8') as f:
             raw_lines = f.read().splitlines()
         raw_total += sum(1 for ln in raw_lines if ln.startswith("#EXTINF"))
-        item_content, kept, _ = apply_m3u_filter(raw_lines, [], includes_map, [], False)
+        item_content, kept, _ = apply_m3u_filter(raw_lines, [], includes_strict, includes_raw, [], False)
         if kept == 0:
             continue
         # Tag each EXTINF line with x-item-id so load_channel_lineup can track routing

@@ -27,10 +27,17 @@ ADVERTISED_BASE_URL: str  = f"{HDHR_SCHEME}://{HDHR_ADVERTISE_HOST}:{HDHR_ADVERT
 # ---------------------------------------------------------------------------
 STREAM_CHUNK_KB: int             = int(os.getenv("STREAM_CHUNK_KB", "64"))
 STREAM_PREBUFFER_KB: int         = int(os.getenv("STREAM_PREBUFFER_KB", "512"))
+XTREAM_PREBUFFER_KB: int         = int(os.getenv("XTREAM_PREBUFFER_KB", "0"))
 STREAM_MAX_RETRIES: int          = int(os.getenv("STREAM_MAX_RETRIES", "5"))
 STREAM_RETRY_DELAY: float        = float(os.getenv("STREAM_RETRY_DELAY", "3"))
 STREAM_READ_TIMEOUT: float       = float(os.getenv("STREAM_READ_TIMEOUT", "30"))
 STREAM_SESSION_STALE_SECONDS: int = int(os.getenv("STREAM_SESSION_STALE_SECONDS", "30"))
+
+# Per-channel shared producer (ChannelHub) — keeps one upstream connection per active channel
+# so multiple Apple TV connections share the same stream without opening duplicate upstream TCP connections.
+HUB_RING_CHUNKS: int = int(os.getenv("HUB_RING_CHUNKS", "100"))  # ring buffer depth (~6.4 MB at 64 KB chunks)
+HUB_IDLE_SECS:   int = int(os.getenv("HUB_IDLE_SECS",   "30"))   # seconds to keep hub alive after last consumer
+HUB_CONSUMER_Q:  int = int(os.getenv("HUB_CONSUMER_Q",  "128"))  # per-consumer queue depth (~8 MB at 64 KB chunks)
 
 # ---------------------------------------------------------------------------
 # In-browser player (mpegts.js)
@@ -79,6 +86,14 @@ EPG_XML_SOURCES: list[str] = (
     else ["https://epg.pw/xmltv/epg_US.xml"]
 )
 
+# EPG time offset (hours) — only needed when source sends bare non-UTC times with
+# no timezone tag. The _normalize_time_to_utc function handles properly-tagged data.
+EPG_TIME_OFFSET_HOURS: int = int(os.getenv("EPG_TIME_OFFSET_HOURS", "0"))
+
+# When False, skip the provider xmltv.php EPG files (epg_{id}.xml).
+# Provider EPG is often non-English; US EPG_XML_SOURCES are preferred.
+EPG_USE_PROVIDER_DATA: bool = os.getenv("EPG_USE_PROVIDER_DATA", "1").strip() == "1"
+
 # ---------------------------------------------------------------------------
 # Startup validation — raises ValueError on obviously bad values so the
 # container fails fast with a clear message instead of misbehaving silently.
@@ -91,6 +106,8 @@ def _validate() -> None:
         errors.append(f"STREAM_CHUNK_KB must be >= 1 (got {STREAM_CHUNK_KB})")
     if STREAM_PREBUFFER_KB < 0:
         errors.append(f"STREAM_PREBUFFER_KB must be >= 0 (got {STREAM_PREBUFFER_KB})")
+    if XTREAM_PREBUFFER_KB < 0:
+        errors.append(f"XTREAM_PREBUFFER_KB must be >= 0 (got {XTREAM_PREBUFFER_KB})")
     if STREAM_MAX_RETRIES < 0:
         errors.append(f"STREAM_MAX_RETRIES must be >= 0 (got {STREAM_MAX_RETRIES})")
     if STREAM_RETRY_DELAY < 0:
