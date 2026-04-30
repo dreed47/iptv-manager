@@ -468,25 +468,25 @@ def build_epg_xml(our_channels: list[dict], epg_sources: list) -> str:
 
     # ---- programme elements ----
     prog_count = 0
-    
+
     import config as _cfg
-    
     offset_hours = _cfg.EPG_TIME_OFFSET_HOURS
-    logger.warning(f"EPG BUILD: applying time offset of {offset_hours} hours to all programmes")
-    
+    if offset_hours != 0:
+        logger.info(f"EPG BUILD: applying time offset of {offset_hours} hours to all programmes")
+
     for src_id, tvg_ids in src_to_tvg_ids.items():
         progs = programmes_by_src_id.get(src_id, [])
         for prog_elem in progs:
+            # Normalize and offset ONCE per element — mutates in place, so must
+            # happen before the tvg_ids loop to avoid applying the offset N times.
+            start = prog_elem.get('start', '')
+            stop  = prog_elem.get('stop', '')
+            if start:
+                prog_elem.set('start', _apply_time_offset(_normalize_time_to_utc(start), offset_hours))
+            if stop:
+                prog_elem.set('stop', _apply_time_offset(_normalize_time_to_utc(stop), offset_hours))
             for tvg_id in tvg_ids:
                 prog_elem.set('channel', tvg_id)
-                # Apply time offset
-                if offset_hours != 0:
-                    start = prog_elem.get('start', '')
-                    stop = prog_elem.get('stop', '')
-                    if start:
-                        prog_elem.set('start', _apply_time_offset(start, offset_hours))
-                    if stop:
-                        prog_elem.set('stop', _apply_time_offset(stop, offset_hours))
                 parts.append('  ' + ET.tostring(prog_elem, encoding='unicode'))
                 prog_count += 1
 
