@@ -1,0 +1,152 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="page-header">
+  <h1>EPG Channel Mapping</h1>
+  <p>Override which EPG source ID is used per channel. Explicit mappings win over auto-matching.</p>
+</div>
+
+{% if success %}<div class="flash flash-success">✓ {{ success }}</div>{% endif %}
+{% if error %}<div class="flash flash-error">✗ {{ error }}</div>{% endif %}
+
+<div class="card">
+  <div class="card-title">How it works</div>
+  <div class="info-box">
+    <p class="text-sm mb-8">Each HDHomeRun channel has a <strong>tvg-id</strong> from your M3U playlist. The EPG builder tries to match this to a <strong>source channel ID</strong> in the EPG XML (e.g. <code>cnn.us</code>, <code>espn.us</code>).</p>
+    <p class="text-sm mb-8">If auto-matching fails or picks the wrong show data, enter the correct EPG source ID here. Leave blank to use auto-matching.</p>
+    <p class="text-sm mb-8">To find valid EPG source IDs, look at <a href="/epg.xml" target="_blank" class="text-link">your generated EPG</a> and search for <code>&lt;channel id="..."&gt;</code> values in the source XML.</p>
+    <p class="text-sm"><strong>Match status</strong> reflects the last EPG build.
+      {% if not match_results %}<span class="text-muted">No build data yet — trigger a refresh to populate.</span>{% endif %}
+    </p>
+  </div>
+</div>
+
+{% if match_results %}
+{% set ns = namespace(matched=0, unmatched=0) %}
+{% for ch in channels %}
+  {% set tvg_id = ch.GuideSourceID or '' %}
+  {% if tvg_id %}
+    {% if match_results.get(tvg_id) %}{% set ns.matched = ns.matched + 1 %}{% else %}{% set ns.unmatched = ns.unmatched + 1 %}{% endif %}
+  {% endif %}
+{% endfor %}
+<div class="card" style="padding: 12px 16px;">
+  <div class="flex gap-16" style="flex-wrap: wrap;">
+    <span><span class="badge badge-success" style="margin-right:4px;">✓</span> {{ ns.matched }} matched</span>
+    <span><span class="badge badge-error" style="margin-right:4px;">✗</span> {{ ns.unmatched }} unmatched</span>
+    <span class="text-muted text-sm" style="align-self:center;">from last EPG build</span>
+  </div>
+</div>
+{% endif %}
+
+<div class="card">
+  <div class="card-title">
+    Channel Mappings
+    <span class="text-muted" style="font-size:12px; font-weight:400;">({{ channels|length }} channels)</span>
+  </div>
+
+  {% if not channels %}
+  <div style="text-align: center; padding: 32px;">
+    <p class="text-muted mb-12">No channels found. Configure the HDHomeRun channel list first.</p>
+    <a href="/hdhomerun" class="btn btn-primary">Go to HDHomeRun</a>
+  </div>
+  {% else %}
+
+  <div class="flex gap-8" style="margin-bottom: 16px; flex-wrap: wrap; align-items: center;">
+    <div style="max-width: 320px; flex: 1;">
+      <input type="text" id="channelSearch" class="form-input" placeholder="Filter channels…" oninput="filterChannels(this.value)">
+    </div>
+    <label style="display:flex; align-items:center; gap:6px; font-size:13px; cursor:pointer;">
+      <input type="checkbox" id="showUnmatched" onchange="filterChannels(document.getElementById('channelSearch').value)">
+      Show unmatched only
+    </label>
+  </div>
+
+  <form method="POST" action="/epg/channel-map">
+    <div style="overflow-x: auto;">
+      <table class="table" id="channelTable">
+        <thead>
+          <tr>
+            <th style="width: 60px;">#</th>
+            <th>Channel Name</th>
+            <th>tvg-id (from M3U)</th>
+            <th>EPG Source ID Override</th>
+            <th style="width: 140px;">Match Status</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for ch in channels | sort(attribute='GuideNumber') %}
+          {% set tvg_id = ch.GuideSourceID or '' %}
+          {% set override = existing_map.get(tvg_id, '') %}
+          {% set match = match_results.get(tvg_id) if tvg_id else none %}
+          {% set is_matched = match is not none %}
+          <tr class="channel-row" data-matched="{{ 'true' if is_matched else 'false' }}">
+            <td class="text-muted">{{ ch.GuideNumber }}</td>
+            <td style="font-weight: 500;">{{ ch.GuideName }}</td>
+            <td><code class="text-sm">{{ tvg_id or '—' }}</code></td>
+            <td>
+              {% if tvg_id %}
+              <input type="text"
+                     name="epg_src_{{ tvg_id }}"
+                     value="{{ override }}"
+                     placeholder="e.g. espn.us"
+                     class="form-input"
+                     style="font-family: monospace; font-size: 12px; width: 100%; min-width: 160px;">
+              {% else %}
+              <span class="text-muted text-sm">No tvg-id</span>
+              {% endif %}
+            </td>
+            <td>
+              {% if not tvg_id %}
+                <span class="badge badge-warning">No tvg-id</span>
+              {% elif not match_results %}
+                {% if override %}
+                  <span class="badge badge-success">Override</span>
+                {% else %}
+                  <span class="badge badge-neutral">Auto</span>
+                {% endif %}
+              {% elif override %}
+                <span class="badge badge-success" title="Explicit override → {{ match.src_id if match else 'pending rebuild' }}">Override</span>
+                {% if match and match.method == 'override' %}
+                  <br><span class="text-muted text-sm" style="font-family:monospace;">{{ match.src_id }}</span>
+                {% endif %}
+              {% elif is_matched %}
+                {% if match.method == 'tvgid' %}
+                  <span class="badge badge-success" title="Matched by tvg-id">tvg-id ✓</span>
+                {% elif match.method == 'dup' %}
+                  <span class="badge badge-neutral" title="Inherited match from duplicate channel">Dup match</span>
+                {% else %}
+                  <span class="badge badge-neutral" title="Matched by channel name">Name ✓</span>
+                {% endif %}
+                <br><span class="text-muted text-sm" style="font-family:monospace;">{{ match.src_id }}</span>
+              {% else %}
+                <span class="badge badge-error">No match</span>
+              {% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+
+    <div class="flex gap-8" style="margin-top: 16px;">
+      <button type="submit" class="btn btn-primary">Save Mappings &amp; Rebuild EPG</button>
+      <a href="/hdhomerun" class="btn btn-outline">Cancel</a>
+    </div>
+  </form>
+  {% endif %}
+</div>
+
+<script>
+function filterChannels(query) {
+  query = query.toLowerCase();
+  var unmatchedOnly = document.getElementById('showUnmatched').checked;
+  document.querySelectorAll('#channelTable .channel-row').forEach(function(row) {
+    var text = row.textContent.toLowerCase();
+    var textMatch = text.includes(query);
+    var matchedAttr = row.getAttribute('data-matched');
+    var passUnmatched = !unmatchedOnly || matchedAttr === 'false';
+    row.style.display = (textMatch && passUnmatched) ? '' : 'none';
+  });
+}
+</script>
+{% endblock %}
