@@ -109,6 +109,10 @@ def auto_replace_ip_session(client_ip: str, new_channel: str, item_id: int | Non
     No IP block is added. Returns the count of non-killed live streams for this provider after replacement."""
     now = time.time()
     killed_sessions = []
+    # Sessions actively streaming that we protect from being killed. They will clean up
+    # via GeneratorExit once the client switches to the new connection. We exclude them
+    # from the returned live-count so the caller's max_sessions check passes.
+    streaming_replace_sids: set[str] = set()
     with _active_streams_lock:
         for sid, s in _active_streams.items():
             if (s.get("client_ip") == client_ip and not s.get("killed")
@@ -126,15 +130,35 @@ def auto_replace_ip_session(client_ip: str, new_channel: str, item_id: int | Non
                         f"with 0 bytes — letting it finish connecting"
                     )
                     continue
+                # Don't kill a same-channel session that was actively delivering chunks very
+                # recently. Apple TV retries during upstream segment boundaries; killing the
+                # streaming session restarts the cycle. Exclude it from the session count so
+                # the max_sessions check passes — the session will clean up via GeneratorExit
+                # once the client switches to the new connection.
+                last_chunk = s.get("last_chunk_at", 0)
+                if (old_ch == new_channel
+                        and s.get("bytes_sent", 0) > 0
+                        and (now - last_chunk) < 3.0):
+                    streaming_replace_sids.add(sid)
+                    logger.debug(
+                        f"Auto-replace skipped: session {sid} ('{old_ch}') delivered a chunk "
+                        f"{now - last_chunk:.2f}s ago — will clean up via GeneratorExit"
+                    )
+                    continue
                 s["killed"] = True
                 killed_sessions.append((sid, old_ch, s))
+        cutoff = now - _SESSION_STALE_SECONDS
+        live_count = sum(
+            1 for sid, s in _active_streams.items()
+            if not s.get("killed")
+            and sid not in streaming_replace_sids
+            and s.get("last_chunk_at", 0) >= cutoff
+            and (item_id is None or s.get("item_id") == item_id)
+        )
     for sid, old_ch, s in killed_sessions:
         _close_session_connection(s)
         logger.info(f"Auto-replaced session {sid}: IP {client_ip} switched from '{old_ch}' to '{new_channel}'")
-    return sum(
-        1 for s in _live_streams()
-        if not s.get("killed") and (item_id is None or s.get("item_id") == item_id)
-    )
+    return live_count
 
 
 def kill_stream(session_id: str, block_ip: bool = True) -> bool:
