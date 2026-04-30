@@ -1133,6 +1133,9 @@ def _stream_live_direct(source_url: str, channel_name: str, client_ip: str,
     bytes_sent = 0
     attempt = 0
     session = requests.Session()
+    with _active_streams_lock:
+        if session_id in _active_streams:
+            _active_streams[session_id]["http_session"] = session
     try:
         while attempt <= max_retries:
             if attempt > 0:
