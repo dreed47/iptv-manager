@@ -76,6 +76,42 @@ _ALIASES: dict[str, list[str]] = {
 }
 
 
+def _normalize_time_to_utc(time_str: str) -> str:
+    """Normalize an XMLTV timestamp to UTC.
+    
+    Handles formats like:
+    - 20260428224500 +0200
+    - 20260428224500 -0500
+    Returns the same format but always with +0000
+    """
+    if not time_str or len(time_str) < 14:
+        return time_str
+    
+    try:
+        from datetime import datetime, timezone, timedelta
+        
+        # Parse the datetime and timezone offset
+        dt_str = time_str[:14]  # YYYYMMDDHHMMSS
+        offset_str = time_str[15:] if len(time_str) > 15 and time_str[14] in '+-' else '+0000'
+        
+        dt = datetime.strptime(dt_str, '%Y%m%d%H%M%S')
+        
+        # Parse offset
+        sign = 1 if offset_str[0] == '+' else -1
+        offset_hours = int(offset_str[1:3])
+        offset_minutes = int(offset_str[3:5]) if len(offset_str) >= 5 else 0
+        offset = timedelta(hours=sign * offset_hours, minutes=sign * offset_minutes)
+        
+        # Create timezone-aware datetime with the source offset
+        dt_with_tz = dt.replace(tzinfo=timezone(offset))
+        
+        # Convert to UTC
+        dt_utc = dt_with_tz.astimezone(timezone.utc)
+        
+        return dt_utc.strftime('%Y%m%d%H%M%S') + ' +0000'
+    except Exception:
+        return time_str
+
 def _strip_prefix(name: str) -> str:
     """Remove SLING:, US:, GO:, PRIME:, 24/7: etc. and trailing superscripts."""
     name = _PROVIDER_PREFIX_RE.sub('', name).strip()
@@ -313,16 +349,18 @@ def _chno_sort_key(ch: dict):
 
 def _dummy_programmes(tvg_id: str, ch_name: str, chno: str = '') -> list[str]:
     """2-hour placeholder blocks for 7 days so Plex shows the channel name in the guide."""
+    from datetime import datetime, timezone, timedelta
+    
+    # Use UTC instead of local time
     now = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
-    # Align to the nearest 2-hour boundary
     now = now.replace(hour=(now.hour // 2) * 2)
     display_title = f"{chno} {ch_name}".strip() if chno else ch_name
     result = []
-    for block in range(7 * 12):  # 7 days × 12 two-hour blocks
+    for block in range(7 * 12):
         start = now + timedelta(hours=block * 2)
         stop  = start + timedelta(hours=2)
-        sfmt  = start.strftime('%Y%m%d%H%M%S +0000')
-        efmt  = stop.strftime('%Y%m%d%H%M%S +0000')
+        sfmt  = start.strftime('%Y%m%d%H%M%S') + ' +0000'
+        efmt  = stop.strftime('%Y%m%d%H%M%S') + ' +0000'
         result.append(
             f'  <programme start="{sfmt}" stop="{efmt}" channel="{_xml_esc(tvg_id)}">'
             f'<title>{_xml_esc(display_title)}</title>'
@@ -435,6 +473,13 @@ def build_epg_xml(our_channels: list[dict], epg_sources: list) -> str:
         for prog_elem in progs:
             for tvg_id in tvg_ids:
                 prog_elem.set('channel', tvg_id)
+                # Normalize start and stop times to UTC
+                start = prog_elem.get('start')
+                stop = prog_elem.get('stop')
+                if start:
+                    prog_elem.set('start', _normalize_time_to_utc(start))
+                if stop:
+                    prog_elem.set('stop', _normalize_time_to_utc(stop))
                 parts.append('  ' + ET.tostring(prog_elem, encoding='unicode'))
                 prog_count += 1
 
