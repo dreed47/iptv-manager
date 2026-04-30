@@ -91,17 +91,28 @@ def is_ip_blocked(ip: str) -> bool:
         return False
 
 
+def _close_session_connection(s: dict):
+    """Close the upstream HTTP connection stored in a session dict, interrupting any blocking read."""
+    http_session = s.get("http_session")
+    if http_session:
+        try:
+            http_session.close()
+        except Exception:
+            pass
+
+
 def auto_replace_ip_session(client_ip: str, new_channel: str, item_id: int | None = None) -> int:
     """Kill any non-killed active sessions from client_ip on the same provider (channel switch).
     No IP block is added. Returns the count of non-killed live streams for this provider after replacement."""
-    killed_info = []
+    killed_sessions = []
     with _active_streams_lock:
         for sid, s in _active_streams.items():
             if (s.get("client_ip") == client_ip and not s.get("killed")
                     and (item_id is None or s.get("item_id") == item_id)):
                 s["killed"] = True
-                killed_info.append((sid, s.get("channel_name") or s.get("channel", "?")))
-    for sid, old_ch in killed_info:
+                killed_sessions.append((sid, s.get("channel_name") or s.get("channel", "?"), s))
+    for sid, old_ch, s in killed_sessions:
+        _close_session_connection(s)
         logger.info(f"Auto-replaced session {sid}: IP {client_ip} switched from '{old_ch}' to '{new_channel}'")
     return sum(
         1 for s in _live_streams()
@@ -117,6 +128,7 @@ def kill_stream(session_id: str, block_ip: bool = True) -> bool:
             return False
         s["killed"] = True
         client_ip = s.get("client_ip")
+    _close_session_connection(s)
     if block_ip and client_ip and client_ip not in ("unknown", ""):
         with _blocked_ips_lock:
             _blocked_ips[client_ip] = time.time() + KILL_BLOCK_SECONDS
@@ -396,6 +408,9 @@ async def stream_channel(channel_number: str, request: Request, db: Session = De
         prebuf_size = 0
         prebuffering = prebuffer_bytes > 0
         session = requests.Session()
+        with _active_streams_lock:
+            if session_id in _active_streams:
+                _active_streams[session_id]["http_session"] = session
         # Use a mutable container so inner reconnect logic can update the URL.
         current_url = [source_url]
         bytes_at_last_connect = 0  # track how much was sent when the last connection opened
