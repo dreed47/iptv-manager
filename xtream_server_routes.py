@@ -1250,7 +1250,10 @@ def _stream_live_direct(source_url: str, channel_name: str, client_ip: str,
     finally:
         stop_event.set()
         http_session.close()
-        producer.join(timeout=5)
+        # Do NOT join — producer is a daemon thread and exits promptly when stop_event
+        # is set and http_session is closed. Joining here blocks the Starlette thread-
+        # pool thread for up to 5 s per dying session, exhausting the pool during rapid
+        # session cycling and causing event-loop lag.
         logger.info(f"Live stream ended: '{channel_name}', {bytes_sent} bytes sent")
         with _active_streams_lock:
             _active_streams.pop(session_id, None)
