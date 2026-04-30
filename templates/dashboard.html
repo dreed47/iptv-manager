@@ -33,6 +33,19 @@
       </span>
     </div>
     {% endif %}
+    {% if can_enable_ssdp %}
+    {% if not hdhr_running %}
+    <form method="POST" action="/hdhr/enable" style="margin-top:8px;">
+      <input type="hidden" name="next" value="/">
+      <button type="submit" class="btn btn-success btn-sm">Enable Discovery</button>
+    </form>
+    {% else %}
+    <form method="POST" action="/hdhr/disable" style="margin-top:8px;">
+      <input type="hidden" name="next" value="/">
+      <button type="submit" class="btn btn-secondary btn-sm">Disable Discovery</button>
+    </form>
+    {% endif %}
+    {% endif %}
     {% if hdhr_has_filtered %}
     <a href="/channels" target="_blank" class="btn btn-outline btn-sm" style="margin-top:8px;">Channel Guide</a>
     {% endif %}

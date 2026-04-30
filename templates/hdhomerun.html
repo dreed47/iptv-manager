@@ -20,10 +20,12 @@
     <div class="flex flex-center gap-12 mb-12">
       {% if not hdhr_running %}
       <form method="POST" action="/hdhr/enable" style="display:inline;">
+        <input type="hidden" name="next" value="/hdhomerun">
         <button type="submit" class="btn btn-primary">Enable Discovery</button>
       </form>
       {% else %}
       <form method="POST" action="/hdhr/disable" style="display:inline;">
+        <input type="hidden" name="next" value="/hdhomerun">
         <button type="submit" class="btn btn-secondary">Disable Discovery</button>
       </form>
       {% endif %}
