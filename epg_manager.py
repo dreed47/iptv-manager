@@ -472,6 +472,7 @@ def build_epg_xml(our_channels: list[dict], epg_sources: list) -> str:
     import config as _cfg
     
     offset_hours = _cfg.EPG_TIME_OFFSET_HOURS
+    logger.warning(f"EPG BUILD: applying time offset of {offset_hours} hours to all programmes")
     
     for src_id, tvg_ids in src_to_tvg_ids.items():
         progs = programmes_by_src_id.get(src_id, [])
@@ -519,17 +520,17 @@ def build_and_cache_epg(item_ids: list[int] | None = None) -> str:
 
     sources_data = []
 
-    # Provider EPG first (already on disk from M3U sync, no HTTP needed)
+    # External EPG sources FIRST (web-based, e.g. epg.pw, iptv-org) — these take priority
+    for url in config.EPG_XML_SOURCES:
+        chs, progs = _fetch_epg_source(url)
+        sources_data.append((chs, progs))
+
+    # Provider EPG files SECOND (already on disk from M3U sync) — fallback only
     for filename in sorted(os.listdir(config.M3U_DIR)):
         if filename.startswith("epg_") and filename.endswith(".xml"):
             path = os.path.join(config.M3U_DIR, filename)
             chs, progs = _load_epg_from_file(path)
             sources_data.append((chs, progs))
-
-    # External sources as fallback for channels not covered by provider EPG
-    for url in config.EPG_XML_SOURCES:
-        chs, progs = _fetch_epg_source(url)
-        sources_data.append((chs, progs))
 
     xml_content = build_epg_xml(our_channels, sources_data)
 
@@ -562,16 +563,35 @@ def run_epg_build(force_refresh: bool = True, item_ids: list[int] | None = None)
         logger.warning(f"EPG build failed: {exc}", exc_info=True)
 
 def _apply_time_offset(time_str: str, offset_hours: int) -> str:
-    """Apply a fixed hour offset to an XMLTV timestamp."""
+    """Apply a fixed hour offset to an XMLTV timestamp and normalize to UTC."""
     if not time_str or offset_hours == 0:
         return time_str
     
     try:
-        from datetime import datetime, timedelta
+        from datetime import datetime, timedelta, timezone
         
+        # Parse the datetime portion
         dt_str = time_str[:14]
         dt = datetime.strptime(dt_str, '%Y%m%d%H%M%S')
+        
+        # Parse the timezone offset from the string
+        tz_str = time_str[14:].strip()
+        if tz_str and tz_str[0] in '+-' and len(tz_str) >= 5:
+            sign = 1 if tz_str[0] == '+' else -1
+            tz_hours = int(tz_str[1:3])
+            tz_mins = int(tz_str[3:5]) if len(tz_str) >= 5 else 0
+            tz_offset = timedelta(hours=sign * tz_hours, minutes=sign * tz_mins)
+            # Make the datetime timezone-aware with the source timezone
+            dt = dt.replace(tzinfo=timezone(tz_offset))
+        else:
+            # Assume UTC if no timezone
+            dt = dt.replace(tzinfo=timezone.utc)
+        
+        # Apply the offset
         dt = dt + timedelta(hours=offset_hours)
-        return dt.strftime('%Y%m%d%H%M%S') + time_str[14:]
+        
+        # Convert to UTC and output with +0000
+        dt_utc = dt.astimezone(timezone.utc)
+        return dt_utc.strftime('%Y%m%d%H%M%S') + ' +0000'
     except Exception:
         return time_str
