@@ -1044,6 +1044,7 @@ async def get_m3u_xtream(
         return Response("Unauthorized", status_code=401)
     base_url = _get_base_url()
     cache = await get_xtream_cache(db, item)
+    db.close()
     return StreamingResponse(
         _m3u_generator(cache, base_url, username, password, provider_slug),
         media_type="application/x-mpegurl",
@@ -1067,6 +1068,7 @@ async def get_m3u_simple(
     p = password or proxy_pass
     base_url = _get_base_url()
     cache = await get_xtream_cache(db, item)
+    db.close()
     return StreamingResponse(
         _m3u_generator(cache, base_url, u, p, provider_slug),
         media_type="application/x-mpegurl",
@@ -1204,7 +1206,7 @@ def _stream_live_direct(source_url: str, channel_name: str, client_ip: str,
             finally:
                 resp.close()
     finally:
-        logger.info(f"Live stream ended: '{channel_name}', {bytes_sent} bytes sent")
+        logger.debug(f"Live stream ended: '{channel_name}', {bytes_sent} bytes sent")
         with _active_streams_lock:
             _active_streams.pop(session_id, None)
 
@@ -1251,7 +1253,8 @@ async def proxy_live_root(
     session_id = str(uuid.uuid4())
     user_agent = request.headers.get("user-agent", "unknown")
     _register_session(session_id, entry.name, client_ip, user_agent, item.id)
-    logger.info(f"proxy_live_root [{item.name}]: '{entry.name}' → {entry.url}")
+    logger.debug(f"proxy_live_root [{item.name}]: '{entry.name}' → {entry.url}")
+    db.close()
     return StreamingResponse(
         _stream_live_direct(entry.url, entry.name, client_ip,
                             user_agent, session_id, max_sessions, item_id=item.id),
@@ -1305,6 +1308,7 @@ async def proxy_vod_root(
             _fetch_vod_url, stream_id, row["tvg_id"], row["item_id"], db
         ) or row["url"]
 
+    db.close()
     result = _proxy_finite_stream(resolved_url, request, "video/mp4",
                                    stream_label=f"VOD:{stream_id}", item_id=row["item_id"])
     if isinstance(result, JSONResponse) and result.status_code == 502:
@@ -1369,6 +1373,7 @@ async def proxy_series_root(
         upstream_url = _episode_cache.get(stream_id)
 
     if upstream_url:
+        db.close()
         return _proxy_finite_stream(upstream_url, request, "video/mp4",
                                     stream_label=f"Series:{stream_id}", item_id=item.id)
 
@@ -1380,6 +1385,7 @@ async def proxy_series_root(
         upstream_url = f"{base}/series/{item.username}/{item.user_pass}/{upstream_ep_id}.{ep_ext}"
         with _episode_cache_lock:
             _episode_cache[stream_id] = upstream_url
+        db.close()
         return _proxy_finite_stream(upstream_url, request, "video/mp4",
                                     stream_label=f"Series:{stream_id}", item_id=item.id)
 
@@ -1388,6 +1394,7 @@ async def proxy_series_root(
     upstream_url = f"{base}/series/{item.username}/{item.user_pass}/{stream_id}.{ep_ext}"
     with _episode_cache_lock:
         _episode_cache[stream_id] = upstream_url
+    db.close()
     return _proxy_finite_stream(upstream_url, request, "video/mp4",
                                 stream_label=f"Series:{stream_id}", item_id=item.id)
 
@@ -1431,7 +1438,8 @@ async def proxy_live(
     session_id = str(uuid.uuid4())
     user_agent = request.headers.get("user-agent", "unknown")
     _register_session(session_id, entry.name, client_ip, user_agent, item.id)
-    logger.info(f"proxy_live [{item.name}]: '{entry.name}' → direct stream from {entry.url}")
+    logger.debug(f"proxy_live [{item.name}]: '{entry.name}' → direct stream from {entry.url}")
+    db.close()
     return StreamingResponse(
         _stream_live_direct(entry.url, entry.name, client_ip,
                             user_agent, session_id, max_sessions, item_id=item.id),
@@ -1572,6 +1580,7 @@ async def proxy_vod(
             _fetch_vod_url, stream_id, row["tvg_id"], row["item_id"], db
         ) or row["url"]
 
+    db.close()
     result = _proxy_finite_stream(
         resolved_url, request, "video/mp4",
         stream_label=f"VOD:{stream_id}", item_id=row["item_id"],
@@ -1649,6 +1658,7 @@ async def proxy_series(
 
     if upstream_url:
         logger.debug(f"Series episode {stream_id} → {upstream_url}")
+        db.close()
         return _proxy_finite_stream(upstream_url, request, "video/mp4",
                                     stream_label=f"Series:{stream_id}", item_id=item.id)
 
@@ -1663,6 +1673,7 @@ async def proxy_series(
         logger.info(f"Series episode {stream_id}: cache miss, reconstructed URL → {upstream_url}")
         with _episode_cache_lock:
             _episode_cache[stream_id] = upstream_url
+        db.close()
         return _proxy_finite_stream(upstream_url, request, "video/mp4",
                                     stream_label=f"Series:{stream_id}", item_id=item.id)
 
@@ -1674,6 +1685,7 @@ async def proxy_series(
     logger.info(f"Series {stream_id}: raw episode ID, proxying to {upstream_url}")
     with _episode_cache_lock:
         _episode_cache[stream_id] = upstream_url
+    db.close()
     return _proxy_finite_stream(upstream_url, request, "video/mp4",
                                 stream_label=f"Series:{stream_id}", item_id=item.id)
 
@@ -1744,6 +1756,7 @@ async def get_m3u_root(
     base_url = _get_base_url()
     cache = await get_xtream_cache(db, item)
     slug = item.slug or str(item.id)
+    db.close()
     return StreamingResponse(
         _m3u_generator(cache, base_url, username, password, slug),
         media_type="application/x-mpegurl",
@@ -1787,6 +1800,7 @@ async def playlist_root(
     base_url = _get_base_url()
     cache = await get_xtream_cache(db, item)
     slug = item.slug or str(item.id)
+    db.close()
     return StreamingResponse(
         _m3u_generator(cache, base_url, proxy_user, proxy_pass, slug),
         media_type="application/x-mpegurl",
