@@ -1121,6 +1121,7 @@ def _stream_live_direct(source_url: str, channel_name: str, client_ip: str,
     """Generator that proxies a live stream directly from source_url with retry.
     Session must be registered in _active_streams before this generator is iterated."""
     chunk_size = config.STREAM_CHUNK_KB * 1024
+    prebuffer_bytes = config.STREAM_PREBUFFER_KB * 1024
     max_retries = config.STREAM_MAX_RETRIES
     retry_delay = config.STREAM_RETRY_DELAY
     read_timeout = config.STREAM_READ_TIMEOUT
@@ -1132,6 +1133,10 @@ def _stream_live_direct(source_url: str, channel_name: str, client_ip: str,
 
     bytes_sent = 0
     attempt = 0
+    prebuf: list[bytes] = []
+    prebuf_size = 0
+    prebuffering = prebuffer_bytes > 0
+    bytes_at_last_connect = 0
     session = requests.Session()
     with _active_streams_lock:
         if session_id in _active_streams:
@@ -1141,8 +1146,11 @@ def _stream_live_direct(source_url: str, channel_name: str, client_ip: str,
             if attempt > 0:
                 logger.warning(f"Live reconnect {attempt}/{max_retries} for '{channel_name}' after {bytes_sent} bytes")
                 time.sleep(retry_delay)
+                if bytes_sent > 0:
+                    prebuffering = False
             attempt += 1
             try:
+                bytes_at_last_connect = bytes_sent
                 resp = session.get(source_url, headers=proxy_headers, stream=True,
                                    timeout=(10, read_timeout))
                 resp.raise_for_status()
@@ -1151,16 +1159,45 @@ def _stream_live_direct(source_url: str, channel_name: str, client_ip: str,
                 continue
             try:
                 for chunk in resp.iter_content(chunk_size=chunk_size):
-                    if chunk:
-                        if _active_streams.get(session_id, {}).get("killed"):
-                            logger.info(f"Live stream {session_id} ('{channel_name}') killed by admin")
-                            return
+                    if not chunk:
+                        continue
+                    if _active_streams.get(session_id, {}).get("killed"):
+                        logger.info(f"Live stream {session_id} ('{channel_name}') killed by admin")
+                        return
+                    if prebuffering:
+                        prebuf.append(chunk)
+                        prebuf_size += len(chunk)
+                        if prebuf_size >= prebuffer_bytes:
+                            for c in prebuf:
+                                bytes_sent += len(c)
+                                yield c
+                            s = _active_streams.get(session_id)
+                            if s:
+                                s["bytes_sent"] = bytes_sent
+                                s["last_chunk_at"] = time.time()
+                            prebuf = []
+                            prebuf_size = 0
+                            prebuffering = False
+                    else:
                         bytes_sent += len(chunk)
                         s = _active_streams.get(session_id)
                         if s:
                             s["bytes_sent"] = bytes_sent
                             s["last_chunk_at"] = time.time()
                         yield chunk
+                # Flush any partial prebuffer on clean upstream close
+                if prebuf:
+                    for c in prebuf:
+                        bytes_sent += len(c)
+                        yield c
+                    prebuf = []
+                    prebuf_size = 0
+                    prebuffering = False
+                # Reset retry budget if this connection delivered substantial data — prevents
+                # retry exhaustion on long-running streams with occasional upstream drops.
+                delivered = bytes_sent - bytes_at_last_connect
+                if delivered >= 10 * 1024 * 1024:
+                    attempt = 0
                 break
             except Exception as exc:
                 logger.warning(f"Live read error for '{channel_name}': {exc}")
