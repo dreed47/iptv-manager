@@ -126,6 +126,19 @@ def auto_replace_ip_session(client_ip: str, new_channel: str, item_id: int | Non
                         f"with 0 bytes — letting it finish connecting"
                     )
                     continue
+                # Don't kill a same-channel session that was actively streaming very recently.
+                # When a provider sends data in short TCP bursts, the proxy reconnects between
+                # bursts. During that gap the client may queue a retry — killing the session
+                # here just restarts the spiral. Allow the session to finish its current burst.
+                last_chunk = s.get("last_chunk_at", 0)
+                if (old_ch == new_channel
+                        and last_chunk > 0
+                        and (now - last_chunk) < 3.0):
+                    logger.debug(
+                        f"Auto-replace skipped: session {sid} ('{old_ch}') delivered a chunk "
+                        f"{now - last_chunk:.2f}s ago — still active"
+                    )
+                    continue
                 s["killed"] = True
                 killed_sessions.append((sid, old_ch, s))
     for sid, old_ch, s in killed_sessions:
