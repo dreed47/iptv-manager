@@ -393,6 +393,13 @@ def build_epg_xml(our_channels: list[dict], epg_sources: list) -> str:
     matched: dict[str, dict] = {}          # tvg_id -> {'our': ch, 'src_id': str}
     programmes_by_src_id: dict[str, list] = {}  # src_id -> [ET.Element, ...]
 
+    # Build index: our tvg-id -> channel dict (for direct tvg-id matching)
+    our_by_tvg_id: dict[str, dict] = {
+        ch['tvg_id']: ch
+        for ch in our_channels
+        if ch.get('tvg_id') and not ch.get('epg_skip')
+    }
+
     for src_channels, src_programmes in epg_sources:
         if src_channels is None:
             continue
@@ -404,7 +411,19 @@ def build_epg_xml(our_channels: list[dict], epg_sources: list) -> str:
 
         for ch_elem in src_channels:
             src_id = ch_elem.get('id', '')
-            # Try all display-name elements (some sources put alt names in extra ones)
+
+            # Pass 1: direct tvg-id match — our M3U tvg-id == source channel id.
+            # This is the cleanest match; skips fuzzy name logic entirely.
+            if src_id and src_id in our_by_tvg_id:
+                our_ch = our_by_tvg_id[src_id]
+                if our_ch['tvg_id'] not in matched:
+                    matched[our_ch['tvg_id']] = {'our': our_ch, 'src_id': src_id}
+                    logger.debug(
+                        f"EPG tvg-id match: '{our_ch['clean_name']}' <-> src_id={src_id}"
+                    )
+                    continue
+
+            # Pass 2: normalized display-name matching (fallback)
             src_names = [dn.text or '' for dn in ch_elem.findall('display-name')]
             if not src_names:
                 continue
@@ -418,7 +437,7 @@ def build_epg_xml(our_channels: list[dict], epg_sources: list) -> str:
                 if our_ch and our_ch['tvg_id'] not in matched:
                     matched[our_ch['tvg_id']] = {'our': our_ch, 'src_id': src_id}
                     logger.debug(
-                        f"EPG match: '{our_ch['clean_name']}' <-> '{src_name}' (src_id={src_id})"
+                        f"EPG name match: '{our_ch['clean_name']}' <-> '{src_name}' (src_id={src_id})"
                     )
                     break  # stop trying more display-names for this source channel
 
@@ -525,12 +544,15 @@ def build_and_cache_epg(item_ids: list[int] | None = None) -> str:
         chs, progs = _fetch_epg_source(url)
         sources_data.append((chs, progs))
 
-    # Provider EPG files SECOND (already on disk from M3U sync) — fallback only
-    for filename in sorted(os.listdir(config.M3U_DIR)):
-        if filename.startswith("epg_") and filename.endswith(".xml"):
-            path = os.path.join(config.M3U_DIR, filename)
-            chs, progs = _load_epg_from_file(path)
-            sources_data.append((chs, progs))
+    # Provider EPG files SECOND (already on disk from M3U sync) — fallback only.
+    # Disabled by default: provider EPG is often non-English (e.g. Hungarian).
+    # Enable with EPG_USE_PROVIDER_DATA=1 in .env if your provider has good EPG.
+    if config.EPG_USE_PROVIDER_DATA:
+        for filename in sorted(os.listdir(config.M3U_DIR)):
+            if filename.startswith("epg_") and filename.endswith(".xml"):
+                path = os.path.join(config.M3U_DIR, filename)
+                chs, progs = _load_epg_from_file(path)
+                sources_data.append((chs, progs))
 
     xml_content = build_epg_xml(our_channels, sources_data)
 

@@ -86,10 +86,13 @@ EPG_XML_SOURCES: list[str] = (
     else ["https://epg.pw/xmltv/epg_US.xml"]
 )
 
-# EPG time offset (hours) to add to all programme times
-# Use negative values to shift earlier, positive to shift later
-# Example: -12 to shift CET (UTC+2) to EDT (UTC-4) when data is 12 hours off
+# EPG time offset (hours) — only needed when source sends bare non-UTC times with
+# no timezone tag. The _normalize_time_to_utc function handles properly-tagged data.
 EPG_TIME_OFFSET_HOURS: int = int(os.getenv("EPG_TIME_OFFSET_HOURS", "0"))
+
+# When False, skip the provider xmltv.php EPG files (epg_{id}.xml).
+# Provider EPG is often non-English; US EPG_XML_SOURCES are preferred.
+EPG_USE_PROVIDER_DATA: bool = os.getenv("EPG_USE_PROVIDER_DATA", "1").strip() == "1"
 
 # ---------------------------------------------------------------------------
 # Startup validation — raises ValueError on obviously bad values so the
