@@ -95,7 +95,18 @@ def is_ip_blocked(ip: str) -> bool:
 
 
 def _close_session_connection(s: dict):
-    """Close the upstream HTTP connection stored in a session dict, interrupting any blocking read."""
+    """Interrupt a streaming session as fast as possible.
+
+    Hub-based consumers (Xtream live): inject a None sentinel into the consumer queue
+    to wake a blocked queue.get() without closing the shared hub connection.
+    Legacy per-session producers (HDHomeRun): close the http_session to interrupt iter_content.
+    """
+    consumer_q = s.get("consumer_q")
+    if consumer_q is not None:
+        try:
+            consumer_q.put_nowait(None)
+        except Exception:
+            pass
     http_session = s.get("http_session")
     if http_session:
         try:

@@ -33,6 +33,12 @@ STREAM_RETRY_DELAY: float        = float(os.getenv("STREAM_RETRY_DELAY", "3"))
 STREAM_READ_TIMEOUT: float       = float(os.getenv("STREAM_READ_TIMEOUT", "30"))
 STREAM_SESSION_STALE_SECONDS: int = int(os.getenv("STREAM_SESSION_STALE_SECONDS", "30"))
 
+# Per-channel shared producer (ChannelHub) — keeps one upstream connection per active channel
+# so multiple Apple TV connections share the same stream without opening duplicate upstream TCP connections.
+HUB_RING_CHUNKS: int = int(os.getenv("HUB_RING_CHUNKS", "100"))  # ring buffer depth (~6.4 MB at 64 KB chunks)
+HUB_IDLE_SECS:   int = int(os.getenv("HUB_IDLE_SECS",   "30"))   # seconds to keep hub alive after last consumer
+HUB_CONSUMER_Q:  int = int(os.getenv("HUB_CONSUMER_Q",  "128"))  # per-consumer queue depth (~8 MB at 64 KB chunks)
+
 # ---------------------------------------------------------------------------
 # In-browser player (mpegts.js)
 # ---------------------------------------------------------------------------
