@@ -27,6 +27,7 @@ ADVERTISED_BASE_URL: str  = f"{HDHR_SCHEME}://{HDHR_ADVERTISE_HOST}:{HDHR_ADVERT
 # ---------------------------------------------------------------------------
 STREAM_CHUNK_KB: int             = int(os.getenv("STREAM_CHUNK_KB", "64"))
 STREAM_PREBUFFER_KB: int         = int(os.getenv("STREAM_PREBUFFER_KB", "512"))
+XTREAM_PREBUFFER_KB: int         = int(os.getenv("XTREAM_PREBUFFER_KB", "0"))
 STREAM_MAX_RETRIES: int          = int(os.getenv("STREAM_MAX_RETRIES", "5"))
 STREAM_RETRY_DELAY: float        = float(os.getenv("STREAM_RETRY_DELAY", "3"))
 STREAM_READ_TIMEOUT: float       = float(os.getenv("STREAM_READ_TIMEOUT", "30"))
@@ -91,6 +92,8 @@ def _validate() -> None:
         errors.append(f"STREAM_CHUNK_KB must be >= 1 (got {STREAM_CHUNK_KB})")
     if STREAM_PREBUFFER_KB < 0:
         errors.append(f"STREAM_PREBUFFER_KB must be >= 0 (got {STREAM_PREBUFFER_KB})")
+    if XTREAM_PREBUFFER_KB < 0:
+        errors.append(f"XTREAM_PREBUFFER_KB must be >= 0 (got {XTREAM_PREBUFFER_KB})")
     if STREAM_MAX_RETRIES < 0:
         errors.append(f"STREAM_MAX_RETRIES must be >= 0 (got {STREAM_MAX_RETRIES})")
     if STREAM_RETRY_DELAY < 0:

@@ -1121,7 +1121,7 @@ def _stream_live_direct(source_url: str, channel_name: str, client_ip: str,
     """Generator that proxies a live stream directly from source_url with retry.
     Session must be registered in _active_streams before this generator is iterated."""
     chunk_size = config.STREAM_CHUNK_KB * 1024
-    prebuffer_bytes = config.STREAM_PREBUFFER_KB * 1024
+    prebuffer_bytes = config.XTREAM_PREBUFFER_KB * 1024
     max_retries = config.STREAM_MAX_RETRIES
     retry_delay = config.STREAM_RETRY_DELAY
     read_timeout = config.STREAM_READ_TIMEOUT
