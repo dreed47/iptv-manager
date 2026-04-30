@@ -46,6 +46,9 @@ _SESSION_STALE_SECONDS = config.STREAM_SESSION_STALE_SECONDS
 _blocked_ips: dict[str, float] = {}
 _blocked_ips_lock = threading.Lock()
 KILL_BLOCK_SECONDS = 60
+# Don't auto-replace a same-channel session that hasn't delivered data yet if it's younger than
+# this threshold — killing a connecting session just restarts the problem and creates a death spiral.
+_MIN_REPLACE_AGE_SECS = 15
 
 
 def _purge_stale_sessions():
@@ -104,13 +107,27 @@ def _close_session_connection(s: dict):
 def auto_replace_ip_session(client_ip: str, new_channel: str, item_id: int | None = None) -> int:
     """Kill any non-killed active sessions from client_ip on the same provider (channel switch).
     No IP block is added. Returns the count of non-killed live streams for this provider after replacement."""
+    now = time.time()
     killed_sessions = []
     with _active_streams_lock:
         for sid, s in _active_streams.items():
             if (s.get("client_ip") == client_ip and not s.get("killed")
                     and (item_id is None or s.get("item_id") == item_id)):
+                old_ch = s.get("channel_name") or s.get("channel", "?")
+                age = now - s.get("started_at", now)
+                # Don't kill a same-channel session that is still connecting (0 bytes, very young).
+                # Killing it just restarts the problem and creates a reconnect death spiral where
+                # each new session gets killed before it can deliver a single chunk.
+                if (old_ch == new_channel
+                        and s.get("bytes_sent", 0) == 0
+                        and age < _MIN_REPLACE_AGE_SECS):
+                    logger.debug(
+                        f"Auto-replace skipped: session {sid} ('{old_ch}') is {age:.1f}s old "
+                        f"with 0 bytes — letting it finish connecting"
+                    )
+                    continue
                 s["killed"] = True
-                killed_sessions.append((sid, s.get("channel_name") or s.get("channel", "?"), s))
+                killed_sessions.append((sid, old_ch, s))
     for sid, old_ch, s in killed_sessions:
         _close_session_connection(s)
         logger.info(f"Auto-replaced session {sid}: IP {client_ip} switched from '{old_ch}' to '{new_channel}'")
