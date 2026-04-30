@@ -14,6 +14,7 @@ import re
 import fnmatch
 import sqlite3
 import time
+import queue as _queue
 import threading
 import uuid
 import unicodedata
@@ -1118,8 +1119,17 @@ def _register_session(session_id: str, channel_name: str, client_ip: str, user_a
 def _stream_live_direct(source_url: str, channel_name: str, client_ip: str,
                         user_agent: str, session_id: str, max_sessions: int,
                         item_id: int | None = None):
-    """Generator that proxies a live stream directly from source_url with retry.
-    Session must be registered in _active_streams before this generator is iterated."""
+    """Generator that proxies a live stream with a producer-consumer queue.
+
+    A background thread (producer) reads from the upstream provider and
+    reconnects transparently when the provider closes the TCP connection.
+    The generator (consumer) yields from the queue continuously so the
+    client never sees a gap — even when the upstream closes after every
+    64 KB segment.
+
+    Session must be registered in _active_streams before this generator
+    is iterated.
+    """
     chunk_size = config.STREAM_CHUNK_KB * 1024
     prebuffer_bytes = config.XTREAM_PREBUFFER_KB * 1024
     max_retries = config.STREAM_MAX_RETRIES
@@ -1131,82 +1141,116 @@ def _stream_live_direct(source_url: str, channel_name: str, client_ip: str,
         "Connection": "keep-alive",
     }
 
+    _DONE = object()
+    # 32 slots × chunk_size ≈ 2 MB buffer at default 64 KB chunks.
+    # Producer reconnects inside this window; client never stalls.
+    data_q: _queue.Queue = _queue.Queue(maxsize=32)
+    stop_event = threading.Event()
     bytes_sent = 0
-    attempt = 0
-    prebuf: list[bytes] = []
-    prebuf_size = 0
-    prebuffering = prebuffer_bytes > 0
-    bytes_at_last_connect = 0
-    session = requests.Session()
+
+    http_session = requests.Session()
     with _active_streams_lock:
         if session_id in _active_streams:
-            _active_streams[session_id]["http_session"] = session
+            _active_streams[session_id]["http_session"] = http_session
+
+    def _producer():
+        attempt = 0
+        try:
+            while not stop_event.is_set() and attempt <= max_retries:
+                if attempt > 0:
+                    logger.warning(
+                        f"Live reconnect {attempt}/{max_retries} for '{channel_name}' — waiting {retry_delay}s"
+                    )
+                    time.sleep(retry_delay)
+                try:
+                    resp = http_session.get(
+                        source_url, headers=proxy_headers, stream=True,
+                        timeout=(10, read_timeout),
+                    )
+                    resp.raise_for_status()
+                except Exception as exc:
+                    logger.warning(f"Live upstream error for '{channel_name}': {exc}")
+                    attempt += 1
+                    continue
+                seg_bytes = 0
+                try:
+                    for chunk in resp.iter_content(chunk_size=chunk_size):
+                        if stop_event.is_set():
+                            return
+                        if not chunk:
+                            continue
+                        seg_bytes += len(chunk)
+                        try:
+                            data_q.put(chunk, timeout=5)
+                        except _queue.Full:
+                            if stop_event.is_set():
+                                return
+                    # Clean upstream close — reconnect immediately (attempt unchanged).
+                    if seg_bytes >= 10 * 1024 * 1024:
+                        attempt = 0
+                    logger.warning(
+                        f"Upstream closed '{channel_name}' after {seg_bytes} bytes — reconnecting"
+                    )
+                except Exception as exc:
+                    logger.warning(f"Live read error for '{channel_name}': {exc}")
+                    attempt += 1
+                finally:
+                    resp.close()
+        finally:
+            try:
+                data_q.put_nowait(_DONE)
+            except _queue.Full:
+                pass
+
+    producer = threading.Thread(
+        target=_producer, daemon=True, name=f"live-{session_id[:8]}"
+    )
+    producer.start()
+
     try:
-        while attempt <= max_retries:
-            if attempt > 0:
-                logger.warning(f"Live reconnect {attempt}/{max_retries} for '{channel_name}' after {bytes_sent} bytes — waiting {retry_delay}s")
-                time.sleep(retry_delay)
-                if bytes_sent > 0:
-                    prebuffering = False
+        prebuf: list[bytes] = []
+        prebuf_size = 0
+        prebuffering = prebuffer_bytes > 0
+
+        while True:
             try:
-                bytes_at_last_connect = bytes_sent
-                resp = session.get(source_url, headers=proxy_headers, stream=True,
-                                   timeout=(10, read_timeout))
-                resp.raise_for_status()
-            except Exception as exc:
-                logger.warning(f"Live upstream error for '{channel_name}': {exc}")
-                attempt += 1
-                continue
-            try:
-                for chunk in resp.iter_content(chunk_size=chunk_size):
-                    if not chunk:
-                        continue
-                    if _active_streams.get(session_id, {}).get("killed"):
-                        logger.info(f"Live stream {session_id} ('{channel_name}') killed by admin")
-                        return
-                    if prebuffering:
-                        prebuf.append(chunk)
-                        prebuf_size += len(chunk)
-                        if prebuf_size >= prebuffer_bytes:
-                            for c in prebuf:
-                                bytes_sent += len(c)
-                                yield c
-                            s = _active_streams.get(session_id)
-                            if s:
-                                s["bytes_sent"] = bytes_sent
-                                s["last_chunk_at"] = time.time()
-                            prebuf = []
-                            prebuf_size = 0
-                            prebuffering = False
-                    else:
-                        bytes_sent += len(chunk)
-                        s = _active_streams.get(session_id)
-                        if s:
-                            s["bytes_sent"] = bytes_sent
-                            s["last_chunk_at"] = time.time()
-                        yield chunk
-                # Upstream closed cleanly — flush partial prebuf, reset budget, reconnect.
-                # Do NOT break: fall through so the while loop reconnects immediately
-                # (attempt unchanged → no sleep). Client never sees a disconnect.
-                if prebuf:
+                chunk = data_q.get(timeout=read_timeout + 5)
+            except _queue.Empty:
+                logger.warning(f"Consumer timeout waiting for '{channel_name}'")
+                break
+            if chunk is _DONE:
+                break
+            s = _active_streams.get(session_id)
+            if s and s.get("killed"):
+                logger.info(f"Live stream {session_id} ('{channel_name}') killed by admin")
+                break
+            if prebuffering:
+                prebuf.append(chunk)
+                prebuf_size += len(chunk)
+                if prebuf_size >= prebuffer_bytes:
                     for c in prebuf:
                         bytes_sent += len(c)
                         yield c
+                    s = _active_streams.get(session_id)
+                    if s:
+                        s["bytes_sent"] = bytes_sent
+                        s["last_chunk_at"] = time.time()
                     prebuf = []
                     prebuf_size = 0
                     prebuffering = False
-                delivered = bytes_sent - bytes_at_last_connect
-                if delivered >= 10 * 1024 * 1024:
-                    attempt = 0
-                logger.warning(
-                    f"Upstream closed '{channel_name}' after {delivered} bytes — reconnecting immediately"
-                )
-            except Exception as exc:
-                logger.warning(f"Live read error for '{channel_name}': {exc}")
-                attempt += 1
-            finally:
-                resp.close()
+            else:
+                bytes_sent += len(chunk)
+                s = _active_streams.get(session_id)
+                if s:
+                    s["bytes_sent"] = bytes_sent
+                    s["last_chunk_at"] = time.time()
+                yield chunk
+    except GeneratorExit:
+        pass
     finally:
+        stop_event.set()
+        http_session.close()
+        producer.join(timeout=5)
         logger.info(f"Live stream ended: '{channel_name}', {bytes_sent} bytes sent")
         with _active_streams_lock:
             _active_streams.pop(session_id, None)
