@@ -238,31 +238,41 @@ async def test_provider_connection(item_id: int, db: Session = Depends(get_db)):
 
 @router.get("/api/active_streams", response_class=JSONResponse)
 async def api_active_streams(db: Session = Depends(get_db)):
-    import math
     streams = get_active_streams()
     all_items = db.query(Item).all()
     max_sessions = sum(int(it.max_sessions or 1) for it in all_items) if all_items else 1
     item_names = {it.id: it.name for it in all_items}
-    out = []
-    now = time.time()
+
+    # Group by (client_ip, channel_name) — multi-connection clients (e.g. Apple TV) show as one entry
+    groups: dict[tuple, list] = {}
     for s in streams:
-        elapsed = int(now - s.get("started_at", now))
+        key = (s.get("client_ip", "?"), s.get("channel_name", s.get("channel", "?")))
+        groups.setdefault(key, []).append(s)
+
+    now = time.time()
+    out = []
+    for group in groups.values():
+        rep = max(group, key=lambda s: s.get("bytes_sent", 0))
+        elapsed = int(now - rep.get("started_at", now))
         hours, rem = divmod(elapsed, 3600)
         mins, secs = divmod(rem, 60)
         duration = f"{hours}h {mins}m" if hours else f"{mins}m {secs}s"
-        mb = s.get("bytes_sent", 0) / (1024 * 1024)
-        channel_num = s.get("channel", "?")
-        channel_name = s.get("channel_name", "")
+        mb = rep.get("bytes_sent", 0) / (1024 * 1024)
+        channel_num = rep.get("channel", "?")
+        channel_name = rep.get("channel_name", "")
         channel_display = f"{channel_num} — {channel_name}" if channel_name and channel_name != channel_num else channel_num
-        provider_name = item_names.get(s.get("item_id"), "")
-        out.append({
-            "session_id": s.get("session_id", ""),
+        provider_name = item_names.get(rep.get("item_id"), "")
+        entry = {
+            "session_id": rep.get("session_id", ""),
             "channel": channel_display,
-            "client_ip": s.get("client_ip", "?"),
+            "client_ip": rep.get("client_ip", "?"),
             "duration": duration,
             "mb_sent": round(mb, 1),
             "provider": provider_name,
-        })
+        }
+        if len(group) > 1:
+            entry["connections"] = len(group)
+        out.append(entry)
     return JSONResponse({"streams": out, "max_sessions": max_sessions})
 
 
