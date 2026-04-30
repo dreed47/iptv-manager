@@ -468,20 +468,27 @@ def build_epg_xml(our_channels: list[dict], epg_sources: list) -> str:
 
     # ---- programme elements ----
     prog_count = 0
+    
+    import config as _cfg
+    
+    offset_hours = _cfg.EPG_TIME_OFFSET_HOURS
+    
     for src_id, tvg_ids in src_to_tvg_ids.items():
         progs = programmes_by_src_id.get(src_id, [])
         for prog_elem in progs:
             for tvg_id in tvg_ids:
                 prog_elem.set('channel', tvg_id)
-                # Normalize start and stop times to UTC
-                start = prog_elem.get('start')
-                stop = prog_elem.get('stop')
-                if start:
-                    prog_elem.set('start', _normalize_time_to_utc(start))
-                if stop:
-                    prog_elem.set('stop', _normalize_time_to_utc(stop))
+                # Apply time offset
+                if offset_hours != 0:
+                    start = prog_elem.get('start', '')
+                    stop = prog_elem.get('stop', '')
+                    if start:
+                        prog_elem.set('start', _apply_time_offset(start, offset_hours))
+                    if stop:
+                        prog_elem.set('stop', _apply_time_offset(stop, offset_hours))
                 parts.append('  ' + ET.tostring(prog_elem, encoding='unicode'))
                 prog_count += 1
+
 
     # ---- dummy programme blocks for unmatched channels ----
     for ch in unmatched_sorted:
@@ -553,3 +560,18 @@ def run_epg_build(force_refresh: bool = True, item_ids: list[int] | None = None)
         get_epg(force_refresh=force_refresh, item_ids=item_ids)
     except Exception as exc:
         logger.warning(f"EPG build failed: {exc}", exc_info=True)
+
+def _apply_time_offset(time_str: str, offset_hours: int) -> str:
+    """Apply a fixed hour offset to an XMLTV timestamp."""
+    if not time_str or offset_hours == 0:
+        return time_str
+    
+    try:
+        from datetime import datetime, timedelta
+        
+        dt_str = time_str[:14]
+        dt = datetime.strptime(dt_str, '%Y%m%d%H%M%S')
+        dt = dt + timedelta(hours=offset_hours)
+        return dt.strftime('%Y%m%d%H%M%S') + time_str[14:]
+    except Exception:
+        return time_str
