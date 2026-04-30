@@ -86,6 +86,11 @@ EPG_XML_SOURCES: list[str] = (
     else ["https://epg.pw/xmltv/epg_US.xml"]
 )
 
+# EPG time offset (hours) to add to all programme times
+# Use negative values to shift earlier, positive to shift later
+# Example: -12 to shift CET (UTC+2) to EDT (UTC-4) when data is 12 hours off
+EPG_TIME_OFFSET_HOURS: int = int(os.getenv("EPG_TIME_OFFSET_HOURS", "0"))
+
 # ---------------------------------------------------------------------------
 # Startup validation — raises ValueError on obviously bad values so the
 # container fails fast with a clear message instead of misbehaving silently.
