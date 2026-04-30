@@ -623,11 +623,16 @@ async def serve_epg(db: Session = Depends(get_db)):
     import asyncio
     import multiprocessing as mp
     from epg_manager import run_epg_build, EPG_CACHE_PATH
+    from models import get_epg_channel_map
     hdhr_provider_id = get_app_config(db, "hdhr_provider_id")
     item_ids = [int(hdhr_provider_id)] if hdhr_provider_id else None
+    channel_map = get_epg_channel_map(db)
+    raw_offset = get_app_config(db, "epg_time_offset_hours")
+    time_offset = int(raw_offset) if raw_offset is not None else None
 
     def _build():
-        p = mp.Process(target=run_epg_build, args=(False, item_ids), daemon=True)
+        p = mp.Process(target=run_epg_build,
+                       args=(False, item_ids, channel_map, time_offset), daemon=True)
         p.start()
         p.join()
 
@@ -645,11 +650,16 @@ async def refresh_epg(db: Session = Depends(get_db)):
     import asyncio
     import multiprocessing as mp
     from epg_manager import run_epg_build
+    from models import get_epg_channel_map
     hdhr_provider_id = get_app_config(db, "hdhr_provider_id")
     item_ids = [int(hdhr_provider_id)] if hdhr_provider_id else None
+    channel_map = get_epg_channel_map(db)
+    raw_offset = get_app_config(db, "epg_time_offset_hours")
+    time_offset = int(raw_offset) if raw_offset is not None else None
 
     def _build():
-        p = mp.Process(target=run_epg_build, args=(True, item_ids), daemon=True)
+        p = mp.Process(target=run_epg_build,
+                       args=(True, item_ids, channel_map, time_offset), daemon=True)
         p.start()
         p.join()
 

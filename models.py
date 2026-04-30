@@ -65,6 +65,13 @@ class AppConfig(Base):
     key   = Column(String(100), primary_key=True)
     value = Column(String(500), nullable=True)
 
+
+class EpgChannelMap(Base):
+    """Explicit tvg-id → EPG source channel-id overrides. Bypasses fuzzy name matching."""
+    __tablename__ = "epg_channel_map"
+    tvg_id       = Column(String(200), primary_key=True)  # our M3U tvg-id
+    epg_source_id = Column(String(200), nullable=False)   # EPG <channel id> to use
+
 def _slugify(name: str) -> str:
     s = name.lower().strip()
     s = re.sub(r"[^a-z0-9]+", "-", s)
@@ -214,4 +221,20 @@ def set_app_config(db, key: str, value):
         row.value = value
     else:
         db.add(AppConfig(key=key, value=value))
+    db.commit()
+
+
+def get_epg_channel_map(db) -> dict[str, str]:
+    """Return all explicit EPG overrides as {tvg_id: epg_source_id}."""
+    return {row.tvg_id: row.epg_source_id for row in db.query(EpgChannelMap).all()}
+
+
+def save_epg_channel_map(db, mappings: dict[str, str]) -> None:
+    """Overwrite all EPG channel overrides. Empty string values are treated as deletions."""
+    db.query(EpgChannelMap).delete()
+    for tvg_id, epg_source_id in mappings.items():
+        tvg_id = tvg_id.strip()
+        epg_source_id = epg_source_id.strip()
+        if tvg_id and epg_source_id:
+            db.add(EpgChannelMap(tvg_id=tvg_id, epg_source_id=epg_source_id))
     db.commit()
