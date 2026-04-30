@@ -39,6 +39,10 @@ See [docs/async.md](docs/async.md) for important async rules.
 See [docs/provider_routing.md](docs/provider_routing.md) for provider routing details.
 
 
+## EPG system
+
+See [docs/epg.md](docs/epg.md) for EPG build pipeline, channel mapping, and sample starter channel/filter lists.
+
 ## Env vars worth knowing
 See [docs/env_vars.md](docs/env_vars.md) for key environment variables used by the app.
 

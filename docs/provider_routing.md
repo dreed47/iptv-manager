@@ -22,7 +22,3 @@ Stream IDs encode the provider `item_id` so routes always resolve the correct pr
 | Episode | `item_id × 1_000_000_000 + upstream_ep_id` | `2_001_662_558` |
 
 Extraction: `item_id = stream_id // 1_000_000_000` (episodes) or `stream_id // 100_000_000` (others).
-
-### Slug-based routing (legacy / advanced)
-
-Slug routes (`/{slug}/player_api.php`, `/{slug}/series/…`, etc.) still work for apps that correctly pass the full server URL including path. Slugs are auto-generated from the provider name and stored internally but are no longer exposed in the UI.
