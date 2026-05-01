@@ -32,7 +32,7 @@
   </div>
 
   <div id="log-container" style="font-family: ui-monospace, 'SF Mono', monospace; font-size: 12px; line-height: 1.6; max-height: 70vh; overflow-y: auto; background: #0f172a; border-radius: 6px; padding: 12px 14px;">
-    <div style="color: #64748b; font-style: italic;">Loading…</div>
+    <div style="color: #94a3b8; font-style: italic;">Loading…</div>
   </div>
 </div>
 
@@ -44,7 +44,7 @@
     'ERROR':   '#f87171',
     'WARNING': '#fbbf24',
     'INFO':    '#94a3b8',
-    'DEBUG':   '#64748b',
+    'DEBUG':   '#7c90a8',
   };
 
   function escHtml(s) {
@@ -79,14 +79,14 @@
     document.getElementById('countLabel').textContent = logs.length + ' entries';
 
     if (logs.length === 0) {
-      container.innerHTML = '<div style="color:#64748b;font-style:italic;">No log entries match the current filters.</div>';
+      container.innerHTML = '<div style="color:#94a3b8;font-style:italic;">No log entries match the current filters.</div>';
       return;
     }
 
     var html = logs.map(function(e) {
       var color = LEVEL_COLORS[e.level] || '#94a3b8';
       return '<div style="margin-bottom:2px;">'
-        + '<span style="color:#64748b;">' + escHtml(formatTs(e.ts)) + '</span>  '
+        + '<span style="color:#94a3b8;">' + escHtml(formatTs(e.ts)) + '</span>  '
         + '<span style="color:' + color + ';font-weight:700;min-width:7ch;display:inline-block;">' + escHtml(e.level) + '</span>  '
         + '<span style="color:#e2e8f0;">' + escHtml(e.msg) + '</span>'
         + '</div>';

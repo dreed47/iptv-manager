@@ -13,6 +13,7 @@
   </script>
   <style>
     :root {
+      color-scheme: light;
       --primary:        #2563eb;
       --primary-hover:  #1d4ed8;
       --success:        #16a34a;
@@ -22,16 +23,17 @@
       --warning:        #d97706;
       --warning-hover:  #b45309;
       --text:           #1e293b;
-      --text-muted:     #64748b;
-      --border:         #e2e8f0;
+      --text-muted:     #475569;
+      --border:         #c8d3df;
       --surface:        #ffffff;
-      --bg:             #f1f5f9;
+      --bg:             #dde3ed;
       --sidebar-bg:     #0f172a;
       --radius:         8px;
       --shadow:         0 1px 3px rgba(0,0,0,0.07), 0 1px 2px rgba(0,0,0,0.04);
     }
 
     html.dark {
+      color-scheme: dark;
       --text:       #f1f5f9;
       --text-muted: #94a3b8;
       --border:     #334155;
@@ -153,8 +155,8 @@
     .btn-warning:hover:not(:disabled)  { background: var(--warning-hover); }
     .btn-danger   { background: var(--danger);   color: #fff; }
     .btn-danger:hover:not(:disabled)   { background: var(--danger-hover); }
-    .btn-secondary { background: #94a3b8; color: #fff; }
-    .btn-secondary:hover:not(:disabled) { background: #7b93a8; }
+    .btn-secondary { background: #64748b; color: #fff; }
+    .btn-secondary:hover:not(:disabled) { background: #475569; }
     .btn-outline {
       background: transparent;
       border: 1px solid var(--border);
@@ -221,7 +223,7 @@
     .badge-success { background: #dcfce7; color: #15803d; }
     .badge-danger  { background: #fee2e2; color: #dc2626; }
     .badge-warning { background: #fef3c7; color: #b45309; }
-    .badge-neutral { background: #f1f5f9; color: #64748b; }
+    .badge-neutral { background: #f1f5f9; color: #475569; }
 
     /* ── Mono box ────────────────────────────────── */
     .mono-box {
