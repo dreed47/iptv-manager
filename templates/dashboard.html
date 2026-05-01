@@ -17,7 +17,7 @@
 <div class="grid-auto mb-16">
   <div class="card" style="margin-bottom: 0;">
     <div class="stat-label"><a href="/hdhomerun" class="stat-link">HDHomeRun</a></div>
-    <div class="stat-value" style="color: {{ 'var(--success)' if hdhr_running else '#94a3b8' }};">
+    <div class="stat-value" style="color: {{ 'var(--success)' if hdhr_running else '#64748b' }};">
       {{ 'Active' if hdhr_running else 'Inactive' }}
     </div>
     <div class="stat-sub">Discovery service</div>
@@ -53,7 +53,7 @@
 
   <div class="card" style="margin-bottom: 0;">
     <div class="stat-label"><a href="/settings" class="stat-link">OpenVPN</a></div>
-    <div class="stat-value" id="vpnStatValue" style="color: #94a3b8;">—</div>
+    <div class="stat-value" id="vpnStatValue" style="color: #64748b;">—</div>
     <div class="stat-sub" id="vpnStatSub">Checking…</div>
     {% if item and item.vpn_configured %}
     <form method="POST" action="/vpn/enable" id="vpn-enable-form" style="display:none; margin-top:8px;">
@@ -69,7 +69,7 @@
 
   <div class="card" style="margin-bottom: 0;">
     <div class="stat-label"><a href="/tools" class="stat-link">MQTT</a></div>
-    <div class="stat-value" id="mqttStatValue" style="color: #94a3b8;">—</div>
+    <div class="stat-value" id="mqttStatValue" style="color: #64748b;">—</div>
     <div class="stat-sub" id="mqttStatSub">Checking…</div>
   </div>
 </div>
@@ -180,7 +180,7 @@
       sub.textContent = ipLabel;
     } else {
       val.textContent = 'Off';
-      val.style.color = '#94a3b8';
+      val.style.color = '#64748b';
       sub.textContent = 'Not running';
     }
     var enableForm  = document.getElementById('vpn-enable-form');
@@ -199,11 +199,11 @@
       sub.textContent = mqttData.broker || 'broker active';
     } else if (mqttData && mqttData.broker) {
       val.textContent = 'Off';
-      val.style.color = '#94a3b8';
+      val.style.color = '#64748b';
       sub.textContent = 'Disconnected';
     } else {
       val.textContent = 'Off';
-      val.style.color = '#94a3b8';
+      val.style.color = '#64748b';
       sub.textContent = 'Not configured';
     }
   }
