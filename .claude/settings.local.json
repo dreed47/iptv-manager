@@ -4,7 +4,8 @@
       "Bash(wc -l /Users/david/Desktop/code/iptv-manager-working/templates/*.html)",
       "Bash(docker cp *)",
       "Bash(docker exec *)",
-      "Bash(docker restart *)"
+      "Bash(docker restart *)",
+      "Bash(rtk ls *)"
     ]
   }
 }
