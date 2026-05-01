@@ -12,46 +12,66 @@
 <!-- System Information -->
 <div class="card">
   <div class="card-title">System Information</div>
-  <div class="grid-3">
-    <div>
-      <div class="form-label mb-8">Base URL</div>
-      <div class="mono-box">{{ base_url }}</div>
+
+  <div class="mb-16">
+    <div class="text-xs text-muted text-uppercase mb-8">Core</div>
+    <div class="grid-3">
+      <div>
+        <div class="form-label mb-8">Base URL</div>
+        <div class="mono-box">{{ base_url }}</div>
+      </div>
+      <div>
+        <div class="form-label mb-8">Container Name</div>
+        <div class="mono-box">{{ container_name if container_name else '—' }}</div>
+      </div>
+      <div>
+        <div class="form-label mb-8">Time Zone</div>
+        <div class="mono-box">{{ timezone }}</div>
+      </div>
     </div>
-    <div>
-      <div class="form-label mb-8">Container Name</div>
-      <div class="mono-box">{{ container_name if container_name else '—' }}</div>
+  </div>
+
+  <div class="mb-16">
+    <div class="text-xs text-muted text-uppercase mb-8">HDHomeRun & Streaming</div>
+    <div class="grid-3">
+      <div>
+        <div class="form-label mb-8">HDHomeRun Discovery</div>
+        <span class="badge {{ 'badge-success' if hdhr_running else 'badge-neutral' }}">
+          {{ 'Enabled' if hdhr_running else 'Disabled' }}
+        </span>
+      </div>
+      <div>
+        <div class="form-label mb-8">HDHomeRun Provider</div>
+        <div class="mono-box">{{ hdhr_selected_name if hdhr_selected_name else '—' }}</div>
+      </div>
+      <div>
+        <div class="form-label mb-8">Xtream Proxy</div>
+        <span class="badge badge-success">Active</span>
+      </div>
     </div>
-    <div>
-      <div class="form-label mb-8">Time Zone</div>
-      <div class="mono-box">{{ timezone }}</div>
-    </div>
-    <div>
-      <div class="form-label mb-8">HDHomeRun Discovery</div>
-      <span class="badge {{ 'badge-success' if hdhr_running else 'badge-neutral' }}">
-        {{ 'Enabled' if hdhr_running else 'Disabled' }}
-      </span>
-    </div>
-    <div>
-      <div class="form-label mb-8">IPTV Providers</div>
-      <span class="badge {{ 'badge-success' if provider_count > 0 else 'badge-neutral' }}">
-        {{ provider_count }} configured
-      </span>
-    </div>
-    <div>
-      <div class="form-label mb-8">MQTT Devices</div>
-      <span class="badge {{ 'badge-success' if mqtt_device_count > 0 else 'badge-neutral' }}">
-        {{ mqtt_device_count }} active
-      </span>
-    </div>
-    <div>
-      <div class="form-label mb-8">VPN Status</div>
-      <span class="badge {{ 'badge-success' if vpn_running else 'badge-neutral' }}">
-        {% if vpn_running %}Connected{% if vpn_interface %} ({{ vpn_interface }}){% endif %}{% else %}Not running{% endif %}
-      </span>
-    </div>
-    <div>
-      <div class="form-label mb-8">Xtream Proxy</div>
-      <span class="badge badge-success">Active</span>
+  </div>
+
+  <div>
+    <div class="text-xs text-muted text-uppercase mb-8">Providers & Integrations</div>
+    <div class="grid-3">
+      <div>
+        <div class="form-label mb-8">IPTV Providers</div>
+        <span class="badge {{ 'badge-success' if provider_count > 0 else 'badge-neutral' }}">
+          {{ provider_count }} configured
+        </span>
+      </div>
+      <div>
+        <div class="form-label mb-8">MQTT Devices</div>
+        <span class="badge {{ 'badge-success' if mqtt_device_count > 0 else 'badge-neutral' }}">
+          {{ mqtt_device_count }} active
+        </span>
+      </div>
+      <div>
+        <div class="form-label mb-8">VPN Status</div>
+        <span class="badge {{ 'badge-success' if vpn_running else 'badge-neutral' }}">
+          {% if vpn_running %}Connected{% if vpn_interface %} ({{ vpn_interface }}){% endif %}{% else %}Not running{% endif %}
+        </span>
+      </div>
     </div>
   </div>
 </div>
@@ -68,17 +88,6 @@
   <div class="card-title">Log Viewer</div>
   <p class="text-muted text-sm mb-12">Browse recent application logs. Useful for diagnosing stream errors, EPG issues, and filter problems.</p>
   <a href="/tools/logs" target="_blank" class="btn btn-outline">Open Log Viewer</a>
-</div>
-
-<!-- Setup Guides -->
-<div class="card">
-  <div class="card-title">Setup Guides</div>
-  <div class="grid-auto">
-    <a href="https://support.plex.tv/articles/225877347-live-tv-dvr/" target="_blank" rel="noopener" class="btn btn-outline" style="justify-content: flex-start;">📺 Plex Live TV &amp; DVR</a>
-    <a href="https://jellyfin.org/docs/general/server/live-tv/setup-guide" target="_blank" rel="noopener" class="btn btn-outline" style="justify-content: flex-start;">🪼 Jellyfin Live TV</a>
-    <a href="https://support.emby.media/support/solutions/articles/44001160415-live-tv-setup" target="_blank" rel="noopener" class="btn btn-outline" style="justify-content: flex-start;">🎬 Emby Live TV</a>
-    <a href="https://github.com/dreed47/iptv-manager" target="_blank" rel="noopener" class="btn btn-outline" style="justify-content: flex-start;">📖 IPTV Manager on GitHub</a>
-  </div>
 </div>
 
 <!-- MQTT Global Settings -->
@@ -195,6 +204,17 @@
   {% else %}
   <p class="text-muted text-sm" style="font-style:italic;">No provider configured. <a href="/providers/new" style="color:var(--primary);">Add one →</a></p>
   {% endif %}
+  </div>
+</div>
+
+<!-- Setup Guides -->
+<div class="card">
+  <div class="card-title">Setup Guides</div>
+  <div class="grid-auto">
+    <a href="https://support.plex.tv/articles/225877347-live-tv-dvr/" target="_blank" rel="noopener" class="btn btn-outline" style="justify-content: flex-start;">📺 Plex Live TV &amp; DVR</a>
+    <a href="https://jellyfin.org/docs/general/server/live-tv/setup-guide" target="_blank" rel="noopener" class="btn btn-outline" style="justify-content: flex-start;">🪼 Jellyfin Live TV</a>
+    <a href="https://support.emby.media/support/solutions/articles/44001160415-live-tv-setup" target="_blank" rel="noopener" class="btn btn-outline" style="justify-content: flex-start;">🎬 Emby Live TV</a>
+    <a href="https://github.com/dreed47/iptv-manager" target="_blank" rel="noopener" class="btn btn-outline" style="justify-content: flex-start;">📖 IPTV Manager on GitHub</a>
   </div>
 </div>
 

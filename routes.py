@@ -1007,9 +1007,19 @@ async def tools_page(request: Request, error: str = None, success: str = None):
             mqtt_device_count = sum(
                 1 for it in all_items if it.mqtt_topic_prefix and it.mqtt_topic_prefix.strip()
             )
-        return item, provider_count, mqtt_device_count
+            hdhr_provider_id = get_app_config(db, "hdhr_provider_id")
+            hdhr_stream_provider_id = get_app_config(db, "hdhr_stream_provider_id")
+            hdhr_selected_name = None
+            if hdhr_stream_provider_id:
+                try:
+                    sel = db.query(Item).filter(Item.id == int(hdhr_stream_provider_id)).first()
+                    if sel:
+                        hdhr_selected_name = sel.name
+                except (TypeError, ValueError):
+                    pass
+        return item, provider_count, mqtt_device_count, hdhr_selected_name
 
-    item, provider_count, mqtt_device_count = await asyncio.to_thread(_load)
+    item, provider_count, mqtt_device_count, hdhr_selected_name = await asyncio.to_thread(_load)
     vpn_status = await asyncio.to_thread(vpn_manager.get_vpn_status)
 
     start = time.perf_counter()
@@ -1023,6 +1033,7 @@ async def tools_page(request: Request, error: str = None, success: str = None):
         "hdhr_running": hdhomerun_emulator.is_running(),
         "provider_count": provider_count,
         "mqtt_device_count": mqtt_device_count,
+        "hdhr_selected_name": hdhr_selected_name,
         "timezone": os.getenv("TZ", "UTC"),
         "container_name": os.getenv("CONTAINER_NAME", ""),
         "vpn_running": vpn_status.get("running", False),
