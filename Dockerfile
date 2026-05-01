@@ -18,4 +18,4 @@ RUN mkdir -p /app/m3u_files && chmod -R 777 /app
 
 EXPOSE 5005
 
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "5005", "--no-access-log", "--timeout-keep-alive", "5", "--limit-max-requests", "10000"]
+CMD exec uvicorn main:app --host 0.0.0.0 --port 5005 --no-access-log --timeout-keep-alive 5 --limit-max-requests ${UVICORN_MAX_REQUESTS:-100000}
