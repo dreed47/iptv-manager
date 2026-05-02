@@ -297,8 +297,14 @@ def start_m3u_scheduler():
                                 hdhr_id = get_app_config(db, "hdhr_provider_id")
                         if ok:
                             from epg_manager import get_epg
-                            epg_item_ids = [int(hdhr_id)] if hdhr_id else None
-                            get_epg(force_refresh=True, item_ids=epg_item_ids)
+                            from models import get_epg_channel_map
+                            with SessionLocal() as epg_db:
+                                epg_item_ids = [int(hdhr_id)] if hdhr_id else None
+                                channel_map = get_epg_channel_map(epg_db)
+                                raw_offset = get_app_config(epg_db, "epg_time_offset_hours")
+                                time_offset = int(raw_offset) if raw_offset is not None else None
+                            get_epg(force_refresh=True, item_ids=epg_item_ids,
+                                    channel_map=channel_map, time_offset_hours=time_offset)
                     except Exception as e:
                         logger.error(f"Scheduler: item {item_id} error: {e}")
             except Exception as e:
