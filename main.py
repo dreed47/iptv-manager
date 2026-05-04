@@ -54,6 +54,7 @@ from routes import router
 from hdhomerun_routes import router as hdhomerun_router
 from xtream_server_routes import router as xtream_server_router, get_xtream_cache
 from health_routes import router as health_router
+from network_test_routes import router as network_test_router
 from m3u_service import start_m3u_scheduler
 
 logger = logging.getLogger(__name__)
@@ -231,7 +232,8 @@ def create_app():
     app.include_router(hdhomerun_router)
     app.include_router(xtream_server_router)
     app.include_router(health_router)
-    
+    app.include_router(network_test_router)
+
     return app
 
 app = create_app()
