@@ -197,10 +197,6 @@
       </span>
     </div>
   </form>
-  <div class="flex flex-center gap-12 mt-12" style="padding-top:12px; border-top:1px solid var(--border);">
-    <a href="/tools/network_test{% if item %}?provider_id={{ item.id }}{% endif %}" class="btn btn-outline btn-sm">Network Test</a>
-    <span class="text-sm text-muted">Test latency, bandwidth, packet loss, and jitter through the VPN.</span>
-  </div>
   {% else %}
   <p class="text-muted text-sm" style="font-style:italic;">No provider configured. <a href="/providers/new" style="color:var(--primary);">Add one →</a></p>
   {% endif %}

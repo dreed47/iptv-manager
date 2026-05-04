@@ -387,6 +387,20 @@ If VPN was enabled when the container stopped, it reconnects automatically on th
 
 The **Stream Tester** page makes test requests from the container, so they go through the VPN when it is active. Some IPTV providers front their authentication endpoints with Cloudflare, which may block known VPN exit IPs. If the tester reports a Cloudflare error, this does **not** necessarily mean your streams are broken — actual stream URLs (sourced from your M3U file) connect to direct stream servers that are usually not behind Cloudflare and work fine over VPN.
 
+### Network Quality Test
+
+**Tools → Stream Tester → Run Network Test** (or navigate directly to `/tools/network_test`) runs a five-test suite against a provider's stream server. All requests originate from the container, so results reflect the path the VPN tunnel takes to your provider.
+
+| Test | What it measures |
+|---|---|
+| Latency (TCP) | Round-trip time to open a TCP connection to the stream server |
+| Bandwidth Estimate | Sustained download throughput over a short pull window |
+| Packet Loss Proxy | Repeated TCP connection attempts to estimate drop rate |
+| Stream Pull | End-to-end time to fetch the first chunk of a live stream |
+| Jitter Estimate | Variance in successive TCP connection times |
+
+Results update live as each test completes. Select a provider from the dropdown to target its configured server URL, or enter a custom URL. Only one test run can execute at a time — a concurrent request returns the in-progress results.
+
 ---
 
 ## Connecting to Plex
