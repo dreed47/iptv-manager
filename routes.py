@@ -918,8 +918,7 @@ async def save_vpn_settings(
     if vpn_password.strip():
         item.vpn_password = vpn_password.strip()
     db.commit()
-    redirect_id = item_id if item_id else item.id
-    return RedirectResponse(url=f"/providers/{redirect_id}?success=VPN+settings+saved", status_code=303)
+    return RedirectResponse(url="/tools?success=VPN+settings+saved", status_code=303)
 
 
 @router.post("/vpn/enable", response_class=RedirectResponse)
@@ -964,6 +963,36 @@ async def vpn_disable(request: Request, db: Session = Depends(get_db)):
     return RedirectResponse(
         url=f"{next_url}?error={urllib.parse.quote('VPN stop failed: ' + msg)}", status_code=303
     )
+
+
+@router.post("/api/vpn/toggle", response_class=JSONResponse)
+async def api_vpn_toggle(db: Session = Depends(get_db)):
+    import vpn_manager
+    import asyncio
+    status = await asyncio.to_thread(vpn_manager.get_vpn_status)
+    if status.get("running"):
+        ok, msg = await asyncio.to_thread(vpn_manager.stop_vpn)
+        item = db.query(Item).first()
+        if item:
+            item.vpn_enabled = False
+            db.commit()
+    else:
+        item = db.query(Item).first()
+        if not item or not (item.vpn_config and item.vpn_username and item.vpn_password):
+            return JSONResponse({"ok": False, "running": False, "message": "VPN not configured — save settings first"})
+        ok, msg = await asyncio.to_thread(
+            vpn_manager.start_vpn, item.vpn_config, item.vpn_username, item.vpn_password
+        )
+        if ok:
+            item.vpn_enabled = True
+            db.commit()
+    new_status = await asyncio.to_thread(vpn_manager.get_vpn_status)
+    return JSONResponse({
+        "ok": ok,
+        "running": new_status.get("running", False),
+        "interface": new_status.get("interface", ""),
+        "message": msg,
+    })
 
 
 @router.get("/vpn/status", response_class=JSONResponse)

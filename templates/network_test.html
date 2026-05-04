@@ -1,0 +1,384 @@
+{% extends "base_slim.html" %}
+{% block title %}Network Test — IPTV Manager{% endblock %}
+{% block back_link %}<a href="/tools" class="slim-back">← Tools</a>{% endblock %}
+{% block page_title %}Network Test{% endblock %}
+
+{% block extra_styles %}
+.net-test-wrap {
+  max-width: 860px;
+  margin: 0 auto;
+}
+
+.test-row {
+  padding: 14px 0;
+  border-bottom: 1px solid var(--border);
+}
+.test-row:last-child { border-bottom: none; }
+
+.test-row-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 4px;
+}
+.test-label {
+  font-weight: 600;
+  font-size: 14px;
+}
+.test-detail {
+  margin-top: 2px;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+.test-threshold {
+  margin-top: 2px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.summary-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+}
+{% endblock %}
+
+{% block content %}
+<div class="net-test-wrap">
+
+  <!-- Provider selector card -->
+  <div class="card">
+    <div class="card-title">Provider</div>
+    <div class="flex-center gap-12 flex-wrap">
+      {% if providers %}
+      <select id="provider-select" class="form-select">
+        {% for p in providers %}
+        <option value="{{ p.id }}"{% if p.id == selected_provider_id %} selected{% endif %}>{{ p.name }}</option>
+        {% endfor %}
+      </select>
+      <button class="btn btn-primary" id="run-btn" onclick="startTest()">Run Network Test</button>
+      <button class="btn btn-sm" id="vpn-toggle-btn" onclick="doVpnToggle()" style="margin-left:4px;">VPN: Checking…</button>
+      <span id="run-status" class="text-sm text-muted"></span>
+      {% else %}
+      <p class="text-muted text-sm" style="font-style:italic;">
+        No providers configured. <a href="/providers/new" style="color:var(--primary);">Add one →</a>
+      </p>
+      {% endif %}
+    </div>
+    <p class="text-sm text-muted" style="margin-top:10px;">
+      Tests latency, bandwidth, packet loss, stream throughput, and jitter through
+      your current network (VPN if active). Takes 15–30 seconds.
+    </p>
+  </div>
+
+  <!-- Results card — shown once a test starts -->
+  <div class="card" id="results-card" style="display:none;">
+    <div class="card-title flex-between">
+      <span>Results</span>
+      <span class="flex-center gap-8">
+        <span class="text-sm text-muted" id="results-meta"></span>
+        <span class="badge" id="vpn-badge" style="display:none;"></span>
+      </span>
+    </div>
+    <div id="test-rows"></div>
+    <div class="summary-bar" id="overall-summary" style="display:none;">
+      <span class="badge" id="summary-badge"></span>
+      <span class="text-sm text-muted" id="summary-text"></span>
+    </div>
+  </div>
+
+  <!-- Reference card -->
+  <div class="card">
+    <div class="card-title">Typical IPTV Bitrates</div>
+    <table style="width:100%; border-collapse:collapse; font-size:13px;">
+      <thead>
+        <tr style="border-bottom:1px solid var(--border);">
+          <th style="text-align:left; padding:6px 8px; color:var(--text-muted); font-weight:600; font-size:11px; text-transform:uppercase; letter-spacing:0.5px;">Content</th>
+          <th style="text-align:left; padding:6px 8px; color:var(--text-muted); font-weight:600; font-size:11px; text-transform:uppercase; letter-spacing:0.5px;">Typical Bitrate</th>
+          <th style="text-align:left; padding:6px 8px; color:var(--text-muted); font-weight:600; font-size:11px; text-transform:uppercase; letter-spacing:0.5px;">Headroom Needed</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr style="border-bottom:1px solid var(--border);">
+          <td style="padding:8px;">SD</td>
+          <td style="padding:8px;">2–4 Mbps</td>
+          <td style="padding:8px; color:var(--success);">Any connection</td>
+        </tr>
+        <tr style="border-bottom:1px solid var(--border);">
+          <td style="padding:8px;">HD 720p</td>
+          <td style="padding:8px;">5–8 Mbps</td>
+          <td style="padding:8px; color:var(--success);">10+ Mbps recommended</td>
+        </tr>
+        <tr style="border-bottom:1px solid var(--border);">
+          <td style="padding:8px;">FHD 1080p</td>
+          <td style="padding:8px;">8–15 Mbps</td>
+          <td style="padding:8px; color:var(--warning);">20+ Mbps recommended</td>
+        </tr>
+        <tr>
+          <td style="padding:8px;">4K</td>
+          <td style="padding:8px;">25–50 Mbps</td>
+          <td style="padding:8px; color:var(--danger);">50+ Mbps recommended</td>
+        </tr>
+      </tbody>
+    </table>
+    <p class="text-sm text-muted" style="margin-top:10px;">Headroom = 2× stream bitrate to absorb buffering spikes and multi-tuner use.</p>
+  </div>
+
+</div>
+{% endblock %}
+
+{% block extra_scripts %}
+<script>
+const TEST_DEFS = [
+  {name: "latency",     label: "Latency (TCP)"},
+  {name: "bandwidth",   label: "Bandwidth Estimate"},
+  {name: "packet_loss", label: "Packet Loss Proxy"},
+  {name: "stream_pull", label: "Stream Pull"},
+  {name: "jitter",      label: "Jitter Estimate"},
+];
+
+let _pollTimer = null;
+let _currentRunId = null;
+
+document.addEventListener('DOMContentLoaded', function() {
+  refreshVpnBtn();
+  var params = new URLSearchParams(location.search);
+  var rid = params.get('run_id');
+  if (rid) {
+    _currentRunId = rid;
+    showResultsCard();
+    poll();
+  } else {
+    checkInflight();
+  }
+});
+
+function _applyVpnBtn(running, iface) {
+  var btn = document.getElementById('vpn-toggle-btn');
+  if (!btn) return;
+  btn.disabled = false;
+  btn.textContent = running ? 'Disable VPN' : 'Enable VPN';
+  btn.className   = running
+    ? 'btn btn-danger btn-sm'
+    : 'btn btn-success btn-sm';
+  btn.style.marginLeft = '4px';
+}
+
+function refreshVpnBtn() {
+  fetch('/vpn/status')
+    .then(function(r) { return r.json(); })
+    .then(function(d) { _applyVpnBtn(d.running, d.interface); })
+    .catch(function() {
+      var btn = document.getElementById('vpn-toggle-btn');
+      if (btn) btn.textContent = 'VPN';
+    });
+}
+
+async function doVpnToggle() {
+  var btn = document.getElementById('vpn-toggle-btn');
+  var isEnable = btn.textContent === 'Enable VPN';
+  btn.disabled = true;
+  btn.textContent = isEnable ? 'Connecting…' : 'Disconnecting…';
+  btn.className = 'btn btn-secondary btn-sm';
+  btn.style.marginLeft = '4px';
+  try {
+    var r = await fetch('/api/vpn/toggle', {method: 'POST'});
+    var data = await r.json();
+    _applyVpnBtn(data.running, data.interface);
+    // If results are showing, update the vpn badge immediately
+    var badge = document.getElementById('vpn-badge');
+    if (badge && badge.style.display !== 'none') {
+      badge.className = data.running ? 'badge badge-success' : 'badge badge-neutral';
+      badge.textContent = data.running
+        ? ('VPN Active' + (data.interface ? ' (' + data.interface + ')' : ''))
+        : 'No VPN';
+    }
+  } catch(e) {
+    _applyVpnBtn(false, '');
+  }
+}
+
+async function checkInflight() {
+  try {
+    var r = await fetch('/api/network_test/inflight');
+    var data = await r.json();
+    if (data.inflight && data.run_id) {
+      _currentRunId = data.run_id;
+      showResultsCard();
+      poll();
+    }
+  } catch(e) {}
+}
+
+async function startTest() {
+  var btn = document.getElementById('run-btn');
+  var status = document.getElementById('run-status');
+  var providerId = parseInt(document.getElementById('provider-select').value);
+  btn.disabled = true;
+  status.textContent = 'Starting…';
+
+  try {
+    var r = await fetch('/api/network_test/start', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({provider_id: providerId}),
+    });
+
+    if (r.status === 409) {
+      var data = await r.json();
+      _currentRunId = data.run_id;
+      status.textContent = '';
+      showResultsCard();
+      poll();
+      return;
+    }
+
+    if (!r.ok) {
+      var data = await r.json();
+      status.textContent = 'Error: ' + (data.error || 'Unknown');
+      btn.disabled = false;
+      return;
+    }
+
+    var data = await r.json();
+    _currentRunId = data.run_id;
+    status.textContent = '';
+    history.replaceState(null, '', '?provider_id=' + providerId + '&run_id=' + _currentRunId);
+    showResultsCard();
+    poll();
+
+  } catch(e) {
+    status.textContent = 'Request failed';
+    btn.disabled = false;
+  }
+}
+
+function showResultsCard() {
+  document.getElementById('results-card').style.display = '';
+  document.getElementById('test-rows').innerHTML = '';
+  document.getElementById('overall-summary').style.display = 'none';
+  TEST_DEFS.forEach(function(t) { renderTestRow(t.name, t.label, null); });
+}
+
+function renderTestRow(name, label, testData) {
+  var status = testData ? testData.status : 'pending';
+  var result = testData ? testData.result : null;
+  var detail = (result && result.detail) ? result.detail
+             : (result && result.error)  ? ('Error: ' + result.error)
+             : '—';
+  var threshold = (result && result.threshold_label) ? result.threshold_label : '';
+
+  var existing = document.getElementById('test-row-' + name);
+  if (!existing) {
+    existing = document.createElement('div');
+    existing.className = 'test-row';
+    existing.id = 'test-row-' + name;
+    document.getElementById('test-rows').appendChild(existing);
+  }
+
+  existing.innerHTML =
+    '<div class="test-row-header">' +
+      '<span class="test-label">' + label + '</span>' +
+      '<span class="badge ' + badgeClass(status) + '">' + badgeText(status) + '</span>' +
+    '</div>' +
+    '<div class="test-detail">' + escHtml(detail) + '</div>' +
+    (threshold ? '<div class="test-threshold">' + escHtml(threshold) + '</div>' : '');
+}
+
+function badgeClass(s) {
+  var m = {pending:'badge-neutral', running:'badge-warning', pass:'badge-success',
+           warn:'badge-warning', fail:'badge-danger', error:'badge-danger'};
+  return m[s] || 'badge-neutral';
+}
+function badgeText(s) {
+  var m = {pending:'Pending', running:'Running…', pass:'Pass',
+           warn:'Warn', fail:'Fail', error:'Error'};
+  return m[s] || s;
+}
+function escHtml(s) {
+  return String(s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+function poll() {
+  if (_pollTimer) clearTimeout(_pollTimer);
+  fetch('/api/network_test/status?run_id=' + _currentRunId)
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      updateUI(data);
+      if (data.status === 'running') {
+        _pollTimer = setTimeout(poll, 1500);
+      } else {
+        var btn = document.getElementById('run-btn');
+        if (btn) btn.disabled = false;
+        document.getElementById('run-status').textContent = '';
+      }
+    })
+    .catch(function() {
+      _pollTimer = setTimeout(poll, 3000);
+    });
+}
+
+function updateUI(data) {
+  var meta = data.started_at
+    ? 'Started ' + new Date(data.started_at * 1000).toLocaleTimeString()
+    : '';
+  document.getElementById('results-meta').textContent = meta;
+
+  var vpnBadge = document.getElementById('vpn-badge');
+  if (data.vpn_active === null || data.vpn_active === undefined) {
+    vpnBadge.style.display = 'none';
+  } else if (data.vpn_active) {
+    vpnBadge.style.display = '';
+    vpnBadge.className = 'badge badge-success';
+    vpnBadge.textContent = 'VPN Active' + (data.vpn_interface ? ' (' + data.vpn_interface + ')' : '');
+  } else {
+    vpnBadge.style.display = '';
+    vpnBadge.className = 'badge badge-neutral';
+    vpnBadge.textContent = 'No VPN';
+  }
+
+  (data.tests || []).forEach(function(t) {
+    renderTestRow(t.name, t.label, t);
+  });
+
+  if (data.status === 'done' || data.status === 'error') {
+    showSummary(data);
+  }
+}
+
+function showSummary(data) {
+  var summary = document.getElementById('overall-summary');
+  summary.style.display = '';
+  var tests = data.tests || [];
+  var hasFail = tests.some(function(t) { return t.status === 'fail' || t.status === 'error'; });
+  var hasWarn = tests.some(function(t) { return t.status === 'warn'; });
+  var badge = document.getElementById('summary-badge');
+  var text  = document.getElementById('summary-text');
+
+  if (data.status === 'error') {
+    badge.className = 'badge badge-danger';
+    badge.textContent = 'Error';
+    text.textContent = data.error || 'Test aborted';
+  } else if (hasFail) {
+    badge.className = 'badge badge-danger';
+    badge.textContent = 'Issues Detected';
+    text.textContent = 'One or more tests failed — VPN may not be suitable for IPTV streaming.';
+  } else if (hasWarn) {
+    badge.className = 'badge badge-warning';
+    badge.textContent = 'Marginal';
+    text.textContent = 'Some warnings — streaming may be intermittent.';
+  } else {
+    badge.className = 'badge badge-success';
+    badge.textContent = 'All Pass';
+    text.textContent = 'Network looks good for IPTV streaming.';
+  }
+}
+</script>
+{% endblock %}

@@ -186,21 +186,21 @@
     </div>
     <div class="flex flex-center flex-wrap gap-12 mt-12">
       <button type="submit" class="btn btn-primary btn-sm">💾 Save VPN</button>
-      <form method="POST" action="/vpn/enable" style="display:inline; margin:0;">
-        <input type="hidden" name="next" value="/tools" />
-        <button type="submit" class="btn btn-success btn-sm"
-          {% if not item.vpn_configured %}disabled title="Save VPN settings first"{% endif %}>Enable VPN</button>
-      </form>
-      <form method="POST" action="/vpn/disable" style="display:inline; margin:0;">
-        <input type="hidden" name="next" value="/tools" />
-        <button type="submit" class="btn btn-danger btn-sm">Disable VPN</button>
-      </form>
+      <button type="button" class="btn btn-sm" id="vpnToggleBtn"
+        onclick="doVpnToggle()"
+        {% if not item.vpn_configured %}disabled title="Save VPN settings first"{% endif %}>
+        VPN: Checking…
+      </button>
       <span class="status-item" style="margin-left:auto;">
         <span class="status-dot" id="vpnDot" style="background:#cbd5e1;"></span>
         <span id="vpnStatusText" class="text-sm">Checking…</span>
       </span>
     </div>
   </form>
+  <div class="flex flex-center gap-12 mt-12" style="padding-top:12px; border-top:1px solid var(--border);">
+    <a href="/tools/network_test{% if item %}?provider_id={{ item.id }}{% endif %}" class="btn btn-outline btn-sm">Network Test</a>
+    <span class="text-sm text-muted">Test latency, bandwidth, packet loss, and jitter through the VPN.</span>
+  </div>
   {% else %}
   <p class="text-muted text-sm" style="font-style:italic;">No provider configured. <a href="/providers/new" style="color:var(--primary);">Add one →</a></p>
   {% endif %}
@@ -301,18 +301,47 @@
 
     // VPN status
     fetch('/vpn/status').then(function(r) { return r.json(); }).then(function(data) {
-      var dot = document.getElementById('vpnDot');
-      var text = document.getElementById('vpnStatusText');
-      if (!dot) return;
-      if (data.running) {
-        dot.style.background = 'var(--success)';
-        text.textContent = 'Connected' + (data.interface ? ' (' + data.interface + ')' : '');
-      } else {
-        dot.style.background = '#cbd5e1';
-        text.textContent = 'Not running';
-      }
+      _applyVpnStatus(data.running, data.interface);
     }).catch(function() {});
   });
+
+  function _applyVpnStatus(running, iface) {
+    var dot  = document.getElementById('vpnDot');
+    var text = document.getElementById('vpnStatusText');
+    var btn  = document.getElementById('vpnToggleBtn');
+    if (dot) {
+      dot.style.background = running ? 'var(--success)' : '#cbd5e1';
+    }
+    if (text) {
+      text.textContent = running ? ('Connected' + (iface ? ' (' + iface + ')' : '')) : 'Not running';
+    }
+    if (btn && !btn.disabled) {
+      btn.textContent = running ? 'Disable VPN' : 'Enable VPN';
+      btn.className   = running ? 'btn btn-danger btn-sm' : 'btn btn-success btn-sm';
+    }
+  }
+
+  async function doVpnToggle() {
+    var btn = document.getElementById('vpnToggleBtn');
+    var orig = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = orig.startsWith('Enable') ? 'Connecting…' : 'Disconnecting…';
+    btn.className = 'btn btn-secondary btn-sm';
+    try {
+      var r = await fetch('/api/vpn/toggle', {method: 'POST'});
+      var data = await r.json();
+      _applyVpnStatus(data.running, data.interface);
+      if (!data.ok) {
+        var text = document.getElementById('vpnStatusText');
+        if (text) text.textContent = data.message || 'Failed';
+      }
+    } catch(e) {
+      var text = document.getElementById('vpnStatusText');
+      if (text) text.textContent = 'Request failed';
+    } finally {
+      btn.disabled = false;
+    }
+  }
 </script>
 
 {% endblock %}
