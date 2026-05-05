@@ -1154,7 +1154,7 @@ class _ChannelHub:
         q: _queue.Queue = _queue.Queue(maxsize=config.HUB_CONSUMER_Q)
         with self._lock:
             self._grace_seq += 1          # cancel any pending idle-stop
-            for chunk in self._ring:      # seed from recent history
+            for chunk in list(self._ring)[-config.HUB_SEED_CHUNKS:]:  # seed only recent chunks to avoid jump-back
                 try:
                     q.put_nowait(chunk)
                 except _queue.Full:
