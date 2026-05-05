@@ -1118,6 +1118,13 @@ _PROXY_HEADERS = {
     "Connection": "keep-alive",
 }
 
+# Sentinel pushed to consumer queues at a clean segment boundary.
+# Consumer generator closes its HTTP response so the player reconnects cleanly,
+# matching the behavior of a direct provider connection (provider closes TCP at
+# each segment boundary; player reconnects; no PTS discontinuity mid-stream).
+# Distinct from None (hub stopped/killed permanently).
+_SEGMENT_END = object()
+
 
 class _ChannelHub:
     """Manages one upstream HTTP connection per channel.
@@ -1274,6 +1281,16 @@ class _ChannelHub:
                         logger.info(
                             f"Upstream closed '{self.channel_name}' after {seg_bytes} bytes — reconnecting"
                         )
+                        # Signal consumers to close their HTTP responses so the player
+                        # reconnects at a clean segment boundary (no PTS discontinuity).
+                        # Clear the ring so reconnecting consumers don't replay old-segment data.
+                        with self._lock:
+                            self._ring.clear()
+                            for q in list(self._consumers.values()):
+                                try:
+                                    q.put_nowait(_SEGMENT_END)
+                                except _queue.Full:
+                                    pass
                     else:
                         logger.warning(
                             f"Upstream closed '{self.channel_name}' after {seg_bytes} bytes — reconnecting"
@@ -1376,6 +1393,12 @@ def _stream_live_direct(source_url: str, channel_name: str, client_ip: str,
                 logger.warning(f"Consumer timeout waiting for '{channel_name}'")
                 break
             if chunk is None:   # hub stopped or interrupt_consumer() called
+                break
+            if chunk is _SEGMENT_END:  # clean segment boundary — close response, player reconnects
+                logger.debug(f"Segment boundary: '{channel_name}' closing for player reconnect")
+                if prebuf:
+                    for c in prebuf:
+                        yield c
                 break
             s = _active_streams.get(session_id)
             if s and s.get("killed"):
