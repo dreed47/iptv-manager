@@ -1209,6 +1209,7 @@ class _ChannelHub:
         retry_delay  = config.STREAM_RETRY_DELAY
         read_timeout = config.STREAM_READ_TIMEOUT
         attempt      = 0
+        first        = True
         try:
             while not self._stop_event.is_set() and attempt <= max_retries:
                 if attempt > 0:
@@ -1217,6 +1218,10 @@ class _ChannelHub:
                         f"— waiting {retry_delay}s"
                     )
                     time.sleep(retry_delay)
+                elif not first:
+                    # Clean reconnect after upstream close — enforce 1s floor to prevent spin loops
+                    time.sleep(1.0)
+                first = False
                 try:
                     resp = self._http.get(
                         self.source_url, headers=_PROXY_HEADERS,
@@ -1249,12 +1254,15 @@ class _ChannelHub:
                                     q.put_nowait(chunk)
                                 except _queue.Full:
                                     pass   # slow consumer; they catch up via ring on re-attach
-                    # Clean upstream close — reconnect immediately
                     if seg_bytes >= 10 * 1024 * 1024:
                         attempt = 0
-                    logger.warning(
-                        f"Upstream closed '{self.channel_name}' after {seg_bytes} bytes — reconnecting"
-                    )
+                        logger.info(
+                            f"Upstream closed '{self.channel_name}' after {seg_bytes} bytes — reconnecting"
+                        )
+                    else:
+                        logger.warning(
+                            f"Upstream closed '{self.channel_name}' after {seg_bytes} bytes — reconnecting"
+                        )
                 except Exception as exc:
                     logger.warning(f"Hub read error for '{self.channel_name}': {exc}")
                     attempt += 1

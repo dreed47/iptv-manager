@@ -34,6 +34,11 @@ _CURRENT_RUN_ID: str | None = None
 _test_results: dict[str, dict] = {}
 _MAX_STORED_RUNS = 5
 
+_BASELINE_HOST = "1.1.1.1"
+_BASELINE_PORT = 443
+_BASELINE_DL_URL_3MB = "https://speed.cloudflare.com/__down?bytes=3145728"
+_BASELINE_DL_URL_2MB = "https://speed.cloudflare.com/__down?bytes=2097152"
+
 _TEST_DEFINITIONS = [
     {"name": "latency",      "label": "Latency (TCP)"},
     {"name": "bandwidth",    "label": "Bandwidth Estimate"},
@@ -139,6 +144,21 @@ def _run_network_tests(run_id: str, provider_id: int):
     global _NETWORK_TEST_INFLIGHT, _CURRENT_RUN_ID
 
     try:
+        if provider_id == -1:
+            import vpn_manager
+            vpn_status = vpn_manager.get_vpn_status()
+            _test_results[run_id]["vpn_active"] = vpn_status.get("running", False)
+            _test_results[run_id]["vpn_interface"] = vpn_status.get("interface", "")
+            _test_results[run_id]["provider_name"] = "Baseline (Cloudflare)"
+            _run_latency_test(run_id, _BASELINE_HOST, _BASELINE_PORT)
+            _run_baseline_bandwidth(run_id)
+            _run_packet_loss_test(run_id, _BASELINE_HOST, _BASELINE_PORT)
+            _run_baseline_stream_pull(run_id)
+            _run_jitter_test(run_id, _BASELINE_HOST, _BASELINE_PORT)
+            _test_results[run_id]["status"] = "done"
+            _test_results[run_id]["finished_at"] = time.time()
+            return
+
         with SessionLocal() as db:
             item = db.query(Item).filter(Item.id == provider_id).first()
             if item is None:
@@ -420,6 +440,67 @@ def _find_first_stream_url(provider_id: int) -> str | None:
             if i + 1 < len(lines) and not lines[i + 1].startswith("#"):
                 return lines[i + 1].strip()
     return None
+
+
+def _run_baseline_bandwidth(run_id: str):
+    _set_test_status(run_id, "bandwidth", "running")
+    TARGET = 3 * 1024 * 1024
+    headers = {"User-Agent": "VLC/3.0.18 LibVLC/3.0.18", "Accept": "*/*"}
+    try:
+        t0 = time.monotonic()
+        resp = requests.get(_BASELINE_DL_URL_3MB, stream=True, timeout=20, headers=headers)
+        resp.raise_for_status()
+        bytes_read = 0
+        for chunk in resp.iter_content(chunk_size=65536):
+            bytes_read += len(chunk)
+            if bytes_read >= TARGET:
+                break
+        resp.close()
+        elapsed = max(time.monotonic() - t0, 0.01)
+        mbps = (bytes_read * 8) / (elapsed * 1_000_000)
+        status = "pass" if mbps > 20 else ("warn" if mbps >= 10 else "fail")
+        _set_test_result(run_id, "bandwidth", status, {
+            "mbps": round(mbps, 2),
+            "bytes_downloaded": bytes_read,
+            "elapsed_s": round(elapsed, 3),
+            "detail": f"{round(mbps, 2)} Mbps  ({bytes_read / (1024*1024):.1f} MB in {round(elapsed, 2)}s) — Cloudflare CDN",
+            "threshold_label": "> 20Mbps pass · 10–20Mbps warn · < 10Mbps fail",
+        })
+    except Exception as exc:
+        _set_test_result(run_id, "bandwidth", "error", {"error": str(exc)})
+
+
+def _run_baseline_stream_pull(run_id: str):
+    _set_test_status(run_id, "stream_pull", "running")
+    TARGET_BYTES = 2 * 1024 * 1024
+    headers = {"User-Agent": "VLC/3.0.18 LibVLC/3.0.18", "Accept": "*/*"}
+    try:
+        t0 = time.monotonic()
+        resp = requests.get(_BASELINE_DL_URL_2MB, stream=True, timeout=15, headers=headers)
+        resp.raise_for_status()
+        bytes_read = 0
+        for chunk in resp.iter_content(chunk_size=65536):
+            bytes_read += len(chunk)
+            if bytes_read >= TARGET_BYTES:
+                break
+        resp.close()
+        elapsed = max(time.monotonic() - t0, 0.01)
+        mbps = (bytes_read * 8) / (elapsed * 1_000_000)
+        status = "pass" if mbps > 10 else ("warn" if mbps >= 5 else "fail")
+        _set_test_result(run_id, "stream_pull", status, {
+            "mbps": round(mbps, 2),
+            "bytes_read": bytes_read,
+            "elapsed_s": round(elapsed, 3),
+            "stream_url": _BASELINE_DL_URL_2MB,
+            "error": None,
+            "detail": f"{round(mbps, 2)} Mbps  ({bytes_read / (1024 * 1024):.1f} MB in {round(elapsed, 2)}s) — CDN proxy (baseline)",
+            "threshold_label": "> 10Mbps pass · 5–10Mbps warn · < 5Mbps fail",
+        })
+    except Exception as exc:
+        _set_test_result(run_id, "stream_pull", "error", {
+            "error": str(exc),
+            "stream_url": _BASELINE_DL_URL_2MB,
+        })
 
 
 def _evict_old_runs():
