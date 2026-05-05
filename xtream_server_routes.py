@@ -1287,7 +1287,14 @@ def _get_or_create_hub(item_id: int, stream_id: int, source_url: str, channel_na
         if hub is not None and not hub._stop_event.is_set():
             return hub
         if config.HLS_MAX_BANDWIDTH_KBPS:
-            source_url = resolve_hls_variant(source_url, requests.Session(), config.HLS_MAX_BANDWIDTH_KBPS)
+            resolved = resolve_hls_variant(source_url, requests.Session(), config.HLS_MAX_BANDWIDTH_KBPS)
+            if resolved != source_url:
+                logger.debug(f"HLS resolved for hub '{channel_name}': {source_url} → {resolved}")
+            else:
+                logger.debug(f"HLS resolution: no variant change for '{channel_name}'")
+            source_url = resolved
+        else:
+            logger.debug(f"HLS resolution: disabled (HLS_MAX_BANDWIDTH_KBPS=0) for '{channel_name}'")
         hub = _ChannelHub(key, source_url, channel_name)
         _channel_hubs[key] = hub
         logger.info(f"Hub created: '{channel_name}' (item={item_id}, stream={stream_id})")
@@ -1327,8 +1334,15 @@ def _stream_live_direct(source_url: str, channel_name: str, client_ip: str,
     this generator is iterated.
     """
     read_timeout = config.STREAM_READ_TIMEOUT
+    prebuffer_bytes = config.XTREAM_PREBUFFER_KB * 1024
     hub = _get_or_create_hub(item_id or 0, stream_id or 0, source_url, channel_name)
     consumer_q = hub.attach(session_id)
+
+    logger.debug(
+        f"Live stream start: '{channel_name}' session={session_id[:8]} "
+        f"prebuffer={config.XTREAM_PREBUFFER_KB}KB ring={config.HUB_RING_CHUNKS}chunks "
+        f"consumer_q={config.HUB_CONSUMER_Q}chunks"
+    )
 
     # Store the consumer queue so kill_stream / auto_replace can wake a
     # blocked consumer_q.get() immediately via interrupt_consumer().
@@ -1337,6 +1351,9 @@ def _stream_live_direct(source_url: str, channel_name: str, client_ip: str,
             _active_streams[session_id]["consumer_q"] = consumer_q
 
     bytes_sent = 0
+    prebuf: list[bytes] = []
+    prebuf_size = 0
+    prebuffering = prebuffer_bytes > 0
     try:
         while True:
             try:
@@ -1350,13 +1367,29 @@ def _stream_live_direct(source_url: str, channel_name: str, client_ip: str,
             if s and s.get("killed"):
                 logger.info(f"Live stream {session_id} ('{channel_name}') killed by admin")
                 break
-            bytes_sent += len(chunk)
-            if s:
-                s["bytes_sent"] = bytes_sent
-                s["last_chunk_at"] = time.time()
-            yield chunk
+            if prebuffering:
+                prebuf.append(chunk)
+                prebuf_size += len(chunk)
+                if prebuf_size >= prebuffer_bytes:
+                    logger.debug(
+                        f"Xtream prebuffer filled ({prebuf_size // 1024}KB), "
+                        f"starting delivery for '{channel_name}'"
+                    )
+                    for c in prebuf:
+                        bytes_sent += len(c)
+                        yield c
+                    prebuf = []
+                    prebuffering = False
+            else:
+                bytes_sent += len(chunk)
+                if s:
+                    s["bytes_sent"] = bytes_sent
+                    s["last_chunk_at"] = time.time()
+                yield chunk
     except GeneratorExit:
-        pass
+        if prebuf:
+            for c in prebuf:
+                yield c
     finally:
         hub.detach(session_id)
         logger.debug(f"Live stream ended: '{channel_name}', {bytes_sent} bytes sent")
