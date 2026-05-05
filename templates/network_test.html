@@ -55,6 +55,7 @@
     <div class="flex-center gap-12 flex-wrap">
       {% if providers %}
       <select id="provider-select" class="form-select">
+        <option value="-1">Baseline — Tool Verification</option>
         {% for p in providers %}
         <option value="{{ p.id }}"{% if p.id == selected_provider_id %} selected{% endif %}>{{ p.name }}</option>
         {% endfor %}
@@ -326,9 +327,10 @@ function poll() {
 }
 
 function updateUI(data) {
+  var namePart = data.provider_name ? data.provider_name + ' · ' : '';
   var meta = data.started_at
-    ? 'Started ' + new Date(data.started_at * 1000).toLocaleTimeString()
-    : '';
+    ? namePart + 'Started ' + new Date(data.started_at * 1000).toLocaleTimeString()
+    : namePart;
   document.getElementById('results-meta').textContent = meta;
 
   var vpnBadge = document.getElementById('vpn-badge');
