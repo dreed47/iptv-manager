@@ -38,6 +38,7 @@ STREAM_SESSION_STALE_SECONDS: int = int(os.getenv("STREAM_SESSION_STALE_SECONDS"
 HUB_RING_CHUNKS: int = int(os.getenv("HUB_RING_CHUNKS", "100"))  # ring buffer depth (~6.4 MB at 64 KB chunks)
 HUB_IDLE_SECS:   int = int(os.getenv("HUB_IDLE_SECS",   "30"))   # seconds to keep hub alive after last consumer
 HUB_CONSUMER_Q:  int = int(os.getenv("HUB_CONSUMER_Q",  "128"))  # per-consumer queue depth (~8 MB at 64 KB chunks)
+HUB_SEED_CHUNKS: int = int(os.getenv("HUB_SEED_CHUNKS", "5"))    # ring chunks seeded into new consumer queue (~320 KB)
 
 # HLS master playlist variant selection — if set, the proxy picks the highest-bandwidth
 # variant whose bandwidth is <= this threshold (kbps).  0 = disabled (pass URL through unchanged).
@@ -120,6 +121,8 @@ def _validate() -> None:
         errors.append(f"STREAM_READ_TIMEOUT must be >= 1 (got {STREAM_READ_TIMEOUT})")
     if EPG_CACHE_HOURS < 1:
         errors.append(f"EPG_CACHE_HOURS must be >= 1 (got {EPG_CACHE_HOURS})")
+    if HUB_SEED_CHUNKS < 1:
+        errors.append(f"HUB_SEED_CHUNKS must be >= 1 (got {HUB_SEED_CHUNKS})")
     if errors:
         raise ValueError("Invalid configuration:\n" + "\n".join(f"  - {e}" for e in errors))
     logger.debug(
