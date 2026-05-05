@@ -39,6 +39,10 @@ HUB_RING_CHUNKS: int = int(os.getenv("HUB_RING_CHUNKS", "100"))  # ring buffer d
 HUB_IDLE_SECS:   int = int(os.getenv("HUB_IDLE_SECS",   "30"))   # seconds to keep hub alive after last consumer
 HUB_CONSUMER_Q:  int = int(os.getenv("HUB_CONSUMER_Q",  "128"))  # per-consumer queue depth (~8 MB at 64 KB chunks)
 
+# HLS master playlist variant selection — if set, the proxy picks the highest-bandwidth
+# variant whose bandwidth is <= this threshold (kbps).  0 = disabled (pass URL through unchanged).
+HLS_MAX_BANDWIDTH_KBPS: int = int(os.getenv("HLS_MAX_BANDWIDTH_KBPS", "0"))
+
 # ---------------------------------------------------------------------------
 # In-browser player (mpegts.js)
 # ---------------------------------------------------------------------------
