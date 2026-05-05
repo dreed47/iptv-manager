@@ -4,6 +4,8 @@ from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
 from models import get_db, Item, get_app_config
 from hdhomerun_emulator import HDHomeRunEmulator
+from hls_utils import resolve_hls_variant
+import asyncio
 import config
 import logging
 import re
@@ -390,6 +392,11 @@ async def stream_channel(channel_number: str, request: Request, db: Session = De
             status_code=429,
             detail=f"Session limit reached ({active_count}/{max_sessions} active streams)",
             headers={"Retry-After": "30"},
+        )
+
+    if config.HLS_MAX_BANDWIDTH_KBPS:
+        source_url = await asyncio.to_thread(
+            resolve_hls_variant, source_url, requests.Session(), config.HLS_MAX_BANDWIDTH_KBPS
         )
 
     logger.info(f"Stream start: channel {channel_number} → {source_url}")

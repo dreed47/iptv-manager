@@ -23,6 +23,7 @@ import requests
 from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Optional
+from hls_utils import resolve_hls_variant
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -1285,6 +1286,8 @@ def _get_or_create_hub(item_id: int, stream_id: int, source_url: str, channel_na
         hub = _channel_hubs.get(key)
         if hub is not None and not hub._stop_event.is_set():
             return hub
+        if config.HLS_MAX_BANDWIDTH_KBPS:
+            source_url = resolve_hls_variant(source_url, requests.Session(), config.HLS_MAX_BANDWIDTH_KBPS)
         hub = _ChannelHub(key, source_url, channel_name)
         _channel_hubs[key] = hub
         logger.info(f"Hub created: '{channel_name}' (item={item_id}, stream={stream_id})")
