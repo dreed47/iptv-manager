@@ -395,9 +395,16 @@ async def stream_channel(channel_number: str, request: Request, db: Session = De
         )
 
     if config.HLS_MAX_BANDWIDTH_KBPS:
+        original_url = source_url
         source_url = await asyncio.to_thread(
             resolve_hls_variant, source_url, requests.Session(), config.HLS_MAX_BANDWIDTH_KBPS
         )
+        if source_url != original_url:
+            logger.debug(f"Channel {channel_number}: HLS variant resolved → {source_url}")
+        else:
+            logger.debug(f"Channel {channel_number}: HLS resolution — no variant change")
+    else:
+        logger.debug(f"Channel {channel_number}: HLS resolution disabled (HLS_MAX_BANDWIDTH_KBPS=0)")
 
     logger.info(f"Stream start: channel {channel_number} → {source_url}")
 

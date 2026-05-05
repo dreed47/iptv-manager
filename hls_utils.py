@@ -33,6 +33,7 @@ def resolve_hls_variant(url: str, session: requests.Session, max_bw_kbps: int) -
     if not max_bw_kbps:
         return url
 
+    logger.debug("HLS check: threshold=%d kbps url=%s", max_bw_kbps, url)
     try:
         resp = session.get(url, timeout=5, stream=True)
         resp.raise_for_status()
@@ -41,7 +42,13 @@ def resolve_hls_variant(url: str, session: requests.Session, max_bw_kbps: int) -
         is_hls_type = content_type in _HLS_CONTENT_TYPES
         is_hls_ext = url.split("?")[0].lower().endswith(".m3u8")
 
+        logger.debug(
+            "HLS check: content_type='%s' is_hls_type=%s is_hls_ext=%s url=%s",
+            content_type, is_hls_type, is_hls_ext, url,
+        )
+
         if not is_hls_type and not is_hls_ext:
+            logger.debug("HLS check: not HLS — passing through unchanged")
             return url
 
         body = resp.text
@@ -52,6 +59,7 @@ def resolve_hls_variant(url: str, session: requests.Session, max_bw_kbps: int) -
             "",
         )
         if first_tag and not first_tag.startswith("#EXT-X-STREAM-INF"):
+            logger.debug("HLS check: already a chunklist (first tag: '%s') — passing through", first_tag[:60])
             return url
 
         variants: list[tuple[int, str]] = []
@@ -67,9 +75,16 @@ def resolve_hls_variant(url: str, session: requests.Session, max_bw_kbps: int) -
                     variants.append((bw, variant_url))
 
         if not variants:
+            logger.debug("HLS check: master playlist has no parseable variants — passing through")
             return url
 
         variants.sort(key=lambda x: x[0])
+        logger.debug(
+            "HLS variants found (%d): %s",
+            len(variants),
+            ", ".join(f"{bw//1000}kbps" for bw, _ in variants),
+        )
+
         threshold_bps = max_bw_kbps * 1000
 
         eligible = [(bw, u) for bw, u in variants if bw <= threshold_bps]
@@ -90,8 +105,8 @@ def resolve_hls_variant(url: str, session: requests.Session, max_bw_kbps: int) -
             return url
 
         logger.info(
-            "HLS variant selected: %d kbps (threshold %d kbps) for %s",
-            chosen_bw // 1000, max_bw_kbps, url,
+            "HLS variant selected: %d kbps (threshold %d kbps, %d eligible of %d) url=%s",
+            chosen_bw // 1000, max_bw_kbps, len(eligible), len(variants), url,
         )
         return chosen_url
 
