@@ -1216,6 +1216,7 @@ class _ChannelHub:
         attempt      = 0
         first        = True
         chunk_count  = 0
+        seg_bytes    = 0
         try:
             while not self._stop_event.is_set() and attempt <= max_retries:
                 if attempt > 0:
@@ -1225,8 +1226,10 @@ class _ChannelHub:
                     )
                     time.sleep(retry_delay)
                 elif not first:
-                    # Clean reconnect after upstream close — enforce 1s floor to prevent spin loops
-                    time.sleep(1.0)
+                    # Only sleep on tiny/empty segments to prevent spin loops.
+                    # Normal segment closes (>1 MB) reconnect immediately to minimize gap.
+                    if seg_bytes < 1024 * 1024:
+                        time.sleep(1.0)
                 first = False
                 try:
                     resp = self._http.get(
