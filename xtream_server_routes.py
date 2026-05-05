@@ -1225,6 +1225,13 @@ class _ChannelHub:
                     resp.raise_for_status()
                 except Exception as exc:
                     logger.warning(f"Hub upstream error for '{self.channel_name}': {exc}")
+                    if (
+                        isinstance(exc, requests.exceptions.HTTPError)
+                        and getattr(exc.response, "status_code", None) == 458
+                    ):
+                        # 458 = provider still holds old connection; reset session to force new TCP handshake
+                        self._http.close()
+                        self._http = requests.Session()
                     attempt += 1
                     continue
                 seg_bytes = 0
