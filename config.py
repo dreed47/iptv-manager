@@ -26,6 +26,7 @@ ADVERTISED_BASE_URL: str  = f"{HDHR_SCHEME}://{HDHR_ADVERTISE_HOST}:{HDHR_ADVERT
 # Stream proxy tuning
 # ---------------------------------------------------------------------------
 STREAM_CHUNK_KB: int             = int(os.getenv("STREAM_CHUNK_KB", "64"))
+HUB_CHUNK_KB:    int             = int(os.getenv("HUB_CHUNK_KB") or os.getenv("STREAM_CHUNK_KB", "64"))  # hub producer chunk size; falls back to STREAM_CHUNK_KB
 STREAM_PREBUFFER_KB: int         = int(os.getenv("STREAM_PREBUFFER_KB", "512"))
 XTREAM_PREBUFFER_KB: int         = int(os.getenv("XTREAM_PREBUFFER_KB", "0"))
 STREAM_MAX_RETRIES: int          = int(os.getenv("STREAM_MAX_RETRIES", "5"))
@@ -123,6 +124,8 @@ def _validate() -> None:
         errors.append(f"EPG_CACHE_HOURS must be >= 1 (got {EPG_CACHE_HOURS})")
     if HUB_SEED_CHUNKS < 1:
         errors.append(f"HUB_SEED_CHUNKS must be >= 1 (got {HUB_SEED_CHUNKS})")
+    if HUB_CHUNK_KB < 1:
+        errors.append(f"HUB_CHUNK_KB must be >= 1 (got {HUB_CHUNK_KB})")
     if errors:
         raise ValueError("Invalid configuration:\n" + "\n".join(f"  - {e}" for e in errors))
     logger.debug(

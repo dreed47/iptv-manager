@@ -1154,14 +1154,18 @@ class _ChannelHub:
         q: _queue.Queue = _queue.Queue(maxsize=config.HUB_CONSUMER_Q)
         with self._lock:
             self._grace_seq += 1          # cancel any pending idle-stop
-            for chunk in list(self._ring)[-config.HUB_SEED_CHUNKS:]:  # seed only recent chunks to avoid jump-back
+            seed = list(self._ring)[-config.HUB_SEED_CHUNKS:]
+            for chunk in seed:  # seed only recent chunks to avoid jump-back
                 try:
                     q.put_nowait(chunk)
                 except _queue.Full:
                     break
+            seed_kb = sum(len(c) for c in seed) // 1024
             self._consumers[consumer_id] = q
-        logger.debug(f"Hub attach: consumer '{consumer_id[:8]}' on '{self.channel_name}' "
-                     f"(total={len(self._consumers)})")
+        logger.debug(
+            f"Hub attach: consumer '{consumer_id[:8]}' on '{self.channel_name}' "
+            f"seed={len(seed)}chunks/{seed_kb}KB (total={len(self._consumers)})"
+        )
         return q
 
     def detach(self, consumer_id: str):
@@ -1205,12 +1209,13 @@ class _ChannelHub:
         logger.info(f"Hub stopped (idle): '{self.channel_name}'")
 
     def _run(self):
-        chunk_size   = config.STREAM_CHUNK_KB * 1024
+        chunk_size   = config.HUB_CHUNK_KB * 1024
         max_retries  = config.STREAM_MAX_RETRIES
         retry_delay  = config.STREAM_RETRY_DELAY
         read_timeout = config.STREAM_READ_TIMEOUT
         attempt      = 0
         first        = True
+        chunk_count  = 0
         try:
             while not self._stop_event.is_set() and attempt <= max_retries:
                 if attempt > 0:
@@ -1248,6 +1253,12 @@ class _ChannelHub:
                         if not chunk:
                             continue
                         seg_bytes += len(chunk)
+                        chunk_count += 1
+                        if chunk_count == 1:
+                            logger.debug(
+                                f"Hub first chunk: '{self.channel_name}' "
+                                f"actual={len(chunk)//1024}KB requested={config.HUB_CHUNK_KB}KB"
+                            )
                         with self._lock:
                             self._ring.append(chunk)
                             for q in list(self._consumers.values()):
