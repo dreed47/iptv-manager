@@ -102,6 +102,7 @@
         <th style="text-align:center;">Filtered</th>
         <th style="text-align:center;">EPG</th>
         <th>Last Fetch</th>
+        <th style="text-align:center;">Next Refresh</th>
         <th>Expires</th>
         <th style="text-align:center;">Max Streams</th>
         <th></th>
@@ -136,6 +137,18 @@
           <span class="text-sm text-muted" style="font-style:italic;">Not fetched</span>
           {% endif %}
         </td>
+        <td style="text-align:center;">
+          {% if p.m3u_refresh_hours and p.m3u_refresh_hours > 0 %}
+          <div class="text-sm text-muted">every {{ p.m3u_refresh_hours }}h</div>
+          {% if p.m3u_last_fetched_ts %}
+          <span class="text-sm next-refresh-time" data-next-ts="{{ p.m3u_last_fetched_ts + p.m3u_refresh_hours * 3600 }}">…</span>
+          {% else %}
+          <span class="text-sm text-muted" style="font-style:italic;">pending</span>
+          {% endif %}
+          {% else %}
+          <span class="text-muted">—</span>
+          {% endif %}
+        </td>
         <td class="text-sm text-muted">{{ p.provider_exp_date if p.provider_exp_date else '—' }}</td>
         <td style="text-align:center;" class="text-sm">{{ '∞' if p.max_sessions >= 99 else p.max_sessions }}</td>
         <td>
@@ -163,6 +176,28 @@
       el.querySelector('.last-fetch-time').textContent = d.toLocaleString(undefined, {
         month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit'
       });
+    });
+
+    document.querySelectorAll('.next-refresh-time[data-next-ts]').forEach(function(el) {
+      var ts = parseInt(el.getAttribute('data-next-ts'), 10);
+      var now = Date.now() / 1000;
+      var diff = ts - now;
+      var abs = Math.abs(diff);
+      var h = Math.floor(abs / 3600);
+      var m = Math.floor((abs % 3600) / 60);
+      var label, color;
+      if (diff < 0) {
+        label = (h > 0 ? h + 'h ' : '') + m + 'm overdue';
+        color = 'var(--danger, #ef4444)';
+      } else if (diff < 3600) {
+        label = 'in ' + m + 'm';
+        color = 'var(--warning, #f59e0b)';
+      } else {
+        label = 'in ' + h + 'h' + (m > 0 ? ' ' + m + 'm' : '');
+        color = '';
+      }
+      el.textContent = label;
+      if (color) el.style.color = color;
     });
   });
 
