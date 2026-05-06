@@ -25,21 +25,21 @@ ADVERTISED_BASE_URL: str  = f"{HDHR_SCHEME}://{HDHR_ADVERTISE_HOST}:{HDHR_ADVERT
 # ---------------------------------------------------------------------------
 # Stream proxy tuning
 # ---------------------------------------------------------------------------
-STREAM_CHUNK_KB: int             = int(os.getenv("STREAM_CHUNK_KB", "64"))
-HUB_CHUNK_KB:    int             = int(os.getenv("HUB_CHUNK_KB") or os.getenv("STREAM_CHUNK_KB", "64"))  # hub producer chunk size; falls back to STREAM_CHUNK_KB
+STREAM_CHUNK_KB: int             = int(os.getenv("STREAM_CHUNK_KB", "256"))
+HUB_CHUNK_KB:    int             = int(os.getenv("HUB_CHUNK_KB") or os.getenv("STREAM_CHUNK_KB", "256"))  # hub producer chunk size; falls back to STREAM_CHUNK_KB
 STREAM_PREBUFFER_KB: int         = int(os.getenv("STREAM_PREBUFFER_KB", "512"))
 XTREAM_PREBUFFER_KB: int         = int(os.getenv("XTREAM_PREBUFFER_KB", "0"))
-STREAM_MAX_RETRIES: int          = int(os.getenv("STREAM_MAX_RETRIES", "5"))
+STREAM_MAX_RETRIES: int          = int(os.getenv("STREAM_MAX_RETRIES", "10"))
 STREAM_RETRY_DELAY: float        = float(os.getenv("STREAM_RETRY_DELAY", "3"))
-STREAM_READ_TIMEOUT: float       = float(os.getenv("STREAM_READ_TIMEOUT", "30"))
+STREAM_READ_TIMEOUT: float       = float(os.getenv("STREAM_READ_TIMEOUT", "60"))
 STREAM_SESSION_STALE_SECONDS: int = int(os.getenv("STREAM_SESSION_STALE_SECONDS", "30"))
 
 # Per-channel shared producer (ChannelHub) — keeps one upstream connection per active channel
 # so multiple Apple TV connections share the same stream without opening duplicate upstream TCP connections.
-HUB_RING_CHUNKS: int = int(os.getenv("HUB_RING_CHUNKS", "100"))  # ring buffer depth (~6.4 MB at 64 KB chunks)
+HUB_RING_CHUNKS: int = int(os.getenv("HUB_RING_CHUNKS", "250"))  # ring buffer depth (~6.4 MB at 64 KB chunks)
 HUB_IDLE_SECS:   int = int(os.getenv("HUB_IDLE_SECS",   "30"))   # seconds to keep hub alive after last consumer
-HUB_CONSUMER_Q:  int = int(os.getenv("HUB_CONSUMER_Q",  "128"))  # per-consumer queue depth (~8 MB at 64 KB chunks)
-HUB_SEED_CHUNKS: int = int(os.getenv("HUB_SEED_CHUNKS", "5"))    # ring chunks seeded into new consumer queue (~320 KB)
+HUB_CONSUMER_Q:  int = int(os.getenv("HUB_CONSUMER_Q",  "180"))  # per-consumer queue depth (~8 MB at 64 KB chunks)
+HUB_SEED_CHUNKS: int = int(os.getenv("HUB_SEED_CHUNKS", "8"))    # ring chunks seeded into new consumer queue (~320 KB)
 
 # HLS master playlist variant selection — if set, the proxy picks the highest-bandwidth
 # variant whose bandwidth is <= this threshold (kbps).  0 = disabled (pass URL through unchanged).
