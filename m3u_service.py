@@ -282,6 +282,8 @@ def start_m3u_scheduler():
                 work = []
                 with SessionLocal() as db:
                     for item in db.query(Item).all():
+                        if not item.enabled:
+                            continue
                         interval_h = item.m3u_refresh_hours or 0
                         if interval_h <= 0:
                             continue

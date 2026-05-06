@@ -110,10 +110,12 @@
     </thead>
     <tbody>
       {% for p in items %}
-      <tr>
+      <tr{% if not p.enabled %} style="opacity:0.55;"{% endif %}>
         <td>
           <span style="font-weight:600;">{{ p.name }}</span>
-          {% if p.provider_status %}
+          {% if not p.enabled %}
+          <span class="badge badge-danger" style="font-size:10px; margin-left:4px;">Disabled</span>
+          {% elif p.provider_status %}
           <span class="badge {{ 'badge-success' if p.provider_status|lower == 'active' else 'badge-danger' }}" style="font-size:10px; margin-left:4px;">{{ p.provider_status }}</span>
           {% endif %}
         </td>

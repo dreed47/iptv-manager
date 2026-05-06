@@ -9,12 +9,22 @@
     </div>
     {% if item and not is_new %}
     <div class="flex gap-12 flex-wrap flex-center">
+      {% if not item.enabled %}
+      <span class="badge badge-danger">Disabled</span>
+      {% endif %}
       {% if item.provider_status %}
       <span class="badge {{ 'badge-success' if item.provider_status|lower == 'active' else 'badge-danger' }}">{{ item.provider_status }}</span>
       {% endif %}
       {% if item.provider_exp_date %}
       <span class="text-sm text-muted">Expires {{ item.provider_exp_date }}</span>
       {% endif %}
+      <form method="POST" action="/providers/{{ item.id }}/toggle_enabled" style="display:inline;">
+        <button type="submit" class="btn btn-outline btn-sm">{{ 'Enable Provider' if not item.enabled else 'Disable Provider' }}</button>
+      </form>
+      <form method="POST" action="/providers/{{ item.id }}/delete" style="display:inline;"
+            onsubmit="return confirm('Delete provider {{ item.name }}? This cannot be undone.')">
+        <button type="submit" class="btn btn-danger btn-sm">Delete</button>
+      </form>
     </div>
     {% endif %}
   </div>
