@@ -164,6 +164,7 @@ def do_fetch_m3u(item_id: int, db) -> tuple:
                 f'tvg-logo="{serie.get("cover","")}" '
                 f'group-title="Series", {name}\n{url}\n'
             )
+        del live_streams, vod_streams, series
 
     except (requests.exceptions.RequestException, ValueError, json.JSONDecodeError) as e:
         logger.warning(f"Xtream API failed for item {item_id}: {e}, falling back to M3U URL")
@@ -195,7 +196,7 @@ def do_fetch_m3u(item_id: int, db) -> tuple:
     os.replace(tmp_m3u, m3u_path)
     write_count_to_cache(config.M3U_DIR, str(item_id), "m3u_count", num_records, m3u_path)
 
-    total_lines = len(m3u_content.splitlines())
+    total_lines = m3u_content.count('\n') + 1
     logger.warning(f"M3U fetch [{item.name}]: saved {num_records} records ({total_lines} lines) via {source}")
 
     # Fetch and cache the raw get.php M3U (has individual episode entries for M3U-mode apps)
@@ -207,17 +208,24 @@ def do_fetch_m3u(item_id: int, db) -> tuple:
     )
     raw_path = os.path.join(config.M3U_DIR, f"raw_playlist_{item_id}.m3u")
     try:
-        raw_resp = requests.get(raw_m3u_url, headers=headers, timeout=120)
-        if raw_resp.status_code not in range(200, 300):
-            raise ValueError(f"Upstream returned status {raw_resp.status_code}")
-        raw_text = raw_resp.text
-        if not raw_text.strip().startswith("#EXTM3U"):
-            raise ValueError(f"Invalid M3U content (status {raw_resp.status_code})")
         raw_tmp = raw_path + ".tmp"
-        with open(raw_tmp, "w", encoding="utf-8") as rf:
-            rf.write(raw_text)
+        bytes_written = 0
+        with requests.get(raw_m3u_url, headers=headers, timeout=120, stream=True) as raw_resp:
+            raw_resp.raise_for_status()
+            with open(raw_tmp, "w", encoding="utf-8") as rf:
+                first_chunk = True
+                for chunk in raw_resp.iter_content(chunk_size=65536):
+                    decoded = chunk.decode("utf-8", errors="replace")
+                    if first_chunk:
+                        if not decoded.lstrip().startswith("#EXTM3U"):
+                            raise ValueError(f"Invalid M3U content (status {raw_resp.status_code})")
+                        first_chunk = False
+                    rf.write(decoded)
+                    bytes_written += len(chunk)
+        if first_chunk:
+            raise ValueError("Empty response body")
         os.replace(raw_tmp, raw_path)
-        logger.info(f"Raw M3U saved for item {item_id} ({len(raw_text)} bytes)")
+        logger.info(f"Raw M3U saved for item {item_id} ({bytes_written} bytes)")
     except Exception as exc:
         logger.warning(f"Raw M3U unavailable for item {item_id}: {exc}")
 
@@ -256,6 +264,8 @@ def do_fetch_m3u(item_id: int, db) -> tuple:
 # M3U auto-refresh scheduler
 # ---------------------------------------------------------------------------
 _scheduler_started = False
+_defer_counts: dict[int, int] = {}
+_MAX_DEFER_TIMES = 3  # force refresh after this many deferrals (~90 min at 30-min cycle)
 
 
 def start_m3u_scheduler():
@@ -284,6 +294,27 @@ def start_m3u_scheduler():
                             work.append(item.id)
 
                 for item_id in work:
+                    try:
+                        from hdhomerun_routes import get_active_stream_count
+                        active = get_active_stream_count()
+                    except ImportError:
+                        active = 0
+
+                    if active > 0:
+                        defers = _defer_counts.get(item_id, 0)
+                        if defers < _MAX_DEFER_TIMES:
+                            _defer_counts[item_id] = defers + 1
+                            logger.info(
+                                f"Scheduler: deferring M3U refresh for item {item_id} "
+                                f"({active} active stream(s), defer {defers + 1}/{_MAX_DEFER_TIMES})"
+                            )
+                            continue
+                        logger.warning(
+                            f"Scheduler: forcing M3U refresh for item {item_id} "
+                            f"after {defers} deferrals despite {active} active stream(s)"
+                        )
+
+                    _defer_counts.pop(item_id, None)
                     try:
                         with SessionLocal() as db:
                             item = db.query(Item).filter(Item.id == item_id).first()
