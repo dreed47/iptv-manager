@@ -23,10 +23,13 @@
 </div>
 {% else %}
 {% for item in items %}
-<div class="card">
+<div class="card" style="{{ 'opacity: 0.55;' if not item.enabled else '' }}">
   <div class="flex flex-center" style="justify-content: space-between; flex-wrap: wrap; gap: 12px; margin-bottom: 14px;">
     <div>
-      <div class="card-title" style="margin-bottom: 4px;">{{ item.name }}</div>
+      <div class="card-title" style="margin-bottom: 4px;">
+        {{ item.name }}
+        {% if not item.enabled %}<span class="badge badge-danger" style="font-size:11px; margin-left:8px;">Disabled</span>{% endif %}
+      </div>
       <code style="font-size: 12px; color: var(--text-muted);">user: {{ item.proxy_username }}</code>
     </div>
     <div class="flex gap-12 flex-wrap flex-center">
@@ -36,13 +39,18 @@
       {% if item.provider_exp_date %}
       <span class="text-sm text-muted">Expires {{ item.provider_exp_date }}</span>
       {% endif %}
-      {% if item.has_m3u %}<a href="/m3u_browser/{{ item.id }}" target="_blank" class="btn btn-outline btn-sm">Browse M3U</a>{% endif %}
+      {% if item.has_m3u and item.enabled %}<a href="/m3u_browser/{{ item.id }}" target="_blank" class="btn btn-outline btn-sm">Browse M3U</a>{% endif %}
       <a href="/providers/{{ item.id }}" class="btn btn-outline btn-sm">Edit</a>
+      <form method="POST" action="/providers/{{ item.id }}/toggle_enabled" style="display:inline;">
+        <button type="submit" class="btn btn-outline btn-sm">{{ 'Enable' if not item.enabled else 'Disable' }}</button>
+      </form>
       {% if items|length > 1 %}
       <form method="POST" action="/providers/{{ item.id }}/delete" style="display:inline;"
             onsubmit="return confirm('Delete provider {{ item.name }}? This cannot be undone.')">
         <button type="submit" class="btn btn-danger btn-sm">Delete</button>
       </form>
+      {% else %}
+      <button class="btn btn-danger btn-sm" disabled title="Cannot delete the only provider">Delete</button>
       {% endif %}
     </div>
   </div>

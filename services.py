@@ -220,6 +220,7 @@ def _build_context_for_item(item: Item, base_url: str, existing_files: set, m3u_
         "slug": item.slug or "",
         "proxy_username": item.proxy_username or "iptv",
         "proxy_password": item.proxy_password or "iptv",
+        "enabled": bool(item.enabled) if item.enabled is not None else True,
     }
     m3u_path = os.path.join(m3u_dir, f"xtream_playlist_{item.id}.m3u")
     try:

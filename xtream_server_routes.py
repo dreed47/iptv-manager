@@ -46,7 +46,8 @@ def _get_item_by_credentials(username: str, password: str, db: Session):
     items = db.query(Item).all()
     matches = [
         i for i in items
-        if (i.proxy_username or "iptv") == username
+        if i.enabled
+        and (i.proxy_username or "iptv") == username
         and (i.proxy_password or "iptv") == password
     ]
     if not matches:
@@ -82,9 +83,9 @@ def _get_base_url() -> str:
 
 async def get_item_for_slug(provider_slug: str, db: Session = Depends(get_db)) -> Item:
     item = db.query(Item).filter(Item.slug == provider_slug).first()
-    if not item:
+    if not item or not item.enabled:
         all_items = db.query(Item).all()
-        available = [f"/{i.slug}/" for i in all_items if i.slug]
+        available = [f"/{i.slug}/" for i in all_items if i.slug and i.enabled]
         raise HTTPException(
             status_code=404,
             detail={"error": "Provider not found", "available_providers": available},

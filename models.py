@@ -58,6 +58,7 @@ class Item(Base):
     slug               = Column(String(100), nullable=True)
     proxy_username     = Column(String(200), nullable=True)
     proxy_password     = Column(String(200), nullable=True)
+    enabled            = Column(Boolean, nullable=False, default=True)
 
 
 class AppConfig(Base):
@@ -169,6 +170,10 @@ def init_db():
             conn.execute(text("ALTER TABLE items ADD COLUMN proxy_password VARCHAR(200)"))
             conn.commit()
             logger.info("Migrated: added proxy_password column")
+        if "enabled" not in existing:
+            conn.execute(text("ALTER TABLE items ADD COLUMN enabled BOOLEAN NOT NULL DEFAULT 1"))
+            conn.commit()
+            logger.info("Migrated: added enabled column")
 
         # Data migration: assign slugs to items that don't have one
         rows = conn.execute(text("SELECT id, name, slug FROM items WHERE slug IS NULL OR slug = ''")).fetchall()

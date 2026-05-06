@@ -1447,6 +1447,17 @@ async def provider_save_filters(
         )
 
 
+@router.post("/providers/{item_id}/toggle_enabled", response_class=RedirectResponse)
+async def provider_toggle_enabled(item_id: int, db: Session = Depends(get_db)):
+    item = db.query(Item).filter(Item.id == item_id).first()
+    if not item:
+        return RedirectResponse(url="/providers?error=Provider+not+found", status_code=303)
+    item.enabled = not item.enabled
+    db.commit()
+    state = "enabled" if item.enabled else "disabled"
+    return RedirectResponse(url=f"/providers?success=Provider+{state}", status_code=303)
+
+
 @router.post("/providers/{item_id}/delete", response_class=RedirectResponse)
 async def provider_delete(item_id: int, db: Session = Depends(get_db)):
     total = db.query(Item).count()

@@ -95,6 +95,9 @@ def create_app():
             with SessionLocal() as db:
                 items = db.query(_Item).all()
                 for item in items:
+                    if not item.enabled:
+                        logger.info(f"Xtream cache pre-warm: skipping disabled provider '{item.name}' (id={item.id})")
+                        continue
                     logger.info(f"Xtream cache pre-warm: provider '{item.name}' (id={item.id})")
                     await get_xtream_cache(db, item)
             elapsed = time.monotonic() - _start
