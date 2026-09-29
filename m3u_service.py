@@ -438,13 +438,24 @@ def apply_m3u_filter(
     includes_raw: dict,
     excludes: list[str],
     has_wildcard_exclude: bool,
+    seen_chnos: set | None = None,
 ) -> tuple[str, int, int]:
     """Walk M3U lines and apply language/include/exclude rules.
 
     includes_strict: matched via strict_normalize (prefix-stripped) — catches all variants.
     includes_raw:    matched via _raw_normalize (prefix-preserved) — exact prefix match only.
-    Returns (filtered_content, kept_count, total_count).
+    seen_chnos: channel numbers already assigned to a kept row. A single include line can
+    fan out to more than one raw M3U entry when a provider lists the same channel twice
+    under cosmetically different names that normalize identically (e.g. "NFL NETWORK HD"
+    vs "NFL NETWORK ᴴᴰ" — Unicode NFKD normalization collapses both to the same match key,
+    so name-based matching alone can't tell them apart). Once a channel number has been
+    used, later fan-out matches for that same number are dropped instead of producing a
+    second row with a duplicate tvg-chno. Pass a shared set across multiple calls (e.g. one
+    per provider) to also catch fan-out across providers; omit it for a single, independent
+    call. Returns (filtered_content, kept_count, total_count).
     """
+    if seen_chnos is None:
+        seen_chnos = set()
     input_record_count = sum(1 for ln in lines if ln.startswith("#EXTINF"))
     parts = ["#EXTM3U\n"]
     num_records = 0
@@ -521,8 +532,13 @@ def apply_m3u_filter(
 
         # 4. Emit or skip
         if has_includes:
+            if included and chno_to_apply and chno_to_apply in seen_chnos:
+                # A second raw entry fan-out-matched a channel number already claimed —
+                # drop it rather than emit a duplicate tvg-chno.
+                included = False
             if included:
                 if chno_to_apply:
+                    seen_chnos.add(chno_to_apply)
                     extinf = re.sub(r'\s*tvg-chno="[^"]*"', '', extinf)
                     idx = extinf.find(',')
                     insert = f' tvg-chno="{chno_to_apply}"'
@@ -714,6 +730,7 @@ def build_hdhr_playlist() -> tuple[int, int]:
     all_parts = ["#EXTM3U\n"]
     kept_total = 0
     raw_total = 0
+    seen_chnos: set = set()  # shared across providers so a fan-out match can't duplicate a channel number twice
     for item in items:
         m3u_path = os.path.join(config.M3U_DIR, f"xtream_playlist_{item.id}.m3u")
         if not os.path.exists(m3u_path):
@@ -722,7 +739,7 @@ def build_hdhr_playlist() -> tuple[int, int]:
         with open(m3u_path, 'r', encoding='utf-8') as f:
             raw_lines = f.read().splitlines()
         raw_total += sum(1 for ln in raw_lines if ln.startswith("#EXTINF"))
-        item_content, kept, _ = apply_m3u_filter(raw_lines, [], includes_strict, includes_raw, [], False)
+        item_content, kept, _ = apply_m3u_filter(raw_lines, [], includes_strict, includes_raw, [], False, seen_chnos)
         if kept == 0:
             continue
         # Tag each EXTINF line with x-item-id so load_channel_lineup can track routing
