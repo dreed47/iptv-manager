@@ -168,31 +168,60 @@
           setStatus('Stream error: ' + (err ? err.message : 'unknown') + '. Try VLC or IINA below.', 'error');
         });
       } else if (mpegts.getFeatureList().mseLivePlayback) {
-        const player = mpegts.createPlayer({
-          type: 'mpegts',
-          isLive: true,
-          url: streamUrl,
-        }, {
-          enableWorker: true,
-          enableStashBuffer: true,
-          stashInitialSize: {{ stash_kb }},
-          liveBufferLatencyChasing: false,
-          liveBufferLatencyMaxLatency: {{ latency_max }},
-          liveBufferLatencyMinRemain: {{ latency_min }},
-          lazyLoadMaxDuration: 60,
-          deferLoadAfterSourceOpen: false,
-        });
-        player.attachMediaElement(video);
-        player.load();
-        player.on(mpegts.Events.ERROR, (errorType, errorDetail, errorInfo) => {
-          setStatus('Stream error: ' + errorDetail + '. Try VLC or IINA below.', 'error');
-        });
+        // A dropped/failed connection is often transient (brief upstream hiccup) —
+        // auto-reconnect a bounded number of times before giving up, the way the
+        // server-side proxy paths already do, instead of dead-ending on the first error.
+        const MAX_RETRIES = 3;
+        const RETRY_DELAY_MS = 1500;
+        let retryCount = 0;
+        let player = null;
+
+        function destroyPlayer() {
+          if (!player) return;
+          try { player.unload(); } catch (e) {}
+          try { player.detachMediaElement(); } catch (e) {}
+          try { player.destroy(); } catch (e) {}
+          player = null;
+        }
+
+        function startPlayer() {
+          destroyPlayer();
+          player = mpegts.createPlayer({
+            type: 'mpegts',
+            isLive: true,
+            url: streamUrl,
+          }, {
+            enableWorker: true,
+            enableStashBuffer: true,
+            stashInitialSize: {{ stash_kb }},
+            liveBufferLatencyChasing: false,
+            liveBufferLatencyMaxLatency: {{ latency_max }},
+            liveBufferLatencyMinRemain: {{ latency_min }},
+            lazyLoadMaxDuration: 60,
+            deferLoadAfterSourceOpen: false,
+          });
+          player.attachMediaElement(video);
+          player.on(mpegts.Events.ERROR, (errorType, errorDetail, errorInfo) => {
+            if (retryCount < MAX_RETRIES) {
+              retryCount += 1;
+              setStatus(`Stream error: ${errorDetail} — reconnecting (${retryCount}/${MAX_RETRIES})…`);
+              setTimeout(startPlayer, RETRY_DELAY_MS);
+            } else {
+              setStatus('Stream error: ' + errorDetail + '. Try VLC or IINA below.', 'error');
+            }
+          });
+          player.load();
+        }
+
         video.addEventListener('canplay', () => {
+          retryCount = 0;  // played successfully — reset the retry budget
           setStatus('Stream loaded — playing', 'ok');
           video.play().catch(() => {});
         });
         video.addEventListener('waiting', () => setStatus('Buffering…'));
         video.addEventListener('playing', () => setStatus('Playing', 'ok'));
+
+        startPlayer();
       } else {
         setStatus('Your browser does not support MSE playback. Use VLC or IINA below.', 'error');
       }

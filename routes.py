@@ -16,6 +16,7 @@ import urllib.parse
 import json
 from epg_manager import get_epg, run_epg_build, EPG_CACHE_PATH
 from m3u_service import do_fetch_m3u, build_filter_config, apply_m3u_filter, refresh_filtered_playlist
+import m3u_browser_index
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -196,7 +197,7 @@ async def _test_provider_connection(item, db):
     import asyncio
     url = f"{item.server_url.rstrip('/')}/player_api.php"
     params = {"username": item.username, "password": item.user_pass}
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36"}
+    headers = {"User-Agent": config.PROXY_USER_AGENT}
     def _do_test():
         resp = _requests.get(url, params=params, headers=headers, timeout=10)
         resp.raise_for_status()
@@ -504,21 +505,46 @@ async def stream_player(request: Request, url: str = "", name: str = "Stream"):
 # browser can't fetch directly due to CORS or provider restrictions.
 # ---------------------------------------------------------------------------
 
+# Shared per-host session — reused across repeated Range-seek requests to the same
+# MP4/VOD host (this route has no provider/item context, only a raw URL, so the pool
+# is keyed by hostname rather than item_id).
+_proxy_url_sessions: dict = {}
+_proxy_url_sessions_lock = threading.Lock()
+
+
+def _get_proxy_url_session(url: str):
+    import requests as _req
+    host = urllib.parse.urlparse(url).netloc
+    with _proxy_url_sessions_lock:
+        session = _proxy_url_sessions.get(host)
+        if session is None:
+            session = _req.Session()
+            _proxy_url_sessions[host] = session
+        return session
+
+
 @router.get("/api/proxy_url")
 async def proxy_url(request: Request, url: str):
     import requests as _req
     from fastapi.responses import StreamingResponse as _SR
 
     proxy_headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "User-Agent": config.PROXY_USER_AGENT,
         "Accept": "*/*",
     }
     range_header = request.headers.get("range")
     proxy_headers["Range"] = range_header or "bytes=0-"
 
-    try:
-        resp = _req.get(url, headers=proxy_headers, stream=True, timeout=(10, 120), allow_redirects=True)
+    session = _get_proxy_url_session(url)
+
+    def _connect():
+        resp = session.get(url, headers=proxy_headers, stream=True,
+                            timeout=(config.STREAM_CONNECT_TIMEOUT, 120), allow_redirects=True)
         resp.raise_for_status()
+        return resp
+
+    try:
+        resp = await asyncio.to_thread(_connect)
     except _req.exceptions.HTTPError as exc:
         status = exc.response.status_code if exc.response is not None else 502
         return JSONResponse({"error": f"Upstream {status}"}, status_code=502)
@@ -575,127 +601,40 @@ async def m3u_browser_data(
     per_page = max(10, min(per_page, 500))
     page = max(1, page)
 
-    def _load():
-        # Run parsing off the event loop — this file can be ~50–60MB with 200K+ entries.
+    def _check():
         from models import SessionLocal
         with SessionLocal() as db:
             item = db.query(Item).filter(Item.id == item_id).first()
             if not item:
-                return ("not_found", None)
-
+                return "not_found"
         file_path = os.path.join(config.M3U_DIR, f"xtream_playlist_{item_id}.m3u")
-        if not os.path.exists(file_path):
-            return ("missing_m3u", None)
+        return "ok" if os.path.exists(file_path) else "missing_m3u"
 
-        s = (search or "").lower().strip()
-        group_f = (group or "").strip()
-        prefix_f = (prefix or "").strip()
-
-        groups: set[str] = set()
-        prefixes: dict[str, int] = {}
-        page_rows: list[dict] = []
-
-        matched = 0
-        start = (page - 1) * per_page
-        end = start + per_page
-
-        prev_extinf: str | None = None
-        first_line_checked = False
-        with open(file_path, "r", encoding="utf-8", errors="replace") as f:
-            for raw in f:
-                line = raw.rstrip("\n")
-                if not first_line_checked:
-                    first_line_checked = True
-                    if line.strip() == "#EXTM3U":
-                        continue
-
-                if line.startswith("#EXTINF"):
-                    prev_extinf = line
-                    continue
-
-                if prev_extinf is None:
-                    continue
-
-                extinf = prev_extinf
-                url = line.strip()
-                prev_extinf = None
-
-                attrs = {}
-                display_name = ""
-                if "," in extinf:
-                    attr_part, display_name = extinf.split(",", 1)
-                    for k, v in re.findall(r'(\S+?)="([^"]*)"', attr_part):
-                        attrs[k.lower()] = v
-                display_name = display_name.strip()
-                tvg_name = attrs.get("tvg-name", "").strip()
-                group_title = attrs.get("group-title", "").strip()
-
-                # Detect provider prefix  e.g. "SLING: ESPN" -> "SLING:", "EN - BBC" -> "EN -"
-                src = tvg_name or display_name
-                ch_prefix = ""
-                if ":" in src:
-                    candidate = src.split(":")[0].strip()
-                    if 1 < len(candidate) <= 15 and not any(c.isdigit() for c in candidate):
-                        ch_prefix = candidate + ":"
-                elif " - " in src:
-                    candidate = src.split(" - ")[0].strip()
-                    if 1 < len(candidate) <= 6:
-                        ch_prefix = candidate + " -"
-
-                if group_title:
-                    groups.add(group_title)
-                if ch_prefix:
-                    prefixes[ch_prefix] = prefixes.get(ch_prefix, 0) + 1
-
-                # Apply filters (streaming)
-                if s and (s not in display_name.lower() and s not in tvg_name.lower()):
-                    continue
-                if group_f and group_title != group_f:
-                    continue
-                if prefix_f and ch_prefix != prefix_f:
-                    continue
-
-                if matched >= start and matched < end:
-                    page_rows.append({
-                        "name": display_name,
-                        "tvg_name": tvg_name,
-                        "group": group_title,
-                        "prefix": ch_prefix,
-                        "url": url,
-                    })
-                matched += 1
-
-        # Only include prefixes that appear on at least 5 channels (avoids one-off channel name colons)
-        MIN_PREFIX_COUNT = 5
-        valid_prefixes = {p for p, count in prefixes.items() if count >= MIN_PREFIX_COUNT}
-
-        # Clear prefix on returned page rows whose detected prefix isn't a real provider
-        for ch in page_rows:
-            if ch["prefix"] and ch["prefix"] not in valid_prefixes:
-                ch["prefix"] = ""
-
-        total = matched
-        total_pages = max(1, (total + per_page - 1) // per_page)
-
-        return (
-            "ok",
-            {
-                "channels": page_rows,
-                "total": total,
-                "page": min(page, total_pages),
-                "per_page": per_page,
-                "total_pages": total_pages,
-                "groups": sorted(groups),
-                "prefixes": sorted(valid_prefixes),
-            },
-        )
-
-    status, payload = await asyncio.to_thread(_load)
+    status = await asyncio.to_thread(_check)
     if status == "not_found":
         raise HTTPException(status_code=404, detail="Item not found")
     if status == "missing_m3u":
         raise HTTPException(status_code=404, detail="Full M3U not found")
-    return payload
+
+    try:
+        idx = await m3u_browser_index.get_browser_index(item_id)
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Search index unavailable: {exc}")
+
+    channels, total = await asyncio.to_thread(
+        m3u_browser_index.query_channels, idx.db_path, search, group, prefix, page, per_page
+    )
+    total_pages = max(1, (total + per_page - 1) // per_page)
+
+    return {
+        "channels": channels,
+        "total": total,
+        "page": min(page, total_pages),
+        "per_page": per_page,
+        "total_pages": total_pages,
+        "groups": idx.groups,
+        "prefixes": idx.prefixes,
+    }
 
 
 @router.get("/hdhomerun", response_class=HTMLResponse)

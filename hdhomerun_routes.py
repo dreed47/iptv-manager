@@ -49,6 +49,28 @@ _blocked_ips: dict[str, float] = {}
 _blocked_ips_lock = threading.Lock()
 KILL_BLOCK_SECONDS = 60
 
+# Shared per-provider HTTP session — reused across short-lived proxy fetches (VOD/series
+# playback, MP4 previews) so repeated requests to the same provider host don't each pay a
+# fresh TCP/TLS handshake.
+#
+# NOT used for live tuner (/auto/v{n}) connections: those rely on being able to close a
+# specific stream's own `requests.Session` to interrupt a blocked `iter_content()` read on
+# admin-kill (see `_close_session_connection` above). A session shared across concurrent
+# viewers of the same provider would let killing one viewer's stream sever every other
+# viewer's connection too, so that path keeps its own per-stream Session.
+_provider_sessions: dict[int, requests.Session] = {}
+_provider_sessions_lock = threading.Lock()
+
+
+def get_provider_session(item_id: int) -> requests.Session:
+    """Return a shared requests.Session for this provider, creating one on first use."""
+    with _provider_sessions_lock:
+        session = _provider_sessions.get(item_id)
+        if session is None:
+            session = requests.Session()
+            _provider_sessions[item_id] = session
+        return session
+
 
 def _purge_stale_sessions():
     """Background thread: remove sessions with no recent chunk activity from the dict."""
@@ -114,11 +136,28 @@ def _close_session_connection(s: dict):
             pass
 
 
-def auto_replace_ip_session(client_ip: str, new_channel: str, item_id: int | None = None) -> int:
-    """Kill sessions from this IP that are on a DIFFERENT channel (tuner/channel switch).
-    Same-channel connections from the same IP (e.g. Apple TV multi-probe) are left alive.
-    Returns: count of unique OTHER client IPs currently streaming this provider,
-    used for the max_sessions gate (current IP = 1 slot regardless of N connections)."""
+def try_admit_session(client_ip: str, new_channel: str, item_id: int | None,
+                       max_sessions: int, session_id: str) -> tuple[bool, int]:
+    """Kill sessions from this IP that are on a DIFFERENT channel (tuner/channel switch),
+    count unique OTHER client IPs currently streaming this provider, and — only if that
+    count is under `max_sessions` — atomically reserve a placeholder slot for `session_id`
+    in the same locked section.
+
+    Reserving the slot as part of the same critical section that computes the count closes
+    a race where two concurrent requests could both read the same under-limit count and
+    both get admitted before either finishes registering (a plain "check, then separately
+    register" sequence allows this whenever anything awaits in between, e.g. the VOD/series
+    URL resolution or upstream connect). The caller's own later registration step (whichever
+    of `_register_session` / the HDHomeRun `generate()` setup applies) then simply overwrites
+    this same session_id with the full session info once the stream actually starts — same
+    slot, no double-count.
+
+    Same-channel connections from the same IP (e.g. Apple TV multi-probe) are left alive and
+    never counted against the requesting IP's own slot.
+
+    Returns: (admitted, live_count) — live_count is the number of unique OTHER client IPs
+    active for this provider at the time of the check, for the caller's 429 message.
+    """
     now = time.time()
     killed_sessions = []
     with _active_streams_lock:
@@ -143,10 +182,24 @@ def auto_replace_ip_session(client_ip: str, new_channel: str, item_id: int | Non
             and s.get("client_ip") != client_ip
         }
         live_count = len(other_ips)
+        admitted = live_count < max_sessions
+        if admitted:
+            _active_streams[session_id] = {
+                "session_id": session_id,
+                "channel": new_channel,
+                "channel_name": new_channel,
+                "item_id": item_id,
+                "client_ip": client_ip,
+                "user_agent": "",
+                "started_at": now,
+                "last_chunk_at": now,
+                "bytes_sent": 0,
+                "killed": False,
+            }
     for sid, old_ch, s in killed_sessions:
         _close_session_connection(s)
         logger.info(f"Auto-replaced session {sid}: IP {client_ip} switched from '{old_ch}' to '{new_channel}'")
-    return live_count
+    return admitted, live_count
 
 
 def kill_stream(session_id: str, block_ip: bool = True) -> bool:
@@ -383,8 +436,10 @@ async def stream_channel(channel_number: str, request: Request, db: Session = De
     else:
         provider = db.query(Item).first()
     max_sessions = int(provider.max_sessions) if provider and provider.max_sessions is not None else 1
-    active_count = auto_replace_ip_session(client_ip, f"ch {channel_number}", item_id=session_item_id)
-    if active_count >= max_sessions:
+    session_id = str(uuid.uuid4())
+    admitted, active_count = try_admit_session(client_ip, f"ch {channel_number}", session_item_id,
+                                                max_sessions, session_id)
+    if not admitted:
         logger.warning(
             f"Stream rejected for channel {channel_number}: {active_count}/{max_sessions} sessions active"
         )
@@ -409,7 +464,7 @@ async def stream_channel(channel_number: str, request: Request, db: Session = De
     logger.info(f"Stream start: channel {channel_number} → {source_url}")
 
     proxy_headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "User-Agent": config.PROXY_USER_AGENT,
         "Accept": "*/*",
         "Connection": "keep-alive",
     }
@@ -422,7 +477,6 @@ async def stream_channel(channel_number: str, request: Request, db: Session = De
     read_timeout    = config.STREAM_READ_TIMEOUT
 
     user_agent = request.headers.get("user-agent", "unknown")
-    session_id = str(uuid.uuid4())
 
     with _channel_source_urls_lock:
         channel_name = _channel_names.get(channel_number, channel_number)
@@ -455,6 +509,7 @@ async def stream_channel(channel_number: str, request: Request, db: Session = De
         # Use a mutable container so inner reconnect logic can update the URL.
         current_url = [source_url]
         bytes_at_last_connect = 0  # track how much was sent when the last connection opened
+        last_exc: Exception | None = None  # last error seen, for the final give-up log line
         try:
             while attempt <= effective_max_retries:
                 if attempt > 0:
@@ -506,10 +561,10 @@ async def stream_channel(channel_number: str, request: Request, db: Session = De
                         current_url[0],
                         headers=proxy_headers,
                         stream=True,
-                        timeout=(10, read_timeout),
+                        timeout=(config.STREAM_CONNECT_TIMEOUT, read_timeout),
                     ) as resp:
                         resp.raise_for_status()
-                        logger.debug(
+                        logger.info(
                             f"Upstream connected for channel {channel_number}: status={resp.status_code}"
                         )
 
@@ -550,7 +605,7 @@ async def stream_channel(channel_number: str, request: Request, db: Session = De
                     # If this connection delivered substantial data, it was healthy — reset the
                     # retry budget so routine upstream drops don't exhaust it over a long session.
                     delivered = bytes_sent - bytes_at_last_connect
-                    if delivered >= 10 * 1024 * 1024:  # 10 MB threshold
+                    if delivered >= config.STREAM_HEALTHY_SEGMENT_BYTES:
                         attempt = 0
                         effective_max_retries = max_retries
                         url_refreshed = False
@@ -562,6 +617,7 @@ async def stream_channel(channel_number: str, request: Request, db: Session = De
                 except GeneratorExit:
                     raise
                 except Exception as exc:
+                    last_exc = exc
                     logger.error(
                         f"Stream error for channel {channel_number} after {bytes_sent} bytes "
                         f"(attempt {attempt}/{max_retries}): {exc}"
@@ -608,7 +664,10 @@ async def stream_channel(channel_number: str, request: Request, db: Session = De
 
                 attempt += 1
 
-            logger.error(f"Max retries ({effective_max_retries}) reached for channel {channel_number}, giving up")
+            logger.error(
+                f"Max retries ({effective_max_retries}) reached for channel {channel_number}, giving up "
+                f"(last error: {last_exc})"
+            )
 
         except GeneratorExit:
             logger.debug(f"Client disconnected for channel {channel_number} after {bytes_sent} bytes")
