@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Form, Request
 from fastapi.responses import JSONResponse, StreamingResponse, RedirectResponse, Response, FileResponse
 from sqlalchemy.orm import Session
 from models import get_db, Item
-from hdhomerun_routes import register_extra_channels, _active_streams, _active_streams_lock, _SESSION_STALE_SECONDS, get_active_stream_count, is_ip_blocked, auto_replace_ip_session, KILL_BLOCK_SECONDS
+from hdhomerun_routes import register_extra_channels, _active_streams, _active_streams_lock, _SESSION_STALE_SECONDS, get_active_stream_count, is_ip_blocked, try_admit_session, KILL_BLOCK_SECONDS, get_provider_session
 import asyncio
 import collections
 import config
@@ -182,11 +182,7 @@ _vod_url_cache_lock = threading.Lock()
 _CACHE_MAX = 10_000
 
 _UPSTREAM_HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/129.0.0.0 Safari/537.36"
-    ),
+    "User-Agent": config.PROXY_USER_AGENT,
     "Accept": "application/json, text/plain, */*",
 }
 
@@ -1114,7 +1110,7 @@ _channel_hubs: dict[tuple[int, int], "_ChannelHub"] = {}
 _channel_hubs_lock = threading.Lock()
 
 _PROXY_HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+    "User-Agent": config.PROXY_USER_AGENT,
     "Accept": "*/*",
     "Connection": "keep-alive",
 }
@@ -1145,6 +1141,7 @@ class _ChannelHub:
         self._lock         = threading.Lock()
         self._ring: collections.deque = collections.deque(maxlen=config.HUB_RING_CHUNKS)
         self._consumers: dict[str, _queue.Queue] = {}
+        self._drop_counts: dict[str, int] = {}  # consumer_id -> total dropped chunks/sentinels
         self._stop_event   = threading.Event()
         self._grace_seq    = 0   # incremented on attach; lets grace threads self-cancel
         self._http         = requests.Session()
@@ -1180,6 +1177,7 @@ class _ChannelHub:
         """Unregister a consumer.  Schedules hub shutdown if no consumers remain."""
         with self._lock:
             self._consumers.pop(consumer_id, None)
+            self._drop_counts.pop(consumer_id, None)
             remaining = len(self._consumers)
             grace_seq = self._grace_seq
         logger.debug(f"Hub detach: consumer '{consumer_id[:8]}' on '{self.channel_name}' "
@@ -1199,6 +1197,18 @@ class _ChannelHub:
                 q.put_nowait(None)
             except _queue.Full:
                 pass
+
+    def _log_drop(self, consumer_id: str, kind: str):
+        """A consumer's queue was full and a chunk/sentinel got dropped instead of delivered.
+        Log it (rate-limited — the first drop, then every 50th) so a struggling consumer is
+        visible in the logs instead of silently falling behind with no diagnostic trail."""
+        count = self._drop_counts.get(consumer_id, 0) + 1
+        self._drop_counts[consumer_id] = count
+        if count == 1 or count % 50 == 0:
+            logger.warning(
+                f"Hub '{self.channel_name}': dropped {kind} for slow consumer "
+                f"'{consumer_id[:8]}' (queue full, {count} total drops)"
+            )
 
     # ------------------------------------------------------------------
     # Internal
@@ -1242,7 +1252,7 @@ class _ChannelHub:
                 try:
                     resp = self._http.get(
                         self.source_url, headers=_PROXY_HEADERS,
-                        stream=True, timeout=(10, read_timeout),
+                        stream=True, timeout=(config.STREAM_CONNECT_TIMEOUT, read_timeout),
                     )
                     resp.raise_for_status()
                 except Exception as exc:
@@ -1272,12 +1282,13 @@ class _ChannelHub:
                             )
                         with self._lock:
                             self._ring.append(chunk)
-                            for q in list(self._consumers.values()):
+                            for consumer_id, q in list(self._consumers.items()):
                                 try:
                                     q.put_nowait(chunk)
                                 except _queue.Full:
-                                    pass   # slow consumer; they catch up via ring on re-attach
-                    if seg_bytes >= 10 * 1024 * 1024:
+                                    # slow consumer; they catch up via ring on re-attach
+                                    self._log_drop(consumer_id, "chunk")
+                    if seg_bytes >= config.STREAM_HEALTHY_SEGMENT_BYTES:
                         attempt = 0
                         logger.info(
                             f"Upstream closed '{self.channel_name}' after {seg_bytes} bytes — reconnecting"
@@ -1287,11 +1298,11 @@ class _ChannelHub:
                         # Clear the ring so reconnecting consumers don't replay old-segment data.
                         with self._lock:
                             self._ring.clear()
-                            for q in list(self._consumers.values()):
+                            for consumer_id, q in list(self._consumers.items()):
                                 try:
                                     q.put_nowait(_SEGMENT_END)
                                 except _queue.Full:
-                                    pass
+                                    self._log_drop(consumer_id, "segment-end sentinel")
                     else:
                         logger.warning(
                             f"Upstream closed '{self.channel_name}' after {seg_bytes} bytes — reconnecting"
@@ -1304,11 +1315,11 @@ class _ChannelHub:
         finally:
             # Signal all consumers that the hub has stopped
             with self._lock:
-                for q in self._consumers.values():
+                for consumer_id, q in list(self._consumers.items()):
                     try:
                         q.put_nowait(None)
                     except _queue.Full:
-                        pass
+                        self._log_drop(consumer_id, "hub-stopped sentinel")
             logger.info(f"Hub producer exited: '{self.channel_name}'")
 
 
@@ -1469,12 +1480,12 @@ async def proxy_live_root(
         raise HTTPException(status_code=404, detail=f"Live stream {stream_id} not found")
 
     max_sessions = int(item.max_sessions) if item.max_sessions is not None else 1
-    active_count = auto_replace_ip_session(client_ip, entry.name, item_id=item.id)
-    if active_count >= max_sessions:
+    session_id = str(uuid.uuid4())
+    admitted, active_count = try_admit_session(client_ip, entry.name, item.id, max_sessions, session_id)
+    if not admitted:
         raise HTTPException(status_code=429,
                             detail=f"Session limit reached ({active_count}/{max_sessions} active streams)")
 
-    session_id = str(uuid.uuid4())
     user_agent = request.headers.get("user-agent", "unknown")
     _register_session(session_id, entry.name, client_ip, user_agent, item.id)
     logger.debug(f"proxy_live_root [{item.name}]: '{entry.name}' → {entry.url}")
@@ -1519,8 +1530,9 @@ async def proxy_vod_root(
 
     provider_item = db.query(Item).filter(Item.id == row["item_id"]).first()
     max_sessions = int(provider_item.max_sessions) if provider_item and provider_item.max_sessions is not None else 1
-    active_count = auto_replace_ip_session(client_ip, f"VOD:{stream_id}", item_id=row["item_id"])
-    if active_count >= max_sessions:
+    session_id = str(uuid.uuid4())
+    admitted, active_count = try_admit_session(client_ip, f"VOD:{stream_id}", row["item_id"], max_sessions, session_id)
+    if not admitted:
         raise HTTPException(status_code=429,
                             detail=f"Session limit reached ({active_count}/{max_sessions} active streams)",
                             headers={"Retry-After": "30"})
@@ -1534,8 +1546,9 @@ async def proxy_vod_root(
         ) or row["url"]
 
     db.close()
-    result = _proxy_finite_stream(resolved_url, request, "video/mp4",
-                                   stream_label=f"VOD:{stream_id}", item_id=row["item_id"])
+    result = await _proxy_finite_stream(resolved_url, request, "video/mp4",
+                                   stream_label=f"VOD:{stream_id}", item_id=row["item_id"],
+                                   session_id=session_id)
     if isinstance(result, JSONResponse) and result.status_code == 502:
         with _vod_url_cache_lock:
             _vod_url_cache.pop(stream_id, None)
@@ -1588,8 +1601,9 @@ async def proxy_series_root(
                 m3u_lines.append(url)
         return Response("\n".join(m3u_lines) + "\n", media_type="application/vnd.apple.mpegurl")
 
-    active_count = auto_replace_ip_session(client_ip, f"Series:{stream_id}", item_id=item.id)
-    if active_count >= max_sessions:
+    session_id = str(uuid.uuid4())
+    admitted, active_count = try_admit_session(client_ip, f"Series:{stream_id}", item.id, max_sessions, session_id)
+    if not admitted:
         raise HTTPException(status_code=429,
                             detail=f"Session limit reached ({active_count}/{max_sessions} active streams)",
                             headers={"Retry-After": "30"})
@@ -1599,8 +1613,9 @@ async def proxy_series_root(
 
     if upstream_url:
         db.close()
-        return _proxy_finite_stream(upstream_url, request, "video/mp4",
-                                    stream_label=f"Series:{stream_id}", item_id=item.id)
+        return await _proxy_finite_stream(upstream_url, request, "video/mp4",
+                                    stream_label=f"Series:{stream_id}", item_id=item.id,
+                                    session_id=session_id)
 
     item_id_guess = stream_id // 1_000_000_000
     upstream_ep_id = stream_id % 1_000_000_000
@@ -1611,8 +1626,9 @@ async def proxy_series_root(
         with _episode_cache_lock:
             _episode_cache[stream_id] = upstream_url
         db.close()
-        return _proxy_finite_stream(upstream_url, request, "video/mp4",
-                                    stream_label=f"Series:{stream_id}", item_id=item.id)
+        return await _proxy_finite_stream(upstream_url, request, "video/mp4",
+                                    stream_label=f"Series:{stream_id}", item_id=item.id,
+                                    session_id=session_id)
 
     base = item.server_url.rstrip("/")
     ep_ext = ext if ext and ext not in ("m3u8", "") else "mp4"
@@ -1620,8 +1636,9 @@ async def proxy_series_root(
     with _episode_cache_lock:
         _episode_cache[stream_id] = upstream_url
     db.close()
-    return _proxy_finite_stream(upstream_url, request, "video/mp4",
-                                stream_label=f"Series:{stream_id}", item_id=item.id)
+    return await _proxy_finite_stream(upstream_url, request, "video/mp4",
+                                stream_label=f"Series:{stream_id}", item_id=item.id,
+                                session_id=session_id)
 
 
 @router.get("/{provider_slug}/live/{username}/{password}/{stream_id_ext:path}")
@@ -1655,12 +1672,12 @@ async def proxy_live(
         raise HTTPException(status_code=429, detail="Stream was terminated — reconnect blocked briefly")
 
     max_sessions = int(item.max_sessions) if item.max_sessions is not None else 1
-    active_count = auto_replace_ip_session(client_ip, entry.name, item_id=item.id)
-    if active_count >= max_sessions:
+    session_id = str(uuid.uuid4())
+    admitted, active_count = try_admit_session(client_ip, entry.name, item.id, max_sessions, session_id)
+    if not admitted:
         raise HTTPException(status_code=429,
                             detail=f"Session limit reached ({active_count}/{max_sessions} active streams)")
 
-    session_id = str(uuid.uuid4())
     user_agent = request.headers.get("user-agent", "unknown")
     _register_session(session_id, entry.name, client_ip, user_agent, item.id)
     logger.debug(f"proxy_live [{item.name}]: '{entry.name}' → direct stream from {entry.url}")
@@ -1674,44 +1691,81 @@ async def proxy_live(
     )
 
 
-def _proxy_finite_stream(source_url: str, request: Request, media_type: str, stream_label: str = "VOD", item_id: int = 0):
-    """Proxy a finite stream (VOD/series) with Range support for seeking."""
-    chunk_size = config.STREAM_CHUNK_KB * 1024
-    proxy_headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-        "Accept": "*/*",
-    }
-    range_header = request.headers.get("range")
-    proxy_headers["Range"] = range_header or "bytes=0-"
+async def _proxy_finite_stream(source_url: str, request: Request, media_type: str, stream_label: str = "VOD",
+                                item_id: int = 0, session_id: str | None = None):
+    """Proxy a finite stream (VOD/series) with Range support for seeking, bounded retry
+    on connect failure, and Range-based resume on a mid-transfer drop.
 
-    try:
-        resp = requests.get(
-            source_url,
-            headers=proxy_headers,
-            stream=True,
-            timeout=(10, 60),
+    `session_id` should be the id already reserved by `try_admit_session` at the caller's
+    max_sessions check, so the placeholder slot it registered gets filled in (not
+    double-counted) once the stream actually starts. Falls back to minting a fresh one for
+    any caller that didn't go through that admission path."""
+    if session_id is None:
+        session_id = str(uuid.uuid4())
+    chunk_size = config.STREAM_CHUNK_KB * 1024
+    max_retries = config.STREAM_MAX_RETRIES
+    retry_delay = config.STREAM_RETRY_DELAY
+    session = get_provider_session(item_id)
+
+    client_range = request.headers.get("range") or "bytes=0-"
+    range_match = re.match(r"bytes=(\d+)-", client_range)
+    range_start = int(range_match.group(1)) if range_match else 0
+
+    def _connect(range_value: str):
+        headers = {
+            "User-Agent": config.PROXY_USER_AGENT,
+            "Accept": "*/*",
+            "Range": range_value,
+        }
+        resp = session.get(
+            source_url, headers=headers, stream=True,
+            timeout=(config.STREAM_CONNECT_TIMEOUT, config.STREAM_READ_TIMEOUT),
             allow_redirects=True,
         )
         resp.raise_for_status()
-    except requests.exceptions.HTTPError as exc:
-        upstream_status = exc.response.status_code if exc.response is not None else 0
-        reason = exc.response.reason if exc.response is not None else "unknown"
-        body_preview = ""
-        if exc.response is not None:
-            try:
-                body_preview = exc.response.text[:200]
-            except Exception:
-                pass
-        logger.warning(
-            f"Upstream {upstream_status} for {source_url}: {reason} | body: {body_preview!r}"
-        )
-        return JSONResponse(
-            {"error": f"Upstream error {upstream_status}: {reason}"},
-            status_code=502,
-        )
-    except Exception as exc:
-        logger.warning(f"Upstream connection failed for {source_url}: {exc}")
-        return JSONResponse({"error": f"Upstream connection failed: {exc}"}, status_code=502)
+        return resp
+
+    attempt = 0
+    resp = None
+    last_exc: Exception | None = None
+    while resp is None and attempt <= max_retries:
+        if attempt > 0:
+            logger.warning(
+                f"{stream_label}: connect attempt {attempt}/{max_retries} for {source_url} "
+                f"failed ({last_exc}); retrying in {retry_delay}s"
+            )
+            await asyncio.sleep(retry_delay)
+        try:
+            resp = await asyncio.to_thread(_connect, client_range)
+        except Exception as exc:
+            last_exc = exc
+            attempt += 1
+
+    if resp is None:
+        # Connect never succeeded — release the slot try_admit_session reserved for this
+        # session_id immediately rather than leaving a phantom entry for other clients'
+        # max_sessions checks to wait out until the stale-session purge catches it.
+        with _active_streams_lock:
+            _active_streams.pop(session_id, None)
+        if isinstance(last_exc, requests.exceptions.HTTPError):
+            upstream_status = last_exc.response.status_code if last_exc.response is not None else 0
+            reason = last_exc.response.reason if last_exc.response is not None else "unknown"
+            body_preview = ""
+            if last_exc.response is not None:
+                try:
+                    body_preview = last_exc.response.text[:200]
+                except Exception:
+                    pass
+            logger.warning(
+                f"Upstream {upstream_status} for {source_url} after {max_retries} retries: "
+                f"{reason} | body: {body_preview!r}"
+            )
+            return JSONResponse(
+                {"error": f"Upstream error {upstream_status}: {reason}"},
+                status_code=502,
+            )
+        logger.warning(f"Upstream connection failed for {source_url} after {max_retries} retries: {last_exc}")
+        return JSONResponse({"error": f"Upstream connection failed: {last_exc}"}, status_code=502)
 
     forward_headers = {
         "Cache-Control": "no-cache",
@@ -1724,33 +1778,57 @@ def _proxy_finite_stream(source_url: str, request: Request, media_type: str, str
 
     client_ip = request.client.host if request.client else "unknown"
     user_agent = request.headers.get("user-agent", "unknown")
-    session_id = str(uuid.uuid4())
     _register_session(session_id, stream_label, client_ip, user_agent, item_id)
+    status_code = resp.status_code
+    first_resp = resp
 
     def generate():
         bytes_sent = 0
+        attempt = 0
+        current_resp = first_resp
         try:
-            for chunk in resp.iter_content(chunk_size=chunk_size):
-                if chunk:
-                    if _active_streams.get(session_id, {}).get("killed"):
-                        logger.info(f"Stream {session_id} ({stream_label}) terminated by admin")
+            while True:
+                try:
+                    for chunk in current_resp.iter_content(chunk_size=chunk_size):
+                        if not chunk:
+                            continue
+                        if _active_streams.get(session_id, {}).get("killed"):
+                            logger.info(f"Stream {session_id} ({stream_label}) terminated by admin")
+                            return
+                        bytes_sent += len(chunk)
+                        s = _active_streams.get(session_id)
+                        if s:
+                            s["bytes_sent"] = bytes_sent
+                            s["last_chunk_at"] = time.time()
+                        yield chunk
+                    return  # upstream finished cleanly
+                except GeneratorExit:
+                    raise
+                except Exception as exc:
+                    attempt += 1
+                    logger.error(
+                        f"Stream error mid-transfer for {source_url} after {bytes_sent} bytes "
+                        f"(attempt {attempt}/{max_retries}): {exc}"
+                    )
+                    current_resp.close()
+                    if attempt > max_retries:
                         return
-                    bytes_sent += len(chunk)
-                    s = _active_streams.get(session_id)
-                    if s:
-                        s["bytes_sent"] = bytes_sent
-                        s["last_chunk_at"] = time.time()
-                    yield chunk
-        except Exception as exc:
-            logger.error(f"Stream error mid-transfer for {source_url}: {exc}")
+                    time.sleep(retry_delay)
+                    try:
+                        current_resp = _connect(f"bytes={range_start + bytes_sent}-")
+                    except Exception as reconnect_exc:
+                        logger.error(
+                            f"Reconnect failed for {stream_label} after {bytes_sent} bytes: {reconnect_exc}"
+                        )
+                        return
         finally:
             with _active_streams_lock:
                 _active_streams.pop(session_id, None)
-            resp.close()
+            current_resp.close()
 
     return StreamingResponse(
         generate(),
-        status_code=resp.status_code,
+        status_code=status_code,
         media_type=media_type,
         headers=forward_headers,
     )
@@ -1790,8 +1868,9 @@ async def proxy_vod(
 
     provider_item = db.query(Item).filter(Item.id == row["item_id"]).first()
     max_sessions = int(provider_item.max_sessions) if provider_item and provider_item.max_sessions is not None else 1
-    active_count = auto_replace_ip_session(client_ip, f"VOD:{stream_id}", item_id=row["item_id"])
-    if active_count >= max_sessions:
+    session_id = str(uuid.uuid4())
+    admitted, active_count = try_admit_session(client_ip, f"VOD:{stream_id}", row["item_id"], max_sessions, session_id)
+    if not admitted:
         raise HTTPException(
             status_code=429,
             detail=f"Session limit reached ({active_count}/{max_sessions} active streams)",
@@ -1807,9 +1886,10 @@ async def proxy_vod(
         ) or row["url"]
 
     db.close()
-    result = _proxy_finite_stream(
+    result = await _proxy_finite_stream(
         resolved_url, request, "video/mp4",
         stream_label=f"VOD:{stream_id}", item_id=row["item_id"],
+        session_id=session_id,
     )
 
     if isinstance(result, JSONResponse) and result.status_code == 502:
@@ -1871,8 +1951,9 @@ async def proxy_series(
         return Response("\n".join(m3u_lines) + "\n", media_type="application/vnd.apple.mpegurl")
 
     # Episode playback
-    active_count = auto_replace_ip_session(client_ip, f"Series:{stream_id}", item_id=item.id)
-    if active_count >= max_sessions:
+    session_id = str(uuid.uuid4())
+    admitted, active_count = try_admit_session(client_ip, f"Series:{stream_id}", item.id, max_sessions, session_id)
+    if not admitted:
         raise HTTPException(
             status_code=429,
             detail=f"Session limit reached ({active_count}/{max_sessions} active streams)",
@@ -1885,8 +1966,9 @@ async def proxy_series(
     if upstream_url:
         logger.debug(f"Series episode {stream_id} → {upstream_url}")
         db.close()
-        return _proxy_finite_stream(upstream_url, request, "video/mp4",
-                                    stream_label=f"Series:{stream_id}", item_id=item.id)
+        return await _proxy_finite_stream(upstream_url, request, "video/mp4",
+                                    stream_label=f"Series:{stream_id}", item_id=item.id,
+                                    session_id=session_id)
 
     # Cache miss — try to reconstruct episode URL from _episode_id encoding.
     # _episode_id(item_id, upstream_ep_id) = item_id * 1_000_000_000 + upstream_ep_id
@@ -1900,8 +1982,9 @@ async def proxy_series(
         with _episode_cache_lock:
             _episode_cache[stream_id] = upstream_url
         db.close()
-        return _proxy_finite_stream(upstream_url, request, "video/mp4",
-                                    stream_label=f"Series:{stream_id}", item_id=item.id)
+        return await _proxy_finite_stream(upstream_url, request, "video/mp4",
+                                    stream_label=f"Series:{stream_id}", item_id=item.id,
+                                    session_id=session_id)
 
     # Final fallback: treat stream_id as raw upstream episode ID (from raw M3U episode entries).
     # Raw IDs have no namespace — just proxy directly using item credentials.
@@ -1912,8 +1995,9 @@ async def proxy_series(
     with _episode_cache_lock:
         _episode_cache[stream_id] = upstream_url
     db.close()
-    return _proxy_finite_stream(upstream_url, request, "video/mp4",
-                                stream_label=f"Series:{stream_id}", item_id=item.id)
+    return await _proxy_finite_stream(upstream_url, request, "video/mp4",
+                                stream_label=f"Series:{stream_id}", item_id=item.id,
+                                session_id=session_id)
 
 
 # ---------------------------------------------------------------------------

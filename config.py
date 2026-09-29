@@ -32,7 +32,21 @@ XTREAM_PREBUFFER_KB: int         = int(os.getenv("XTREAM_PREBUFFER_KB", "0"))
 STREAM_MAX_RETRIES: int          = int(os.getenv("STREAM_MAX_RETRIES", "10"))
 STREAM_RETRY_DELAY: float        = float(os.getenv("STREAM_RETRY_DELAY", "3"))
 STREAM_READ_TIMEOUT: float       = float(os.getenv("STREAM_READ_TIMEOUT", "60"))
+STREAM_CONNECT_TIMEOUT: float    = float(os.getenv("STREAM_CONNECT_TIMEOUT", "10"))
 STREAM_SESSION_STALE_SECONDS: int = int(os.getenv("STREAM_SESSION_STALE_SECONDS", "30"))
+
+# A connection that delivered at least this many bytes before dropping is considered to
+# have been healthy — the retry budget is reset so routine upstream segment closes don't
+# exhaust it over a long viewing session. Shared by the HDHomeRun path and the Xtream hub.
+STREAM_HEALTHY_SEGMENT_BYTES: int = int(os.getenv("STREAM_HEALTHY_SEGMENT_BYTES", str(10 * 1024 * 1024)))
+
+# Single shared User-Agent for every outbound request this app makes to IPTV providers
+# (stream proxies, M3U/EPG fetches, catalog API calls) so it can't silently drift between
+# call sites.
+PROXY_USER_AGENT: str = os.getenv(
+    "PROXY_USER_AGENT",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36",
+)
 
 # Per-channel shared producer (ChannelHub) — keeps one upstream connection per active channel
 # so multiple Apple TV connections share the same stream without opening duplicate upstream TCP connections.
@@ -78,7 +92,7 @@ HEALTH_CHECK_TVG_ID: str      = os.getenv("HEALTH_CHECK_TVG_ID", "").strip()
 # ---------------------------------------------------------------------------
 # File paths
 # ---------------------------------------------------------------------------
-M3U_DIR: str = "/app/m3u_files"
+M3U_DIR: str = os.getenv("M3U_DIR", "/app/m3u_files")
 
 # ---------------------------------------------------------------------------
 # EPG
@@ -120,6 +134,10 @@ def _validate() -> None:
         errors.append(f"STREAM_RETRY_DELAY must be >= 0 (got {STREAM_RETRY_DELAY})")
     if STREAM_READ_TIMEOUT < 1:
         errors.append(f"STREAM_READ_TIMEOUT must be >= 1 (got {STREAM_READ_TIMEOUT})")
+    if STREAM_CONNECT_TIMEOUT < 1:
+        errors.append(f"STREAM_CONNECT_TIMEOUT must be >= 1 (got {STREAM_CONNECT_TIMEOUT})")
+    if STREAM_HEALTHY_SEGMENT_BYTES < 1:
+        errors.append(f"STREAM_HEALTHY_SEGMENT_BYTES must be >= 1 (got {STREAM_HEALTHY_SEGMENT_BYTES})")
     if EPG_CACHE_HOURS < 1:
         errors.append(f"EPG_CACHE_HOURS must be >= 1 (got {EPG_CACHE_HOURS})")
     if HUB_SEED_CHUNKS < 1:

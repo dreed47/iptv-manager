@@ -302,6 +302,7 @@
   let allGroups = [], allPrefixes = [];
   let debounceTimer = null;
   let selectedNames = new Set();
+  let currentAbortController = null;
 
   document.getElementById("search").addEventListener("input", e => {
     clearTimeout(debounceTimer);
@@ -323,6 +324,10 @@
   }
 
   async function load() {
+    if (currentAbortController) currentAbortController.abort();
+    const controller = new AbortController();
+    currentAbortController = controller;
+
     const params = new URLSearchParams({
       search: state.search, group: state.group, prefix: state.prefix,
       page: state.page, per_page: state.per_page
@@ -330,11 +335,12 @@
     const url = `/m3u_browser_data/${ITEM_ID}?${params}`;
     document.getElementById("tbody").innerHTML = '<tr><td colspan="6" class="loading">Loading…</td></tr>';
     try {
-      const res = await fetch(url);
+      const res = await fetch(url, { signal: controller.signal });
       if (!res.ok) throw new Error(await res.text());
       const data = await res.json();
       render(data);
     } catch(e) {
+      if (e.name === 'AbortError') return; // superseded by a newer request — ignore
       document.getElementById("tbody").innerHTML = `<tr><td colspan="6" class="empty">Error: ${e.message}</td></tr>`;
     }
   }

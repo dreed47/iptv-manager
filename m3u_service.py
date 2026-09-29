@@ -101,7 +101,7 @@ def do_fetch_m3u(item_id: int, db) -> tuple:
         return True, f"Reused recent data from '{peer.name}' ({age/3600:.1f}h old)", total_lines
 
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36",
+        "User-Agent": config.PROXY_USER_AGENT,
         "Accept": "application/json, text/plain, */*",
         "Referer": item.server_url.rstrip('/'),
         "Accept-Encoding": "gzip, deflate",
