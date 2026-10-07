@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 from models import get_db, Item, get_app_config
 from hdhomerun_emulator import HDHomeRunEmulator
 from hls_utils import resolve_hls_variant
+from streaming import metrics as stream_metrics
 import asyncio
 import config
 import logging
@@ -510,6 +511,11 @@ async def stream_channel(channel_number: str, request: Request, db: Session = De
         current_url = [source_url]
         bytes_at_last_connect = 0  # track how much was sent when the last connection opened
         last_exc: Exception | None = None  # last error seen, for the final give-up log line
+        obs = (
+            stream_metrics.acquire(session_item_id, source_url, f"ch {channel_number} '{channel_name}'", "hdhr")
+            if config.STREAM_OBSERVE else None
+        )
+        upstream_connects = 0
         try:
             while attempt <= effective_max_retries:
                 if attempt > 0:
@@ -567,10 +573,15 @@ async def stream_channel(channel_number: str, request: Request, db: Session = De
                         logger.info(
                             f"Upstream connected for channel {channel_number}: status={resp.status_code}"
                         )
+                        upstream_connects += 1
+                        if obs:
+                            obs.new_session("initial" if upstream_connects == 1 else "reconnect")
 
                         for chunk in resp.iter_content(chunk_size=chunk_size):
                             if not chunk:
                                 continue
+                            if obs:
+                                obs.feed(chunk)
                             if _active_streams.get(session_id, {}).get("killed"):
                                 logger.info(f"Stream {session_id} channel={channel_number} terminated by admin")
                                 return
@@ -595,20 +606,31 @@ async def stream_channel(channel_number: str, request: Request, db: Session = De
                                     s["last_chunk_at"] = time.time()
                                 yield chunk
 
-                    # Upstream closed connection cleanly — flush any partial prebuffer then reconnect
+                    # Upstream closed connection cleanly — flush any partial prebuffer first
                     if prebuf:
                         for c in prebuf:
                             bytes_sent += len(c)
                             yield c
                         prebuf = []
                         prebuffering = False
-                    # If this connection delivered substantial data, it was healthy — reset the
-                    # retry budget so routine upstream drops don't exhaust it over a long session.
+                    # If this connection delivered substantial data, the close was a healthy
+                    # segment boundary (this kind of channel is served as a sequence of distinct
+                    # segments, e.g. stitched episodes) rather than a real failure. Splicing the
+                    # next segment silently into the same response hands the player a sudden
+                    # timestamp discontinuity — Plex/tvOS reacts to this by rewinding a few
+                    # seconds mid-playback. End the response cleanly here instead and let the
+                    # client reconnect for the next segment, exactly like the Xtream hub already
+                    # does for its own consumers at the same kind of boundary (see _ChannelHub._run
+                    # in xtream_server_routes.py). A fresh generate() call for the reconnect starts
+                    # with its own full retry budget, so there's nothing to reset here.
                     delivered = bytes_sent - bytes_at_last_connect
                     if delivered >= config.STREAM_HEALTHY_SEGMENT_BYTES:
-                        attempt = 0
-                        effective_max_retries = max_retries
-                        url_refreshed = False
+                        logger.info(
+                            f"Upstream closed stream for channel {channel_number} at a healthy "
+                            f"segment boundary after {bytes_sent} bytes; ending response for a "
+                            f"clean client reconnect"
+                        )
+                        return
                     logger.warning(
                         f"Upstream closed stream for channel {channel_number} "
                         f"after {bytes_sent} bytes; reconnecting..."
@@ -675,6 +697,8 @@ async def stream_channel(channel_number: str, request: Request, db: Session = De
             with _active_streams_lock:
                 _active_streams.pop(session_id, None)
             session.close()
+            if obs:
+                stream_metrics.release(obs)
             logger.info(f"Stream ended: channel {channel_number}, {bytes_sent} bytes sent")
 
     return StreamingResponse(

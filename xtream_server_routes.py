@@ -24,6 +24,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Optional
 from hls_utils import resolve_hls_variant
+from streaming import metrics as stream_metrics
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -1235,6 +1236,11 @@ class _ChannelHub:
         first        = True
         chunk_count  = 0
         seg_bytes    = 0
+        obs = (
+            stream_metrics.acquire(self._key[0], self.source_url, self.channel_name, "xtream")
+            if config.STREAM_OBSERVE else None
+        )
+        upstream_connects = 0
         try:
             while not self._stop_event.is_set() and attempt <= max_retries:
                 if attempt > 0:
@@ -1267,12 +1273,17 @@ class _ChannelHub:
                     attempt += 1
                     continue
                 seg_bytes = 0
+                upstream_connects += 1
+                if obs:
+                    obs.new_session("initial" if upstream_connects == 1 else "reconnect")
                 try:
                     for chunk in resp.iter_content(chunk_size=chunk_size):
                         if self._stop_event.is_set():
                             return
                         if not chunk:
                             continue
+                        if obs:
+                            obs.feed(chunk)
                         seg_bytes += len(chunk)
                         chunk_count += 1
                         if chunk_count == 1:
@@ -1320,6 +1331,8 @@ class _ChannelHub:
                         q.put_nowait(None)
                     except _queue.Full:
                         self._log_drop(consumer_id, "hub-stopped sentinel")
+            if obs:
+                stream_metrics.release(obs)
             logger.info(f"Hub producer exited: '{self.channel_name}'")
 
 
