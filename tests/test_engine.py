@@ -341,6 +341,14 @@ class EngineTest(unittest.IsolatedAsyncioTestCase):
         self.assertGreater(len(data), 100_000)
         self.assertEqual(_decode_problems(data, self.tmp), [])
 
+    def test_backup_names_match_despite_spelling(self):
+        key = lambda n: engine_mod.alternates.match_key(engine_mod.alternates.split_name(n)[1])
+        self.assertEqual(key("US: C-SPAN 1 HD"), key("TV: CSPAN ᴿᴬᵂ"))
+        self.assertEqual(key("US: C-SPAN 2 HD"), key("TV: CSPAN 2 ᴿᴬᵂ"))
+        self.assertNotEqual(key("US: C-SPAN 2 HD"), key("TV: CSPAN ᴿᴬᵂ"))
+        self.assertEqual(key("US: FOX BUSINESS NETWORK HD"), key("AT&T: FOX BUSINESS ᴿᴬᵂ"))
+        self.assertNotEqual(key("US: FOX NEWS HD"), key("US: FOX BUSINESS NETWORK HD"))
+
     async def test_no_backup_for_unmatched_channel(self):
         self.news_channel({})
         self.assertEqual(engine_mod.alternates.find(1, self.url(2001), "US: SOMETHING ELSE"), [])

@@ -52,6 +52,14 @@ def split_name(name: str) -> tuple[str, str]:
     return prefix, " ".join(tokens)
 
 
+def match_key(core: str) -> str:
+    """Spelling-insensitive key: 'C SPAN 1' and 'CSPAN' both give 'CSPAN'."""
+    tokens = core.split()
+    if len(tokens) > 1 and tokens[-1] == "1":   # 'C-SPAN 1' is just C-SPAN
+        tokens.pop()
+    return "".join(c for c in "".join(tokens) if c.isalnum())
+
+
 def _heavy(name: str) -> bool:
     words = set("".join(c if c.isalnum() else " " for c in name.upper()).split())
     return bool(words & _HEAVY)
@@ -79,11 +87,11 @@ def find(item_id: int, url: str, name: str) -> list[Feed]:
         mtime = os.path.getmtime(path)
     except OSError:
         return []
-    key = (item_id, stream_id, core, tuple(family), mtime)
+    key = (item_id, stream_id, match_key(core), tuple(family), mtime)
     with _lock:
         if key in _cache:
             return _cache[key]
-    found = _scan(path, core, family)
+    found = _scan(path, match_key(core), family)
     # Rank: regular feeds before heavy ones (4K/UHD/HEVC); spread across packs, since copies
     # in one pack often share the failing feed's origin; then the family's order.
     ranked = []
@@ -97,20 +105,21 @@ def find(item_id: int, url: str, name: str) -> list[Feed]:
     return feeds
 
 
-def _scan(path: str, core: str, family: list[str]) -> dict[str, list[tuple[str, str]]]:
+def _scan(path: str, key: str, family: list[str]) -> dict[str, list[tuple[str, str]]]:
     wanted = set(family)
-    first_word = core.split()[0]
+    # cheap pre-filter: the key's first letters, allowing punctuation/spaces between them
+    probe = re.compile(r"[\W_]*".join(map(re.escape, key[:4])), re.IGNORECASE)
     found: dict[str, list[tuple[str, str]]] = {}
     pending: tuple[str, str] | None = None
     with open(path, encoding="utf-8", errors="replace") as f:
         for line in f:
             if line.startswith("#EXTINF"):
                 pending = None
-                if first_word not in line.upper():
+                if not probe.search(line):
                     continue
                 feed_name = line.rsplit(",", 1)[-1].strip()
                 prefix, feed_core = split_name(feed_name)
-                if feed_core == core and prefix in wanted:
+                if prefix in wanted and match_key(feed_core) == key:
                     pending = (prefix, feed_name)
             elif pending and line.strip() and not line.startswith("#"):
                 m = _URL.match(line.strip())
