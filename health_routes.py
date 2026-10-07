@@ -20,6 +20,16 @@ router = APIRouter()
 templates = Jinja2Templates(directory="templates")
 
 
+@router.get("/api/stream_observations", response_class=JSONResponse)
+async def api_stream_observations(limit: int = 50):
+    """Per-channel summary of recorded upstream stream behavior, plus the latest sessions."""
+    import asyncio
+    from streaming import metrics as stream_metrics, report
+
+    channels = await asyncio.to_thread(lambda: report.summarize(report.load()))
+    return JSONResponse({"channels": channels, "recent": stream_metrics.recent(max(1, min(limit, 500)))})
+
+
 # ---------------------------------------------------------------------------
 # Stream Tester
 # ---------------------------------------------------------------------------

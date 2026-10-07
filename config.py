@@ -48,6 +48,15 @@ PROXY_USER_AGENT: str = os.getenv(
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36",
 )
 
+# Observe-only MPEG-TS analysis of live streams (upstream session boundaries, timestamp
+# jumps, keyframe spacing, codecs, packet errors). Never alters the bytes. Each finished
+# upstream session is appended as one JSON line to STREAM_OBSERVE_LOG ("" = log lines only).
+STREAM_OBSERVE: bool    = os.getenv("STREAM_OBSERVE", "1").strip() == "1"
+STREAM_OBSERVE_LOG: str = os.getenv(
+    "STREAM_OBSERVE_LOG",
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "stream_observations.jsonl"),
+)
+
 # Per-channel shared producer (ChannelHub) — keeps one upstream connection per active channel
 # so multiple Apple TV connections share the same stream without opening duplicate upstream TCP connections.
 HUB_RING_CHUNKS: int = int(os.getenv("HUB_RING_CHUNKS", "250"))  # ring buffer depth (~6.4 MB at 64 KB chunks)
