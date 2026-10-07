@@ -62,6 +62,7 @@ class _Session:
     pmt_changes: int = 0
     first_dts: int | None = None
     last_dts: int | None = None
+    max_dts: int | None = None
     first_idr_dts: int | None = None
     first_idr_bytes: int | None = None
     gop_intervals: list[float] = field(default_factory=list)
@@ -156,6 +157,11 @@ class TsObserver:
 
     def snapshot(self) -> dict | None:
         return self._session.summary() if self._session else None
+
+    @property
+    def current(self) -> _Session | None:
+        """The live session's counters (read-only use)."""
+        return self._session
 
     # ---- byte intake --------------------------------------------------------
 
@@ -323,6 +329,8 @@ class TsObserver:
             if abs(d) > JUMP_THRESHOLD:
                 s.largest_jump_s = max(s.largest_jump_s, abs(d) / PTS_HZ)
         s.last_dts = t
+        if s.max_dts is None or pts_delta(s.max_dts, t) > 0:
+            s.max_dts = t
 
     def _scan_nals(self, data: bytes) -> None:
         buf = self._nal_tail + data

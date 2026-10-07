@@ -56,8 +56,13 @@ ENGINE_AUDIO_CODEC: str     = os.getenv("ENGINE_AUDIO_CODEC", "ac3").strip().low
 ENGINE_RING_MB: int         = int(os.getenv("ENGINE_RING_MB", "32"))
 ENGINE_IDLE_SECS: float     = float(os.getenv("ENGINE_IDLE_SECS", "15"))    # keep upstream after last viewer
 ENGINE_START_TIMEOUT: float = float(os.getenv("ENGINE_START_TIMEOUT", "20"))  # wait for first keyframe
-ENGINE_STALL_SECS: float    = float(os.getenv("ENGINE_STALL_SECS", "15"))   # upstream silence = ended
+ENGINE_STALL_SECS: float    = float(os.getenv("ENGINE_STALL_SECS", "8"))    # upstream silence → reconnect
 ENGINE_START_RETRIES: int   = int(os.getenv("ENGINE_START_RETRIES", "3"))   # connect retries before any data
+ENGINE_MIN_SPEED: float     = float(os.getenv("ENGINE_MIN_SPEED", "0.7"))   # slower than this × real-time → reconnect (0 = off)
+ENGINE_SPEED_WINDOW: float  = float(os.getenv("ENGINE_SPEED_WINDOW", "15"))  # seconds the speed is measured over
+ENGINE_SPEED_GRACE: float   = float(os.getenv("ENGINE_SPEED_GRACE", "4"))   # ignore speed right after a (re)connect
+ENGINE_OUTAGE_SECS: float   = float(os.getenv("ENGINE_OUTAGE_SECS", "45"))  # give up after this long with no output
+ENGINE_KEEPALIVE_SECS: float = float(os.getenv("ENGINE_KEEPALIVE_SECS", "2"))  # send filler while reconnecting
 
 # Observe-only MPEG-TS analysis of live streams (upstream session boundaries, timestamp
 # jumps, keyframe spacing, codecs, packet errors). Never alters the bytes. Each finished
@@ -168,6 +173,11 @@ def _validate() -> None:
         errors.append(f"STREAM_ENGINE must be 'legacy' or 'engine' (got {STREAM_ENGINE!r})")
     if ENGINE_AUDIO_CODEC not in ("ac3", "aac", "copy"):
         errors.append(f"ENGINE_AUDIO_CODEC must be ac3, aac or copy (got {ENGINE_AUDIO_CODEC!r})")
+    if not 0 <= ENGINE_MIN_SPEED < 1:
+        errors.append(f"ENGINE_MIN_SPEED must be 0 (off) or below 1 (got {ENGINE_MIN_SPEED})")
+    for name in ("ENGINE_STALL_SECS", "ENGINE_SPEED_WINDOW", "ENGINE_OUTAGE_SECS", "ENGINE_KEEPALIVE_SECS"):
+        if globals()[name] < 1:
+            errors.append(f"{name} must be >= 1 (got {globals()[name]})")
     if errors:
         raise ValueError("Invalid configuration:\n" + "\n".join(f"  - {e}" for e in errors))
     logger.debug(

@@ -58,6 +58,11 @@ class ChannelObservation:
     def snapshot(self) -> dict | None:
         return None if self._failed else self._observer.snapshot()
 
+    @property
+    def current(self):
+        """Live counters of the current upstream session (read-only), or None."""
+        return None if self._failed else self._observer.current
+
     def _guard(self, fn, arg) -> None:
         if self._failed:
             return

@@ -49,6 +49,12 @@ sources. One engine per channel: a single provider connection shared by every vi
 remuxed through FFmpeg (video copied, corrupt packets dropped, audio normalized), and every
 viewer starts on a keyframe. VOD/series and `.m3u8` sources always use the legacy proxies.
 
+Provider connections are replaced without viewers noticing: when one closes, errors, goes
+silent, runs slower than real time or rewinds, the engine opens a new one and stitches it
+on — the output clock carries on where it stopped, the new connection starts on a keyframe,
+and content the provider replays on reconnect is trimmed. Viewers get keepalive filler
+while that happens, so Plex and IPTV apps keep the stream open.
+
 | Var | Default | Effect |
 |-----|---------|--------|
 | `STREAM_ENGINE` | `legacy` | `engine` = use the streaming engine; `legacy` = original per-path proxies |
@@ -56,8 +62,13 @@ viewer starts on a keyframe. VOD/series and `.m3u8` sources always use the legac
 | `ENGINE_RING_MB` | `32` | Per-channel buffer that viewers read from |
 | `ENGINE_IDLE_SECS` | `15` | Keep a channel's provider connection open this long after the last viewer leaves (fast re-tune). Idle channels are dropped first if a provider's connection limit is reached |
 | `ENGINE_START_TIMEOUT` | `20` | Seconds to wait for the first keyframe before answering 503 |
-| `ENGINE_STALL_SECS` | `15` | Provider silence that ends the stream |
-| `ENGINE_START_RETRIES` | `3` | Provider connect retries before giving up (only before any data has been sent) |
+| `ENGINE_STALL_SECS` | `8` | Provider silence that triggers a reconnect |
+| `ENGINE_MIN_SPEED` | `0.7` | Reconnect when a provider connection delivers slower than this × real time (`0` = off) |
+| `ENGINE_SPEED_WINDOW` | `15` | Seconds that delivery speed is measured over (healthy connections still swing 0.6–1.2× over a few seconds) |
+| `ENGINE_SPEED_GRACE` | `4` | Seconds after a (re)connect before speed is judged; doubles after each slow reconnect in a row (max 60) |
+| `ENGINE_OUTAGE_SECS` | `45` | Give up and end the stream after this long with nothing to send |
+| `ENGINE_KEEPALIVE_SECS` | `2` | Send MPEG-TS null packets to viewers after this long without data (during reconnects) |
+| `ENGINE_START_RETRIES` | `3` | Provider connect retries before the first keyframe (channel can't be tuned → 503) |
 
 In engine mode a provider's **max sessions** counts open *channels*, not viewers: several
 devices watching the same channel use one connection.

@@ -1,7 +1,9 @@
 """End-to-end tests of the streaming engine: real FFmpeg, a local HTTP server standing in
 for the IPTV provider, consumers driven through output_ts exactly as the routes do."""
 import asyncio
+import json
 import os
+import subprocess
 import shutil
 import tempfile
 import threading
@@ -19,15 +21,36 @@ from tests.test_tsfix import FFMPEG, _make_ts
 
 
 class _Provider(ThreadingHTTPServer):
-    """Serves /live/u/p/<id>.ts from a fixture at `speed`x real time; counts connections."""
+    """A live channel at /live/u/p/<id>.ts. Its live edge advances in real time through
+    `payload` (starting `live_start` seconds in). Like real providers, every connection
+    starts `replay` seconds behind the live edge and then follows it. `script[n]` sets how
+    connection n misbehaves:
+        speed=0.4         deliver at 0.4x real time
+        close_after=4     drop the connection after 4s
+        rewind_after=4    after 4s jump back `rewind` seconds (default 8) mid-connection
+        stall_after=4     after 4s go silent, connection left open
+        status=404        refuse the connection
+    Once the payload is used up, new connections get 404 (the channel is gone)."""
     daemon_threads = True
 
-    def __init__(self, payload: bytes, seconds: float, speed: float):
+    def __init__(self, payload: bytes, seconds: float, script=(), live_start=3.0, replay=3.0):
         super().__init__(("127.0.0.1", 0), _Handler)
         self.payload = payload
-        self.rate = len(payload) / seconds * speed
+        self.rate = len(payload) / seconds
+        self.script = list(script)
+        self.live_start = live_start
+        self.replay = replay
+        self.t0 = time.monotonic()
         self.connections = 0
+        self.served = 0
+        self.closing = threading.Event()
         self.lock = threading.Lock()
+
+    def live_edge(self) -> int:
+        return min(len(self.payload), int((self.live_start + time.monotonic() - self.t0) * self.rate))
+
+    def at(self, pos: float) -> int:
+        return max(0, int(pos)) // TS_PACKET * TS_PACKET
 
 
 class _Handler(BaseHTTPRequestHandler):
@@ -35,19 +58,42 @@ class _Handler(BaseHTTPRequestHandler):
         pass
 
     def do_GET(self):
-        if "404" in self.path:
-            self.send_error(404)
+        srv = self.server
+        with srv.lock:
+            n = srv.connections
+            srv.connections += 1
+        how = srv.script[n] if n < len(srv.script) else {}
+        if "404" in self.path or how.get("status") or srv.live_edge() >= len(srv.payload):
+            self.send_error(how.get("status", 404))
             return
-        with self.server.lock:
-            self.server.connections += 1
+        with srv.lock:
+            srv.served += 1
         self.send_response(200)
         self.send_header("Content-Type", "video/mp2t")
         self.end_headers()
-        data, step = self.server.payload, 64 * 1024
+        pos = srv.at(srv.live_edge() - srv.replay * srv.rate)
+        began = time.monotonic()
+        rewound = False
         try:
-            for i in range(0, len(data), step):
-                self.wfile.write(data[i:i + step])
-                time.sleep(step / self.server.rate)
+            while not srv.closing.is_set():
+                age = time.monotonic() - began
+                if age > how.get("close_after", 1e9):
+                    return
+                if age > how.get("stall_after", 1e9):
+                    srv.closing.wait(30)
+                    return
+                if age > how.get("rewind_after", 1e9) and not rewound:
+                    pos, rewound = srv.at(pos - how.get("rewind", 8) * srv.rate), True
+                if pos >= len(srv.payload):
+                    return
+                size = min(64 * 1024, srv.live_edge() - pos)
+                if size <= 0:
+                    time.sleep(0.02)
+                    continue
+                self.wfile.write(srv.payload[pos:pos + size])
+                pos += size
+                if "speed" in how:
+                    time.sleep(size / (srv.rate * how["speed"]))
         except (BrokenPipeError, ConnectionResetError):
             pass
 
@@ -68,15 +114,36 @@ def _summary(data: bytes) -> dict:
     return obs.end_session()
 
 
+def _decode_problems(data: bytes, tmp: str) -> list[str]:
+    """Decode the stream and check every timeline: no errors, no repeats, no holes."""
+    path = os.path.join(tmp, "out.ts")
+    with open(path, "wb") as f:
+        f.write(data)
+    problems = [line for line in subprocess.run(
+        [FFMPEG, "-v", "error", "-i", path, "-f", "null", "-"], capture_output=True, text=True
+    ).stderr.splitlines() if line.strip()]
+    out = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "packet=codec_type,dts_time",
+                          "-of", "json", "-show_packets", path], capture_output=True, text=True).stdout
+    by_type: dict[str, list[float]] = {}
+    for p in json.loads(out)["packets"]:
+        if p.get("dts_time") not in (None, "N/A"):
+            by_type.setdefault(p["codec_type"], []).append(float(p["dts_time"]))
+    for kind, dts in by_type.items():
+        for a, b in zip(dts, dts[1:]):
+            if not 0 < b - a < 0.25:
+                problems.append(f"{kind} timeline {a:.3f} -> {b:.3f}")
+    return problems
+
+
 @unittest.skipUnless(FFMPEG, "ffmpeg not installed")
 class EngineTest(unittest.IsolatedAsyncioTestCase):
     @classmethod
     def setUpClass(cls):
         cls.tmp = tempfile.mkdtemp()
-        full = _make_ts(os.path.join(cls.tmp, "src.ts"), seconds=12)
-        cut = (len(full) // 3) // TS_PACKET * TS_PACKET    # provider stream starts mid-GOP
-        cls.payload = full[cut:]
-        cls.payload_seconds = 8.0
+        cls.payload_seconds = 10.0
+        cls.payload = _make_ts(os.path.join(cls.tmp, "src.ts"), seconds=cls.payload_seconds)
+        cls.long_seconds = 60.0
+        cls.long = _make_ts(os.path.join(cls.tmp, "long.ts"), seconds=cls.long_seconds)
 
     @classmethod
     def tearDownClass(cls):
@@ -85,16 +152,22 @@ class EngineTest(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         for name, value in {
             "STREAM_OBSERVE": False, "ENGINE_IDLE_SECS": 0.3, "ENGINE_START_RETRIES": 0,
-            "ENGINE_START_TIMEOUT": 15, "ENGINE_AUDIO_CODEC": "ac3",
+            "ENGINE_START_TIMEOUT": 15, "ENGINE_AUDIO_CODEC": "ac3", "ENGINE_OUTAGE_SECS": 2,
+            "ENGINE_STALL_SECS": 2, "ENGINE_SPEED_GRACE": 1, "ENGINE_SPEED_WINDOW": 3,
+            "ENGINE_KEEPALIVE_SECS": 1,
         }.items():
             p = mock.patch.object(config, name, value)
             p.start()
             self.addCleanup(p.stop)
-        self.provider = _Provider(self.payload, self.payload_seconds, speed=2.0)
+        self.addCleanup(registry.stop_all)
+        self.serve(self.payload, self.payload_seconds)
+
+    def serve(self, payload, seconds, script=()):
+        self.provider = _Provider(payload, seconds, script)
         threading.Thread(target=self.provider.serve_forever, daemon=True).start()
         self.addCleanup(self.provider.server_close)
         self.addCleanup(self.provider.shutdown)
-        self.addCleanup(registry.stop_all)
+        self.addCleanup(self.provider.closing.set)
 
     def url(self, stream_id):
         return f"http://127.0.0.1:{self.provider.server_address[1]}/live/u/p/{stream_id}.ts"
@@ -106,7 +179,7 @@ class EngineTest(unittest.IsolatedAsyncioTestCase):
             source="test", busy_status=503,
         )
 
-    async def test_viewer_gets_keyframe_aligned_normalized_stream_that_ends_with_upstream(self):
+    async def test_viewer_gets_keyframe_aligned_normalized_stream_that_ends_when_channel_is_gone(self):
         resp = await self.open(1001)
         data = await _collect(resp)
         self.assertEqual(data[0], 0x47)
@@ -126,7 +199,7 @@ class EngineTest(unittest.IsolatedAsyncioTestCase):
         da, db = await asyncio.gather(_collect(a), _collect(b))
         self.assertGreater(len(da), 100_000)
         self.assertGreater(len(db), 100_000)
-        self.assertEqual(self.provider.connections, 1)
+        self.assertEqual(self.provider.served, 1)
 
     async def test_budget_rejects_other_clients_but_lets_a_client_switch_channels(self):
         first = await self.open(1001, "10.0.0.1", max_sessions=1)
@@ -137,7 +210,7 @@ class EngineTest(unittest.IsolatedAsyncioTestCase):
         switched = await self.open(1002, "10.0.0.1", max_sessions=1)   # same client changes channel
         old = await _collect(first, max_seconds=10)                       # old channel's stream ends
         self.assertLess(len(old), len(self.payload))
-        self.assertGreater(len(await _collect(switched)), 100_000)
+        self.assertGreater(len(await _collect(switched)), 50_000)
 
     async def test_unavailable_channel_returns_503(self):
         with self.assertRaises(HTTPException) as ctx:
@@ -164,6 +237,56 @@ class EngineTest(unittest.IsolatedAsyncioTestCase):
         async for chunk in it:
             rest += chunk
         await self._wait_for(lambda: not registry._engines, timeout=5)
+
+    # ---- seamless reconnects ------------------------------------------------------
+
+    async def watch(self, script, seconds=14):
+        """Watch a 60s live channel whose connections misbehave per `script`."""
+        self.serve(self.long, self.long_seconds, script)
+        resp = await self.open(2001)
+        data = await _collect(resp, max_seconds=seconds)
+        engine = next(iter(registry._engines.values()))
+        return data, engine
+
+    def assertSeamless(self, data, engine, min_media, trims_replay=True):
+        self.assertEqual(_decode_problems(data, self.tmp), [])
+        s = _summary(data)
+        self.assertEqual((s["jumps_fwd"], s["jumps_back"], s["cc_errors"]), (0, 0, 0))
+        self.assertGreaterEqual(s["media_s"], min_media)
+        self.assertGreaterEqual(engine.reconnects, 1)
+        self.assertGreaterEqual(self.provider.served, 2)
+        if trims_replay:
+            # reconnecting right away lands ~3s back; that must be trimmed, not shown twice
+            self.assertGreaterEqual(engine.timeline.skipped_seconds, 1.0 * engine.reconnects)
+        return s
+
+    async def test_dropped_connection_is_replaced_seamlessly(self):
+        data, engine = await self.watch([{"close_after": 4}, {"close_after": 4}])
+        self.assertSeamless(data, engine, min_media=10)
+        self.assertGreaterEqual(engine.reconnects, 2)
+
+    async def test_slow_connection_is_replaced(self):
+        data, engine = await self.watch([{"speed": 0.4}])
+        self.assertSeamless(data, engine, min_media=9, trims_replay=False)   # the slow one fell behind live
+
+    async def test_rewinding_connection_is_replaced_without_showing_the_replay(self):
+        data, engine = await self.watch([{"rewind_after": 4}])
+        self.assertSeamless(data, engine, min_media=10)
+
+    async def test_stalled_connection_is_replaced_and_viewer_kept_alive(self):
+        data, engine = await self.watch([{"stall_after": 4}])
+        self.assertSeamless(data, engine, min_media=8, trims_replay=False)   # live moved on during the stall
+        null_packets = sum(1 for i in range(0, len(data), TS_PACKET)
+                           if data[i + 1] & 0x1F == 0x1F and data[i + 2] == 0xFF)
+        self.assertGreater(null_packets, 0, "viewer should get keepalive packets during the stall")
+
+    async def test_engine_gives_up_after_outage(self):
+        self.serve(self.long, self.long_seconds, [{"close_after": 3}] + [{"status": 503}] * 50)
+        resp = await self.open(2001)
+        started = time.monotonic()
+        data = await _collect(resp, max_seconds=30)
+        self.assertLess(time.monotonic() - started, 15, "stream should end once the outage limit passes")
+        self.assertEqual(_decode_problems(data, self.tmp), [])
 
     async def _wait_for(self, cond, timeout=10):
         deadline = time.monotonic() + timeout

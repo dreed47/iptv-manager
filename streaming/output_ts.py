@@ -25,6 +25,10 @@ from streaming.ringbuffer import EOS, SKIPPED
 
 logger = logging.getLogger(__name__)
 
+# MPEG-TS null packet (PID 0x1FFF): decoders discard it, but it keeps the connection busy
+# while the engine replaces an upstream connection, so clients don't time out.
+NULL_PACKET = b"\x47\x1f\xff\x10" + b"\xff" * 184
+
 
 async def ts_response(*, item_id: int, url: str, label: str, max_sessions: int, client_ip: str,
                       user_agent: str, channel: str, channel_name: str, source: str,
@@ -58,6 +62,7 @@ async def _stream(engine: ChannelEngine, consumer: Consumer):
     try:
         cursor, header = ring.join()
         yield header
+        last_sent = time.monotonic()
         while True:
             if consumer.killed:
                 reason = "killed by admin"
@@ -71,9 +76,13 @@ async def _stream(engine: ChannelEngine, consumer: Consumer):
             if data:
                 consumer.bytes_sent += len(data)
                 consumer.last_chunk_at = time.time()
+                last_sent = time.monotonic()
                 yield data
             else:
                 await ring.wait(cursor, 1.0)
+                if time.monotonic() - last_sent >= config.ENGINE_KEEPALIVE_SECS:
+                    last_sent = time.monotonic()
+                    yield NULL_PACKET
     finally:
         registry.release(engine, consumer)
         logger.info(f"Viewer left [{engine.label}] {consumer.client_ip}: {reason}, "
