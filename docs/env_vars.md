@@ -12,7 +12,6 @@ All variables are optional unless marked **required**. Defaults shown.
 | `CONTAINER_NAME` | `iptv-app` | Docker container name — change when running multiple instances |
 | `MEMORY_LIMIT` | `512m` | Docker memory cap (`256m`, `512m`, `1g`, …) |
 | `CPU_LIMIT` | `1.0` | Docker CPU cores cap |
-| `UVICORN_MAX_REQUESTS` | `100000` | Worker restarts after this many requests (memory-leak safety valve) |
 | `RESTART_POLICY` | `unless-stopped` | Docker restart policy (`no`, `always`, `unless-stopped`, `on-failure`) |
 | `TZ` | `UTC` | Timezone for log timestamps (tz database name, e.g. `America/New_York`) |
 
@@ -43,7 +42,29 @@ All variables are optional unless marked **required**. Defaults shown.
 
 ---
 
-## Stream Proxy Tuning
+## Streaming Engine
+
+Applies to live channels on HDHomeRun (`/auto/v{n}`) and Xtream (`/live/...`) for non-HLS
+sources. One engine per channel: a single provider connection shared by every viewer,
+remuxed through FFmpeg (video copied, corrupt packets dropped, audio normalized), and every
+viewer starts on a keyframe. VOD/series and `.m3u8` sources always use the legacy proxies.
+
+| Var | Default | Effect |
+|-----|---------|--------|
+| `STREAM_ENGINE` | `legacy` | `engine` = use the streaming engine; `legacy` = original per-path proxies |
+| `ENGINE_AUDIO_CODEC` | `ac3` | Output audio: `ac3` (Plex-safe), `aac`, or `copy` (pass provider audio through) |
+| `ENGINE_RING_MB` | `32` | Per-channel buffer that viewers read from |
+| `ENGINE_IDLE_SECS` | `15` | Keep a channel's provider connection open this long after the last viewer leaves (fast re-tune). Idle channels are dropped first if a provider's connection limit is reached |
+| `ENGINE_START_TIMEOUT` | `20` | Seconds to wait for the first keyframe before answering 503 |
+| `ENGINE_STALL_SECS` | `15` | Provider silence that ends the stream |
+| `ENGINE_START_RETRIES` | `3` | Provider connect retries before giving up (only before any data has been sent) |
+
+In engine mode a provider's **max sessions** counts open *channels*, not viewers: several
+devices watching the same channel use one connection.
+
+---
+
+## Stream Proxy Tuning (legacy)
 
 | Var | Default | Effect |
 |-----|---------|--------|
@@ -123,3 +144,5 @@ Optional. When set, enables webhook-driven stream release so Plex can signal the
 | `DUMP_STACKS_ON_LAG` | `0` | `1` = faulthandler stack dump on event loop lag (debug blocking coroutines) |
 | `DUMP_STACKS_MIN_INTERVAL_S` | `30` | Minimum seconds between stack dumps when `DUMP_STACKS_ON_LAG=1` |
 | `SLOW_REQUEST_MS` | `2000` | Logs a warning for requests that take longer than this (ms) |
+| `STREAM_OBSERVE` | `1` | Analyze live streams (reconnects, timeline replay/reset, keyframe spacing, delivery speed, packet errors) without altering them. View at Tools → Stream Observations or `python3 -m streaming.report` |
+| `STREAM_OBSERVE_LOG` | `data/stream_observations.jsonl` | Where per-session observations are appended; empty = log lines only |

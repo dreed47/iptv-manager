@@ -48,6 +48,17 @@ PROXY_USER_AGENT: str = os.getenv(
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36",
 )
 
+# Live streaming engine. "legacy" = original per-path proxies; "engine" = one shared engine
+# per channel (FFmpeg-normalized, keyframe-aligned joins). Applies to HDHomeRun /auto/v{n}
+# and Xtream /live/... for non-HLS sources; VOD/series are unaffected.
+STREAM_ENGINE: str          = os.getenv("STREAM_ENGINE", "legacy").strip().lower()
+ENGINE_AUDIO_CODEC: str     = os.getenv("ENGINE_AUDIO_CODEC", "ac3").strip().lower()   # ac3 | aac | copy
+ENGINE_RING_MB: int         = int(os.getenv("ENGINE_RING_MB", "32"))
+ENGINE_IDLE_SECS: float     = float(os.getenv("ENGINE_IDLE_SECS", "15"))    # keep upstream after last viewer
+ENGINE_START_TIMEOUT: float = float(os.getenv("ENGINE_START_TIMEOUT", "20"))  # wait for first keyframe
+ENGINE_STALL_SECS: float    = float(os.getenv("ENGINE_STALL_SECS", "15"))   # upstream silence = ended
+ENGINE_START_RETRIES: int   = int(os.getenv("ENGINE_START_RETRIES", "3"))   # connect retries before any data
+
 # Observe-only MPEG-TS analysis of live streams (upstream session boundaries, timestamp
 # jumps, keyframe spacing, codecs, packet errors). Never alters the bytes. Each finished
 # upstream session is appended as one JSON line to STREAM_OBSERVE_LOG ("" = log lines only).
@@ -153,6 +164,10 @@ def _validate() -> None:
         errors.append(f"HUB_SEED_CHUNKS must be >= 1 (got {HUB_SEED_CHUNKS})")
     if HUB_CHUNK_KB < 1:
         errors.append(f"HUB_CHUNK_KB must be >= 1 (got {HUB_CHUNK_KB})")
+    if STREAM_ENGINE not in ("legacy", "engine"):
+        errors.append(f"STREAM_ENGINE must be 'legacy' or 'engine' (got {STREAM_ENGINE!r})")
+    if ENGINE_AUDIO_CODEC not in ("ac3", "aac", "copy"):
+        errors.append(f"ENGINE_AUDIO_CODEC must be ac3, aac or copy (got {ENGINE_AUDIO_CODEC!r})")
     if errors:
         raise ValueError("Invalid configuration:\n" + "\n".join(f"  - {e}" for e in errors))
     logger.debug(

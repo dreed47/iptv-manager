@@ -161,6 +161,11 @@ def create_app():
         except Exception as exc:
             logger.warning(f"MQTT auto-start error: {exc}")
 
+    @app.on_event("shutdown")
+    async def shutdown_event():
+        from streaming import registry as stream_registry
+        stream_registry.stop_all()
+
     @app.on_event("startup")
     async def startup_event():
         logger.info("Starting application...")

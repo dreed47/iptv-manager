@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 from models import get_db, Item, get_app_config
 from hdhomerun_emulator import HDHomeRunEmulator
 from hls_utils import resolve_hls_variant
-from streaming import metrics as stream_metrics
+from streaming import metrics as stream_metrics, output_ts, registry as stream_registry
 import asyncio
 import config
 import logging
@@ -98,11 +98,16 @@ def _live_streams() -> list[dict]:
 
 
 def get_active_stream_count() -> int:
-    return len(_live_streams())
+    return len(get_active_streams())
 
 
 def get_active_streams() -> list[dict]:
-    return _live_streams()
+    """Legacy-path sessions (incl. VOD/series) plus viewers of streaming-engine channels."""
+    return _live_streams() + stream_registry.active_sessions()
+
+
+def _is_hls_url(url: str) -> bool:
+    return url.split("?", 1)[0].lower().endswith(".m3u8")
 
 
 def is_ip_blocked(ip: str) -> bool:
@@ -205,13 +210,15 @@ def try_admit_session(client_ip: str, new_channel: str, item_id: int | None,
 
 def kill_stream(session_id: str, block_ip: bool = True) -> bool:
     """Mark a session as killed. If block_ip=True, rejects reconnects from that IP for KILL_BLOCK_SECONDS."""
-    with _active_streams_lock:
-        s = _active_streams.get(session_id)
-        if not s:
-            return False
-        s["killed"] = True
-        client_ip = s.get("client_ip")
-    _close_session_connection(s)
+    client_ip = stream_registry.kill(session_id)
+    if client_ip is None:
+        with _active_streams_lock:
+            s = _active_streams.get(session_id)
+            if not s:
+                return False
+            s["killed"] = True
+            client_ip = s.get("client_ip")
+        _close_session_connection(s)
     if block_ip and client_ip and client_ip not in ("unknown", ""):
         with _blocked_ips_lock:
             _blocked_ips[client_ip] = time.time() + KILL_BLOCK_SECONDS
@@ -437,6 +444,23 @@ async def stream_channel(channel_number: str, request: Request, db: Session = De
     else:
         provider = db.query(Item).first()
     max_sessions = int(provider.max_sessions) if provider and provider.max_sessions is not None else 1
+
+    if config.STREAM_ENGINE == "engine" and not _is_hls_url(source_url):
+        with _channel_source_urls_lock:
+            channel_name = _channel_names.get(channel_number, channel_number)
+        return await output_ts.ts_response(
+            item_id=session_item_id or (provider.id if provider else 0),
+            url=source_url,
+            label=f"ch {channel_number} '{channel_name}'",
+            max_sessions=max_sessions,
+            client_ip=client_ip,
+            user_agent=request.headers.get("user-agent", "unknown"),
+            channel=channel_number,
+            channel_name=channel_name,
+            source="hdhr",
+            busy_status=503,   # HDHomeRun convention for "no tuner available"
+        )
+
     session_id = str(uuid.uuid4())
     admitted, active_count = try_admit_session(client_ip, f"ch {channel_number}", session_item_id,
                                                 max_sessions, session_id)

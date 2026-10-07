@@ -2,7 +2,8 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Form, Request
 from fastapi.responses import JSONResponse, StreamingResponse, RedirectResponse, Response, FileResponse
 from sqlalchemy.orm import Session
 from models import get_db, Item
-from hdhomerun_routes import register_extra_channels, _active_streams, _active_streams_lock, _SESSION_STALE_SECONDS, get_active_stream_count, is_ip_blocked, try_admit_session, KILL_BLOCK_SECONDS, get_provider_session
+from hdhomerun_routes import register_extra_channels, _active_streams, _active_streams_lock, _SESSION_STALE_SECONDS, get_active_stream_count, is_ip_blocked, try_admit_session, KILL_BLOCK_SECONDS, get_provider_session, _is_hls_url
+from streaming import output_ts
 import asyncio
 import collections
 import config
@@ -1459,6 +1460,21 @@ def _stream_live_direct(source_url: str, channel_name: str, client_ip: str,
             _active_streams.pop(session_id, None)
 
 
+async def _engine_live_response(item_id: int, entry, max_sessions: int, client_ip: str, request: Request):
+    return await output_ts.ts_response(
+        item_id=item_id,
+        url=entry.url,
+        label=entry.name,
+        max_sessions=max_sessions,
+        client_ip=client_ip,
+        user_agent=request.headers.get("user-agent", "unknown"),
+        channel=entry.name,
+        channel_name=entry.name,
+        source="xtream",
+        busy_status=429,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Root-level stream routes (no provider slug) — credential/stream-ID routing
 # Must be defined BEFORE the slug routes so FastAPI doesn't swallow them as
@@ -1493,6 +1509,10 @@ async def proxy_live_root(
         raise HTTPException(status_code=404, detail=f"Live stream {stream_id} not found")
 
     max_sessions = int(item.max_sessions) if item.max_sessions is not None else 1
+    if config.STREAM_ENGINE == "engine" and not _is_hls_url(entry.url):
+        db.close()
+        return await _engine_live_response(item.id, entry, max_sessions, client_ip, request)
+
     session_id = str(uuid.uuid4())
     admitted, active_count = try_admit_session(client_ip, entry.name, item.id, max_sessions, session_id)
     if not admitted:
@@ -1685,6 +1705,10 @@ async def proxy_live(
         raise HTTPException(status_code=429, detail="Stream was terminated — reconnect blocked briefly")
 
     max_sessions = int(item.max_sessions) if item.max_sessions is not None else 1
+    if config.STREAM_ENGINE == "engine" and not _is_hls_url(entry.url):
+        db.close()
+        return await _engine_live_response(item.id, entry, max_sessions, client_ip, request)
+
     session_id = str(uuid.uuid4())
     admitted, active_count = try_admit_session(client_ip, entry.name, item.id, max_sessions, session_id)
     if not admitted:
