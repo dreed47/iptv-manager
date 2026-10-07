@@ -15,6 +15,7 @@ from unittest import mock
 from fastapi import HTTPException
 
 import config
+from streaming import engine as engine_mod
 from streaming import output_ts, registry
 from streaming.tsfix import TS_PACKET, TsObserver
 from tests.test_tsfix import FFMPEG, _make_ts
@@ -30,6 +31,7 @@ class _Provider(ThreadingHTTPServer):
         rewind_after=4    after 4s jump back `rewind` seconds (default 8) mid-connection
         stall_after=4     after 4s go silent, connection left open
         status=404        refuse the connection
+    `script` may also be a dict of stream id → list, to script each stream separately.
     Once the payload is used up, new connections get 404 (the channel is gone)."""
     daemon_threads = True
 
@@ -37,7 +39,8 @@ class _Provider(ThreadingHTTPServer):
         super().__init__(("127.0.0.1", 0), _Handler)
         self.payload = payload
         self.rate = len(payload) / seconds
-        self.script = list(script)
+        self.script = script if isinstance(script, dict) else list(script)
+        self.per_stream: dict[int, int] = {}
         self.live_start = live_start
         self.replay = replay
         self.t0 = time.monotonic()
@@ -59,10 +62,14 @@ class _Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         srv = self.server
+        stream_id = int(self.path.rsplit("/", 1)[-1].split(".")[0]) if self.path[-1].isdigit() or ".ts" in self.path else 0
         with srv.lock:
-            n = srv.connections
             srv.connections += 1
-        how = srv.script[n] if n < len(srv.script) else {}
+            per = srv.per_stream.setdefault(stream_id, 0)
+            srv.per_stream[stream_id] += 1
+            n = per if isinstance(srv.script, dict) else srv.connections - 1
+        script = srv.script.get(stream_id, []) if isinstance(srv.script, dict) else srv.script
+        how = script[n] if n < len(script) else {}
         if "404" in self.path or how.get("status") or srv.live_edge() >= len(srv.payload):
             self.send_error(how.get("status", 404))
             return
@@ -154,12 +161,15 @@ class EngineTest(unittest.IsolatedAsyncioTestCase):
             "STREAM_OBSERVE": False, "ENGINE_IDLE_SECS": 0.3, "ENGINE_START_RETRIES": 0,
             "ENGINE_START_TIMEOUT": 15, "ENGINE_AUDIO_CODEC": "ac3", "ENGINE_OUTAGE_SECS": 2,
             "ENGINE_STALL_SECS": 2, "ENGINE_SPEED_GRACE": 1, "ENGINE_SPEED_WINDOW": 3,
-            "ENGINE_KEEPALIVE_SECS": 1,
+            "ENGINE_KEEPALIVE_SECS": 1, "ENGINE_FAILOVER": True, "ENGINE_FAILOVER_AFTER": 2,
+            "ENGINE_FAILOVER_WINDOW": 120, "ENGINE_FAILOVER_COOLDOWN": 900,
+            "ENGINE_FAILOVER_PREFIXES": "US,VIP", "M3U_DIR": self.tmp,
         }.items():
             p = mock.patch.object(config, name, value)
             p.start()
             self.addCleanup(p.stop)
         self.addCleanup(registry.stop_all)
+        engine_mod._feed_bad_until.clear()
         self.serve(self.payload, self.payload_seconds)
 
     def serve(self, payload, seconds, script=()):
@@ -172,11 +182,11 @@ class EngineTest(unittest.IsolatedAsyncioTestCase):
     def url(self, stream_id):
         return f"http://127.0.0.1:{self.provider.server_address[1]}/live/u/p/{stream_id}.ts"
 
-    async def open(self, stream_id, client_ip="10.0.0.1", max_sessions=2):
+    async def open(self, stream_id, client_ip="10.0.0.1", max_sessions=2, name=None):
         return await output_ts.ts_response(
             item_id=1, url=self.url(stream_id), label=f"test {stream_id}", max_sessions=max_sessions,
-            client_ip=client_ip, user_agent="test", channel=str(stream_id), channel_name=f"Test {stream_id}",
-            source="test", busy_status=503,
+            client_ip=client_ip, user_agent="test", channel=str(stream_id),
+            channel_name=name or f"Test {stream_id}", source="test", busy_status=503,
         )
 
     async def test_viewer_gets_keyframe_aligned_normalized_stream_that_ends_when_channel_is_gone(self):
@@ -287,6 +297,54 @@ class EngineTest(unittest.IsolatedAsyncioTestCase):
         data = await _collect(resp, max_seconds=30)
         self.assertLess(time.monotonic() - started, 15, "stream should end once the outage limit passes")
         self.assertEqual(_decode_problems(data, self.tmp), [])
+
+    # ---- failover to backup feeds -------------------------------------------------
+
+    def news_channel(self, script):
+        """Channel 'US: TEST NEWS HD' (3001) with a backup copy 'VIP: TEST NEWS' (3002) on the
+        same account, plus a foreign copy that must never be used."""
+        self.serve(self.long, self.long_seconds, script)
+        port = self.provider.server_address[1]
+        with open(os.path.join(self.tmp, "xtream_playlist_1.m3u"), "w") as f:
+            f.write("#EXTM3U\n")
+            for sid, name in ((3001, "US: TEST NEWS HD"), (3003, "AR: TEST NEWS"), (3002, "VIP: TEST NEWS")):
+                f.write(f'#EXTINF:-1 tvg-id="{sid}" tvg-name="{name}",{name}\n'
+                        f"http://127.0.0.1:{port}/live/u/p/{sid}.ts\n")
+
+    async def test_failing_feed_switches_to_backup_seamlessly(self):
+        self.news_channel({3001: [{"speed": 0.3}] * 20})
+        resp = await self.open(3001, name="US: TEST NEWS HD")
+        data = await _collect(resp, max_seconds=22)
+        engine = next(iter(registry._engines.values()))
+        self.assertEqual(engine.failovers, 1)
+        self.assertTrue(engine.feed.url.endswith("/3002.ts"), engine.feed)
+        self.assertEqual(self.provider.per_stream.get(3003), None, "foreign copy must not be used")
+        self.assertEqual(_decode_problems(data, self.tmp), [])
+        s = _summary(data)
+        self.assertEqual((s["jumps_fwd"], s["jumps_back"], s["cc_errors"]), (0, 0, 0))
+        self.assertIn("backup: VIP: TEST NEWS", str(registry.active_sessions()) + " backup: " + engine.feed.name)
+
+        # the failed feed is remembered: tuning in again starts straight on the backup
+        await resp.body_iterator.aclose()
+        registry.stop_all()
+        await self._wait_for(lambda: not registry._engines)
+        resp = await self.open(3001, name="US: TEST NEWS HD")
+        await _collect(resp, max_seconds=3)
+        engine = next(iter(registry._engines.values()))
+        self.assertTrue(engine.feed.url.endswith("/3002.ts"))
+        self.assertEqual(self.provider.per_stream[3001], 2 + 0, "primary must not be retried during cooldown")
+
+    async def test_unreachable_channel_starts_on_backup(self):
+        self.news_channel({3001: [{"status": 404}] * 20})
+        resp = await self.open(3001, name="US: TEST NEWS HD")
+        data = await _collect(resp, max_seconds=6)
+        self.assertGreater(len(data), 100_000)
+        self.assertEqual(_decode_problems(data, self.tmp), [])
+
+    async def test_no_backup_for_unmatched_channel(self):
+        self.news_channel({})
+        self.assertEqual(engine_mod.alternates.find(1, self.url(2001), "US: SOMETHING ELSE"), [])
+        self.assertEqual(engine_mod.alternates.find(1, self.url(3001), "24/7: TEST NEWS"), [])
 
     async def _wait_for(self, cond, timeout=10):
         deadline = time.monotonic() + timeout

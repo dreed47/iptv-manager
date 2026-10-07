@@ -28,7 +28,8 @@ class BudgetExceeded(Exception):
         self.limit = limit
 
 
-def acquire(item_id: int, url: str, label: str, max_sessions: int, consumer: Consumer) -> ChannelEngine:
+def acquire(item_id: int, url: str, label: str, max_sessions: int, consumer: Consumer,
+            name: str = "") -> ChannelEngine:
     """Return the channel's engine (starting one if needed) with consumer already attached.
     Attaching under the registry lock means an idle engine can't be stopped in between."""
     key = stream_metrics.channel_key(item_id, url)
@@ -48,7 +49,7 @@ def acquire(item_id: int, url: str, label: str, max_sessions: int, consumer: Con
                 raise BudgetExceeded(len(live), max_sessions)
             for v in victims:
                 _engines.pop(v.key, None)
-        engine = ChannelEngine(item_id, url, label)
+        engine = ChannelEngine(item_id, url, label, name)
         engine.on_finished = _forget
         engine.attach(consumer)
         _engines[key] = engine
@@ -91,8 +92,9 @@ def active_sessions() -> list[dict]:
         engines = list(_engines.values())
     sessions = []
     for e in engines:
+        feed = e.feed.name if e.feed is not e._primary else ""
         with e.lock:
-            sessions.extend(c.as_session() for c in e.consumers.values())
+            sessions.extend({**c.as_session(), "feed": feed} for c in e.consumers.values())
     return sessions
 
 

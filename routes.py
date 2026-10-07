@@ -268,6 +268,8 @@ async def api_active_streams(db: Session = Depends(get_db)):
         channel_num = rep.get("channel", "?")
         channel_name = rep.get("channel_name", "")
         channel_display = f"{channel_num} — {channel_name}" if channel_name and channel_name != channel_num else channel_num
+        if rep.get("feed"):
+            channel_display += f" (backup: {rep['feed']})"
         provider_name = item_names.get(rep.get("item_id"), "")
         entry = {
             "session_id": rep.get("session_id", ""),

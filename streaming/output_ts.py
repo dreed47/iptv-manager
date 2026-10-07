@@ -36,7 +36,7 @@ async def ts_response(*, item_id: int, url: str, label: str, max_sessions: int, 
     consumer = Consumer(client_ip=client_ip, user_agent=user_agent, source=source,
                         channel=channel, channel_name=channel_name, item_id=item_id)
     try:
-        engine = registry.acquire(item_id, url, label, max_sessions, consumer)
+        engine = registry.acquire(item_id, url, label, max_sessions, consumer, name=channel_name)
     except registry.BudgetExceeded as exc:
         logger.warning(f"Stream rejected [{label}] for {client_ip}: {exc}")
         raise HTTPException(status_code=busy_status, detail=f"All provider connections in use ({exc})",

@@ -33,6 +33,7 @@ from dataclasses import dataclass, field
 import requests
 
 import config
+from streaming import alternates
 from streaming import metrics as stream_metrics
 from streaming.ringbuffer import RingBuffer
 from streaming.timeline import TimelineRewriter
@@ -48,6 +49,25 @@ _READ_SIZE = TS_PACKET * 348   # ~64KB
 _MAX_REPLAY_SKIP = 60 * PTS_HZ   # a reconnect landing further back than this is a different timeline
 _SKIP_WAIT_SECS = 10
 _BACKOFF = (0.5, 1, 2, 4, 5)
+_HEALTHY_SESSION_SECS = 60       # a connection that lasted this long wasn't a failure, however it ended
+
+# Feeds that failed recently (channel_key → monotonic time until which they're avoided), so a
+# re-tune starts on a working copy instead of rediscovering the failure.
+_feed_bad_until: dict[tuple, float] = {}
+_feed_lock = threading.Lock()
+
+
+def _feed_is_bad(item_id: int, url: str) -> bool:
+    with _feed_lock:
+        return _feed_bad_until.get(stream_metrics.channel_key(item_id, url), 0) > time.monotonic()
+
+
+def _mark_feed_bad(item_id: int, url: str) -> None:
+    with _feed_lock:
+        now = time.monotonic()
+        for k in [k for k, t in _feed_bad_until.items() if t <= now]:
+            del _feed_bad_until[k]
+        _feed_bad_until[stream_metrics.channel_key(item_id, url)] = now + config.ENGINE_FAILOVER_COOLDOWN
 
 
 def ffmpeg_command() -> list[str]:
@@ -148,7 +168,7 @@ class Consumer:
 
 
 class ChannelEngine:
-    def __init__(self, item_id: int, url: str, label: str):
+    def __init__(self, item_id: int, url: str, label: str, name: str = ""):
         self.key = stream_metrics.channel_key(item_id, url)
         self.item_id = item_id
         self.url = url
@@ -174,6 +194,12 @@ class ChannelEngine:
         self._slow_streak = 0
         self._last_output = time.monotonic()
         self.reconnects = 0
+        self.failovers = 0
+        self._primary = alternates.Feed(url, name or label)
+        self.feed = self._primary                   # the copy of the channel currently streamed
+        self._backups: list[alternates.Feed] | None = None
+        self._tried: set[str] = set()
+        self._bad_events: deque[float] = deque()
         self.timeline = TimelineRewriter()
         self._thread = threading.Thread(target=self._run, daemon=True, name=f"engine-{self.key[1]}")
 
@@ -220,6 +246,7 @@ class ChannelEngine:
         self._monitor = self._obs or TsObserver()   # raw-upstream counters drive reconnect decisions
         rewriter = self.timeline
         splitter = TsSplitter()
+        self._start_feed()
         failures = 0
         reason = "initial"
         prev_max: int | None = None
@@ -227,6 +254,9 @@ class ChannelEngine:
             while not self._stop.is_set():
                 if failures:
                     if not self.ring.joinable and failures > config.ENGINE_START_RETRIES:
+                        if config.ENGINE_FAILOVER and self._failover():
+                            failures = 0           # channel won't start: try a backup copy
+                            continue
                         break
                     if self.ring.joinable and time.monotonic() - self._last_output > config.ENGINE_OUTAGE_SECS:
                         self.failure = f"no data for {config.ENGINE_OUTAGE_SECS:.0f}s ({self.failure})"
@@ -234,8 +264,9 @@ class ChannelEngine:
                     if self._stop.wait(_BACKOFF[min(failures - 1, len(_BACKOFF) - 1)]):
                         break
                 try:
+                    self._tried.add(self.feed.url)
                     self._resp = self._http.get(
-                        self.url,
+                        self.feed.url,
                         headers={"User-Agent": config.PROXY_USER_AGENT, "Accept": "*/*"},
                         stream=True,
                         timeout=(config.STREAM_CONNECT_TIMEOUT, config.ENGINE_STALL_SECS),
@@ -245,8 +276,11 @@ class ChannelEngine:
                     self.failure = f"upstream connect failed: {exc}"
                     logger.warning(f"Engine [{self.label}] {self.failure} (attempt {failures + 1})")
                     failures += 1
+                    if self._note_bad() and self._failover():
+                        failures = 0
                     continue
                 self._monitor.new_session(reason)
+                session_start = time.monotonic()
                 produced = self._run_session(rewriter, splitter, prev_max)
                 cur = self._monitor.current
                 if cur is not None and cur.max_dts is not None:
@@ -264,6 +298,11 @@ class ChannelEngine:
                     logger.info(f"Engine [{self.label}] {self._end_reason}; reconnecting (#{self.reconnects})")
                 else:
                     reason = "retry"
+                bad = (not produced or time.monotonic() - session_start < _HEALTHY_SESSION_SECS
+                       or self._end_reason.startswith(("upstream slow", "upstream rewound")))
+                if bad and self._note_bad() and self._failover():
+                    failures = 0
+                    reason = f"failover: {self.feed.name}"
         except Exception:
             logger.exception(f"Engine [{self.label}] crashed")
         finally:
@@ -277,6 +316,58 @@ class ChannelEngine:
                         f"{self.reconnects} reconnects, {rewriter.skipped_seconds:.1f}s replay trimmed")
             if self.on_finished:
                 self.on_finished(self)
+
+    # ---- failover -------------------------------------------------------------------
+
+    def _start_feed(self) -> None:
+        """Start on a backup copy if the channel's own feed failed recently."""
+        if config.ENGINE_FAILOVER and _feed_is_bad(self.item_id, self.feed.url):
+            backup = self._next_feed()
+            if backup:
+                logger.info(f"Engine [{self.label}] '{self.feed.name}' failed recently; starting on '{backup.name}'")
+                self.feed = backup
+                self.failovers += 1
+
+    def _note_bad(self) -> bool:
+        """Record a failed connection on the current feed. True when the feed has failed
+        ENGINE_FAILOVER_AFTER times within ENGINE_FAILOVER_WINDOW."""
+        now = time.monotonic()
+        self._bad_events.append(now)
+        while self._bad_events and self._bad_events[0] < now - config.ENGINE_FAILOVER_WINDOW:
+            self._bad_events.popleft()
+        return config.ENGINE_FAILOVER and len(self._bad_events) >= config.ENGINE_FAILOVER_AFTER
+
+    def _failover(self) -> bool:
+        """Switch to the next backup copy of the channel. False when there's none to try."""
+        _mark_feed_bad(self.item_id, self.feed.url)
+        self._bad_events.clear()
+        backup = self._next_feed()
+        if not backup:
+            logger.warning(f"Engine [{self.label}] '{self.feed.name}' keeps failing and no working backup feed is left")
+            return False
+        self.failovers += 1
+        logger.warning(f"Engine [{self.label}] '{self.feed.name}' keeps failing; switching to backup "
+                       f"'{backup.name}' (failover #{self.failovers})")
+        self.feed = backup
+        self._slow_streak = 0
+        return True
+
+    def _next_feed(self) -> alternates.Feed | None:
+        if self._backups is None:
+            try:
+                self._backups = alternates.find(self.item_id, self.url, self._primary.name)
+            except Exception:
+                logger.exception(f"Engine [{self.label}] backup feed lookup failed")
+                self._backups = []
+            names = ", ".join(f.name for f in self._backups) or "none"
+            logger.info(f"Engine [{self.label}] backup feeds: {names}")
+        for feed in [self._primary, *self._backups]:
+            if feed.url == self.feed.url or _feed_is_bad(self.item_id, feed.url):
+                continue
+            if not self.ring.joinable and feed.url in self._tried:
+                continue                      # still trying to start: don't go round in circles
+            return feed
+        return None
 
     def _run_session(self, rewriter: TimelineRewriter, splitter: TsSplitter, prev_max: int | None) -> bool:
         """Run one upstream connection through FFmpeg and the timeline rewriter into the ring.
@@ -300,7 +391,7 @@ class ChannelEngine:
         writer.start()
         self._sessions_run += 1
         begun = self._sessions_run == 1          # the rewriter starts out in its first session
-        logger.info(f"Engine session {self._sessions_run} [{self.label}] → {self.url}")
+        logger.info(f"Engine session {self._sessions_run} [{self.label}] → {self.feed.url}")
 
         produced = False
         fd = proc.stdout.fileno()

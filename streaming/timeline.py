@@ -105,14 +105,19 @@ class TimelineRewriter:
         if not self._started:
             return
         last_v, max_vpts = self._sent            # the held-back frame is never sent
-        video_end = last_v + self._v_frame if last_v is not None else None
         audio_end = self._last_a + self._a_frame if self._last_a is not None else None
+        self._audio_end = _later(self._audio_end, audio_end)
+        if last_v is None:
+            # died before a whole frame was sent: the output timeline hasn't moved on, so the
+            # next session continues from where this one was going to
+            if self._next_ts is None:
+                self._next_ts = self._audio_end
+            return
         # Video continues seamlessly; new audio that overlaps audio already sent is dropped.
-        self._next_ts = video_end if video_end is not None else audio_end
+        self._next_ts = last_v + self._v_frame
         # display order too: a cut after a P-frame leaves its B-frames unsent, so the P-frame
         # shows later than its decode time suggests
         self._next_pts = max_vpts + self._v_frame if max_vpts is not None else None
-        self._audio_end = _later(self._audio_end, audio_end)
 
     # ---- packet processing --------------------------------------------------
 

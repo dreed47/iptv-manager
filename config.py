@@ -63,6 +63,11 @@ ENGINE_SPEED_WINDOW: float  = float(os.getenv("ENGINE_SPEED_WINDOW", "15"))  # s
 ENGINE_SPEED_GRACE: float   = float(os.getenv("ENGINE_SPEED_GRACE", "4"))   # ignore speed right after a (re)connect
 ENGINE_OUTAGE_SECS: float   = float(os.getenv("ENGINE_OUTAGE_SECS", "45"))  # give up after this long with no output
 ENGINE_KEEPALIVE_SECS: float = float(os.getenv("ENGINE_KEEPALIVE_SECS", "2"))  # send filler while reconnecting
+ENGINE_FAILOVER: bool       = os.getenv("ENGINE_FAILOVER", "1") == "1"      # switch to a backup copy of a failing channel
+ENGINE_FAILOVER_AFTER: int  = int(os.getenv("ENGINE_FAILOVER_AFTER", "2"))  # bad connections within the window → switch
+ENGINE_FAILOVER_WINDOW: float = float(os.getenv("ENGINE_FAILOVER_WINDOW", "120"))
+ENGINE_FAILOVER_COOLDOWN: float = float(os.getenv("ENGINE_FAILOVER_COOLDOWN", "900"))  # avoid a failed feed this long
+ENGINE_FAILOVER_PREFIXES: str = os.getenv("ENGINE_FAILOVER_PREFIXES", "US,VIP,TV,AT&T,GOLD,PRIME,SLING,GO,AMP")
 
 # Observe-only MPEG-TS analysis of live streams (upstream session boundaries, timestamp
 # jumps, keyframe spacing, codecs, packet errors). Never alters the bytes. Each finished
@@ -175,7 +180,10 @@ def _validate() -> None:
         errors.append(f"ENGINE_AUDIO_CODEC must be ac3, aac or copy (got {ENGINE_AUDIO_CODEC!r})")
     if not 0 <= ENGINE_MIN_SPEED < 1:
         errors.append(f"ENGINE_MIN_SPEED must be 0 (off) or below 1 (got {ENGINE_MIN_SPEED})")
-    for name in ("ENGINE_STALL_SECS", "ENGINE_SPEED_WINDOW", "ENGINE_OUTAGE_SECS", "ENGINE_KEEPALIVE_SECS"):
+    if ENGINE_FAILOVER_AFTER < 1:
+        errors.append(f"ENGINE_FAILOVER_AFTER must be >= 1 (got {ENGINE_FAILOVER_AFTER})")
+    for name in ("ENGINE_STALL_SECS", "ENGINE_SPEED_WINDOW", "ENGINE_OUTAGE_SECS", "ENGINE_KEEPALIVE_SECS",
+                 "ENGINE_FAILOVER_WINDOW"):
         if globals()[name] < 1:
             errors.append(f"{name} must be >= 1 (got {globals()[name]})")
     if errors:

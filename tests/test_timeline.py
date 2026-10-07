@@ -91,6 +91,16 @@ class TimelineRewriterTest(unittest.TestCase):
         self._check_continuous(out)
         self.assertEqual(rw.sessions, 4)
 
+    def test_session_that_dies_right_after_its_keyframe(self):
+        # cut session B a few packets after its first keyframe starts: nothing of it is sent
+        b = self.session_b
+        first_kf = next(i for i in range(0, len(b), TS_PACKET)
+                        if ((b[i + 1] & 0x1F) << 8 | b[i + 2]) == 0x100 and b[i + 3] & 0x20
+                        and b[i + 4] and b[i + 5] & 0x40)
+        out, rw = self._stitch(self.session_a, b[:first_kf + 20 * TS_PACKET], self.session_b)
+        self._check_continuous(out)
+        self.assertEqual(rw.sessions, 3)
+
     def test_replay_is_skipped(self):
         plain, _ = self._stitch(self.session_a, self.session_b)
         trimmed, rw = self._stitch(self.session_a, self.session_b, skips={1: 3.0})
