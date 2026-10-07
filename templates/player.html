@@ -194,9 +194,12 @@
             enableWorker: true,
             enableStashBuffer: true,
             stashInitialSize: {{ stash_kb }},
-            liveBufferLatencyChasing: false,
-            liveBufferLatencyMaxLatency: {{ latency_max }},
-            liveBufferLatencyMinRemain: {{ latency_min }},
+            // Correct live latency drift by gently speeding up playback (imperceptible),
+            // not by hard-seeking — liveBufferLatencyChasing's hard seek caused repeated,
+            // disruptive rebuffering every time it tripped instead of a smooth correction.
+            liveSync: true,
+            liveSyncMaxLatency: {{ latency_max }},
+            liveSyncTargetLatency: {{ latency_min }},
             lazyLoadMaxDuration: 60,
             deferLoadAfterSourceOpen: false,
           });
