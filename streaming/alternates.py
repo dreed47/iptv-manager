@@ -57,7 +57,7 @@ def match_key(core: str) -> str:
     tokens = core.split()
     if len(tokens) > 1 and tokens[-1] == "1":   # 'C-SPAN 1' is just C-SPAN
         tokens.pop()
-    return "".join(c for c in "".join(tokens) if c.isalnum())
+    return "".join(c for c in "".join(tokens) if c.isalnum() or c in "+&")   # ESPN+ is not ESPN
 
 
 def _heavy(name: str) -> bool:

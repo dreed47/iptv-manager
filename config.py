@@ -64,10 +64,10 @@ ENGINE_SPEED_GRACE: float   = float(os.getenv("ENGINE_SPEED_GRACE", "4"))   # ig
 ENGINE_OUTAGE_SECS: float   = float(os.getenv("ENGINE_OUTAGE_SECS", "45"))  # give up after this long with no output
 ENGINE_KEEPALIVE_SECS: float = float(os.getenv("ENGINE_KEEPALIVE_SECS", "2"))  # send filler while reconnecting
 ENGINE_FAILOVER: bool       = os.getenv("ENGINE_FAILOVER", "1") == "1"      # switch to a backup copy of a failing channel
-ENGINE_FAILOVER_AFTER: int  = int(os.getenv("ENGINE_FAILOVER_AFTER", "2"))  # bad connections within the window → switch
+ENGINE_FAILOVER_AFTER: int  = int(os.getenv("ENGINE_FAILOVER_AFTER", "1"))  # bad connections within the window → switch
 ENGINE_FAILOVER_WINDOW: float = float(os.getenv("ENGINE_FAILOVER_WINDOW", "120"))
 ENGINE_FAILOVER_COOLDOWN: float = float(os.getenv("ENGINE_FAILOVER_COOLDOWN", "900"))  # avoid a failed feed this long
-ENGINE_FAILOVER_PREFIXES: str = os.getenv("ENGINE_FAILOVER_PREFIXES", "US,VIP,TV,AT&T,GOLD,PRIME,SLING,GO,AMP")
+ENGINE_FAILOVER_PREFIXES: str = os.getenv("ENGINE_FAILOVER_PREFIXES", "US,TV,AT&T,PRIME")
 
 # Observe-only MPEG-TS analysis of live streams (upstream session boundaries, timestamp
 # jumps, keyframe spacing, codecs, packet errors). Never alters the bytes. Each finished

@@ -70,14 +70,14 @@ while that happens, so Plex and IPTV apps keep the stream open.
 | `ENGINE_KEEPALIVE_SECS` | `2` | Send MPEG-TS null packets to viewers after this long without data (during reconnects) |
 | `ENGINE_START_RETRIES` | `3` | Provider connect retries before the first keyframe (channel can't be tuned → 503) |
 | `ENGINE_FAILOVER` | `1` | `0` = never switch a channel to a backup copy |
-| `ENGINE_FAILOVER_AFTER` | `2` | Failed connections (slow, rewound, stalled, refused, or dead within 60s) within the window that switch to a backup |
+| `ENGINE_FAILOVER_AFTER` | `1` | Failed connections (slow, rewound, stalled, refused, or dead within 60s) within the window that switch to a backup |
 | `ENGINE_FAILOVER_WINDOW` | `120` | Seconds those failures are counted over |
 | `ENGINE_FAILOVER_COOLDOWN` | `900` | A feed that was switched away from is avoided this long — re-tunes start on a working copy |
-| `ENGINE_FAILOVER_PREFIXES` | `US,VIP,TV,AT&T,GOLD,PRIME,SLING,GO,AMP` | Channel packs that count as the same channel family. A channel in one of these packs can fail over to copies in any of them; a channel in any other pack only to copies in its own pack |
+| `ENGINE_FAILOVER_PREFIXES` | `US,TV,AT&T,PRIME` | Channel packs that count as the same channel family (all US/English). Packs like VIP (Mexico), GO (Spain), AMP (Caribbean) and GOLD (Europe) carry same-named channels in other languages, so they're left out. A channel in one of these packs can fail over to copies in any of them; a channel in any other pack only to copies in its own pack |
 
 **Backup feeds.** When a channel's feed keeps failing, the engine switches to another copy
 of the same channel on the same provider account (so no extra connection is needed) —
-e.g. `US: FOX NEWS HD` → `VIP: FOX NEWS` → `TV: FOX NEWS CHANNEL ᴿᴬᵂ`. Copies are matched by
+e.g. `US: FOX NEWS HD` → `TV: FOX NEWS CHANNEL ᴿᴬᵂ` → `AT&T: FOX NEWS ᴿᴬᵂ`. Names match regardless of spelling (`C-SPAN 1` = `CSPAN`). Copies are matched by
 name with the pack prefix and quality tags (HD, 4K, ᴿᴬᵂ, …) removed; 4K/UHD/HEVC copies are
 tried last and `24/7:` channels have no backups (another copy is a different episode). The
 switch is stitched like any reconnect, and Active Streams shows `(backup: …)` while a
