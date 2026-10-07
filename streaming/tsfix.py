@@ -30,6 +30,7 @@ STREAM_TYPES = {
     0x81: "ac3", 0x87: "eac3", 0x06: "private",
 }
 VIDEO_TYPES = {0x01, 0x02, 0x1B, 0x24}
+AUDIO_TYPES = {0x03, 0x04, 0x0F, 0x11, 0x81, 0x87}
 
 
 def pts_delta(a: int, b: int) -> int:
@@ -59,6 +60,8 @@ class _Session:
     packets: int = 0
     video_codec: str | None = None
     audio_codecs: list[str] = field(default_factory=list)
+    audio_langs: list[str] = field(default_factory=list)    # ISO 639 per audio track, '' if untagged
+    pmt_seen: bool = False
     pmt_changes: int = 0
     first_dts: int | None = None
     last_dts: int | None = None
@@ -255,23 +258,29 @@ class TsObserver:
         section_end = min(p + 3 + (((buf[p + 1] & 0x0F) << 8) | buf[p + 2]) - 4, end)
         q = p + 12 + (((buf[p + 10] & 0x0F) << 8) | buf[p + 11])
         streams: dict[int, int] = {}
+        langs: dict[int, str] = {}
         while q + 5 <= section_end:
             stream_type = buf[q]
             epid = ((buf[q + 1] & 0x1F) << 8) | buf[q + 2]
             es_len = ((buf[q + 3] & 0x0F) << 8) | buf[q + 4]
-            if stream_type == 0x06:
-                d, dend = q + 5, min(q + 5 + es_len, section_end)
-                while d + 2 <= dend:
-                    if buf[d] == 0x6A:
-                        stream_type = 0x81
-                    elif buf[d] == 0x7A:
-                        stream_type = 0x87
-                    d += 2 + buf[d + 1]
+            d, dend = q + 5, min(q + 5 + es_len, section_end)
+            while d + 2 <= dend:
+                tag = buf[d]
+                if stream_type == 0x06 and tag == 0x6A:
+                    stream_type = 0x81
+                elif stream_type == 0x06 and tag == 0x7A:
+                    stream_type = 0x87
+                elif tag == 0x0A and buf[d + 1] >= 3 and d + 5 <= dend:     # ISO 639 language
+                    langs[epid] = bytes(buf[d + 2:d + 5]).decode("latin-1").strip().lower()
+                d += 2 + buf[d + 1]
             streams[epid] = stream_type
             q += 5 + es_len
         if not streams:
             return
         s = self._session
+        s.pmt_seen = True
+        s.audio_langs = [langs.get(pid, "") for pid, st in streams.items()
+                         if st not in VIDEO_TYPES and st in AUDIO_TYPES]
         if streams != self.streams:
             if self.streams:
                 s.pmt_changes += 1

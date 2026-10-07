@@ -87,7 +87,7 @@ def find(item_id: int, url: str, name: str) -> list[Feed]:
         mtime = os.path.getmtime(path)
     except OSError:
         return []
-    key = (item_id, stream_id, match_key(core), tuple(family), mtime)
+    key = (item_id, stream_id, match_key(core), tuple(family), config.ENGINE_FAILOVER_EXCLUDE, mtime)
     with _lock:
         if key in _cache:
             return _cache[key]
@@ -99,6 +99,8 @@ def find(item_id: int, url: str, name: str) -> list[Feed]:
         for n, (sid, feed_name) in enumerate(f for f in found.get(p, []) if f[0] != stream_id):
             ranked.append(((_heavy(feed_name), n, fam_idx), sid, feed_name))
     ranked.sort(key=lambda r: r[0])
+    excluded = {e.strip().upper() for e in config.ENGINE_FAILOVER_EXCLUDE.split(",") if e.strip()}
+    ranked = [r for r in ranked if r[1] not in excluded and r[2].strip().upper() not in excluded]
     feeds = [Feed(f"{base}{sid}{ext}", feed_name) for _, sid, feed_name in ranked[:_MAX]]   # same account
     with _lock:
         _cache[key] = feeds

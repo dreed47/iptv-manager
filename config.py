@@ -67,7 +67,8 @@ ENGINE_FAILOVER: bool       = os.getenv("ENGINE_FAILOVER", "1") == "1"      # sw
 ENGINE_FAILOVER_AFTER: int  = int(os.getenv("ENGINE_FAILOVER_AFTER", "1"))  # bad connections within the window → switch
 ENGINE_FAILOVER_WINDOW: float = float(os.getenv("ENGINE_FAILOVER_WINDOW", "120"))
 ENGINE_FAILOVER_COOLDOWN: float = float(os.getenv("ENGINE_FAILOVER_COOLDOWN", "900"))  # avoid a failed feed this long
-ENGINE_FAILOVER_PREFIXES: str = os.getenv("ENGINE_FAILOVER_PREFIXES", "US,TV,AT&T,PRIME")
+ENGINE_FAILOVER_PREFIXES: str = os.getenv("ENGINE_FAILOVER_PREFIXES", "US,AT&T,PRIME,TV")
+ENGINE_FAILOVER_EXCLUDE: str = os.getenv("ENGINE_FAILOVER_EXCLUDE", "")    # stream ids / exact names never used as backups
 
 # Observe-only MPEG-TS analysis of live streams (upstream session boundaries, timestamp
 # jumps, keyframe spacing, codecs, packet errors). Never alters the bytes. Each finished

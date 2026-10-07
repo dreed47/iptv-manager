@@ -38,6 +38,7 @@ class _Provider(ThreadingHTTPServer):
     def __init__(self, payload: bytes, seconds: float, script=(), live_start=3.0, replay=3.0):
         super().__init__(("127.0.0.1", 0), _Handler)
         self.payload = payload
+        self.payloads: dict[int, bytes] = {}    # per-stream payload overrides (same timeline)
         self.rate = len(payload) / seconds
         self.script = script if isinstance(script, dict) else list(script)
         self.per_stream: dict[int, int] = {}
@@ -70,6 +71,7 @@ class _Handler(BaseHTTPRequestHandler):
             n = per if isinstance(srv.script, dict) else srv.connections - 1
         script = srv.script.get(stream_id, []) if isinstance(srv.script, dict) else srv.script
         how = script[n] if n < len(script) else {}
+        payload = srv.payloads.get(stream_id, srv.payload)
         if "404" in self.path or how.get("status") or srv.live_edge() >= len(srv.payload):
             self.send_error(how.get("status", 404))
             return
@@ -91,13 +93,13 @@ class _Handler(BaseHTTPRequestHandler):
                     return
                 if age > how.get("rewind_after", 1e9) and not rewound:
                     pos, rewound = srv.at(pos - how.get("rewind", 8) * srv.rate), True
-                if pos >= len(srv.payload):
+                if pos >= len(payload):
                     return
                 size = min(64 * 1024, srv.live_edge() - pos)
                 if size <= 0:
                     time.sleep(0.02)
                     continue
-                self.wfile.write(srv.payload[pos:pos + size])
+                self.wfile.write(payload[pos:pos + size])
                 pos += size
                 if "speed" in how:
                     time.sleep(size / (srv.rate * how["speed"]))
@@ -119,6 +121,20 @@ def _summary(data: bytes) -> dict:
     obs = TsObserver()
     obs.feed(data)
     return obs.end_session()
+
+
+def _retag(tmp: str, src: str, *langs: str) -> bytes:
+    """Copy of a fixture whose audio tracks carry these languages (one track per language)."""
+    out = os.path.join(tmp, f"{src}.{'_'.join(langs)}.ts")
+    cmd = [FFMPEG, "-v", "error", "-y", "-i", os.path.join(tmp, src), "-map", "0:v"]
+    for _ in langs:
+        cmd += ["-map", "0:a"]
+    cmd += ["-c", "copy"]
+    for i, lang in enumerate(langs):
+        cmd += [f"-metadata:s:a:{i}", f"language={lang}"]
+    subprocess.run(cmd + ["-f", "mpegts", out], check=True)
+    with open(out, "rb") as f:
+        return f.read()
 
 
 def _decode_problems(data: bytes, tmp: str) -> list[str]:
@@ -151,6 +167,9 @@ class EngineTest(unittest.IsolatedAsyncioTestCase):
         cls.payload = _make_ts(os.path.join(cls.tmp, "src.ts"), seconds=cls.payload_seconds)
         cls.long_seconds = 60.0
         cls.long = _make_ts(os.path.join(cls.tmp, "long.ts"), seconds=cls.long_seconds)
+        cls.long_spa = _retag(cls.tmp, "long.ts", "spa")
+        cls.long_eng = _retag(cls.tmp, "long.ts", "eng")
+        cls.long_spa_eng = _retag(cls.tmp, "long.ts", "spa", "eng")
 
     @classmethod
     def tearDownClass(cls):
@@ -300,14 +319,15 @@ class EngineTest(unittest.IsolatedAsyncioTestCase):
 
     # ---- failover to backup feeds -------------------------------------------------
 
-    def news_channel(self, script):
+    def news_channel(self, script, extra=(), payloads=None):
         """Channel 'US: TEST NEWS HD' (3001) with a backup copy 'VIP: TEST NEWS' (3002) on the
         same account, plus a foreign copy that must never be used."""
         self.serve(self.long, self.long_seconds, script)
+        self.provider.payloads = payloads or {}
         port = self.provider.server_address[1]
         with open(os.path.join(self.tmp, "xtream_playlist_1.m3u"), "w") as f:
             f.write("#EXTM3U\n")
-            for sid, name in ((3001, "US: TEST NEWS HD"), (3003, "AR: TEST NEWS"), (3002, "VIP: TEST NEWS")):
+            for sid, name in ((3001, "US: TEST NEWS HD"), (3003, "AR: TEST NEWS"), *extra, (3002, "VIP: TEST NEWS")):
                 f.write(f'#EXTINF:-1 tvg-id="{sid}" tvg-name="{name}",{name}\n'
                         f"http://127.0.0.1:{port}/live/u/p/{sid}.ts\n")
 
@@ -340,6 +360,25 @@ class EngineTest(unittest.IsolatedAsyncioTestCase):
         data = await _collect(resp, max_seconds=6)
         self.assertGreater(len(data), 100_000)
         self.assertEqual(_decode_problems(data, self.tmp), [])
+
+    async def test_backup_in_another_language_is_skipped(self):
+        # the first backup (US: TEST NEWS) is Spanish; the next one (VIP) is English
+        self.news_channel({3001: [{"speed": 0.3}] * 20}, extra=((3004, "US: TEST NEWS"),),
+                          payloads={3001: self.long_eng, 3004: self.long_spa, 3002: self.long_eng})
+        resp = await self.open(3001, name="US: TEST NEWS HD")
+        data = await _collect(resp, max_seconds=22)
+        engine = next(iter(registry._engines.values()))
+        self.assertGreaterEqual(self.provider.per_stream.get(3004, 0), 1, "Spanish backup was tried")
+        self.assertTrue(engine.feed.url.endswith("/3002.ts"), engine.feed)
+        self.assertTrue(engine_mod._feed_is_bad(1, self.url(3004)))
+        self.assertEqual(_decode_problems(data, self.tmp), [])
+
+    async def test_audio_track_in_channel_language_is_used(self):
+        self.serve(self.long_spa_eng, self.long_seconds)
+        resp = await self.open(2001)
+        await _collect(resp, max_seconds=4)
+        engine = next(iter(registry._engines.values()))
+        self.assertEqual(engine.audio_track, 1, "the English track (second) should be used")
 
     def test_backup_names_match_despite_spelling(self):
         key = lambda n: engine_mod.alternates.match_key(engine_mod.alternates.split_name(n)[1])

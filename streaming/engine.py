@@ -21,6 +21,7 @@ no output (or ENGINE_START_RETRIES failed connects before the first keyframe).
 """
 from __future__ import annotations
 
+import itertools
 import logging
 import os
 import subprocess
@@ -50,6 +51,10 @@ _MAX_REPLAY_SKIP = 60 * PTS_HZ   # a reconnect landing further back than this is
 _SKIP_WAIT_SECS = 10
 _BACKOFF = (0.5, 1, 2, 4, 5)
 _HEALTHY_SESSION_SECS = 60       # a connection that lasted this long wasn't a failure, however it ended
+_WRONG_LANGUAGE_COOLDOWN = 24 * 3600
+_UNTAGGED = {"", "und", "mul", "mis", "qaa", "zxx"}
+_PREFETCH_BYTES = 2 * 1024 * 1024
+_PREFETCH_SECS = 8
 
 # Feeds that failed recently (channel_key → monotonic time until which they're avoided), so a
 # re-tune starts on a working copy instead of rediscovering the failure.
@@ -62,15 +67,16 @@ def _feed_is_bad(item_id: int, url: str) -> bool:
         return _feed_bad_until.get(stream_metrics.channel_key(item_id, url), 0) > time.monotonic()
 
 
-def _mark_feed_bad(item_id: int, url: str) -> None:
+def _mark_feed_bad(item_id: int, url: str, secs: float | None = None) -> None:
     with _feed_lock:
         now = time.monotonic()
         for k in [k for k, t in _feed_bad_until.items() if t <= now]:
             del _feed_bad_until[k]
-        _feed_bad_until[stream_metrics.channel_key(item_id, url)] = now + config.ENGINE_FAILOVER_COOLDOWN
+        _feed_bad_until[stream_metrics.channel_key(item_id, url)] = now + (secs or config.ENGINE_FAILOVER_COOLDOWN)
 
 
-def ffmpeg_command() -> list[str]:
+def ffmpeg_command(audio_track: int = 0) -> list[str]:
+    """audio_track: which of the input's audio tracks to keep (0 = first)."""
     audio = config.ENGINE_AUDIO_CODEC
     if audio == "copy":
         audio_args = ["-c:a", "copy"]
@@ -80,7 +86,7 @@ def ffmpeg_command() -> list[str]:
         "ffmpeg", "-hide_banner", "-nostats", "-loglevel", "warning",
         "-fflags", "+genpts+discardcorrupt",
         "-f", "mpegts", "-i", "pipe:0",
-        "-map", "0:v:0?", "-map", "0:a:0?",
+        "-map", "0:v:0?", "-map", f"0:a:{audio_track}?",
         "-c:v", "copy", *audio_args,
         "-f", "mpegts",
         "-mpegts_service_id", "1",
@@ -200,6 +206,9 @@ class ChannelEngine:
         self._backups: list[alternates.Feed] | None = None
         self._tried: set[str] = set()
         self._bad_events: deque[float] = deque()
+        self._lang: str | None = None               # the channel's own audio language, once seen
+        self._wrong_language = False
+        self.audio_track = 0
         self.timeline = TimelineRewriter()
         self._thread = threading.Thread(target=self._run, daemon=True, name=f"engine-{self.key[1]}")
 
@@ -283,7 +292,7 @@ class ChannelEngine:
                 session_start = time.monotonic()
                 produced = self._run_session(rewriter, splitter, prev_max)
                 cur = self._monitor.current
-                if cur is not None and cur.max_dts is not None:
+                if produced and cur is not None and cur.max_dts is not None:
                     prev_max = cur.max_dts
                 if self._stop.is_set():
                     break
@@ -300,7 +309,12 @@ class ChannelEngine:
                     reason = "retry"
                 bad = (not produced or time.monotonic() - session_start < _HEALTHY_SESSION_SECS
                        or self._end_reason.startswith(("upstream slow", "upstream rewound")))
-                if bad and self._note_bad() and self._failover():
+                if self._wrong_language:
+                    self._wrong_language = False
+                    if self._failover(_WRONG_LANGUAGE_COOLDOWN):
+                        failures = 0
+                        reason = f"failover: {self.feed.name}"
+                elif bad and self._note_bad() and self._failover():
                     failures = 0
                     reason = f"failover: {self.feed.name}"
         except Exception:
@@ -337,9 +351,9 @@ class ChannelEngine:
             self._bad_events.popleft()
         return config.ENGINE_FAILOVER and len(self._bad_events) >= config.ENGINE_FAILOVER_AFTER
 
-    def _failover(self) -> bool:
+    def _failover(self, cooldown: float | None = None) -> bool:
         """Switch to the next backup copy of the channel. False when there's none to try."""
-        _mark_feed_bad(self.item_id, self.feed.url)
+        _mark_feed_bad(self.item_id, self.feed.url, cooldown)
         self._bad_events.clear()
         backup = self._next_feed()
         if not backup:
@@ -377,8 +391,16 @@ class ChannelEngine:
         skip_ready = threading.Event()
         if prev_max is None:
             skip_ready.set()
+        chunks = self._resp.iter_content(chunk_size=64 * 1024)
+        prefetched = self._prefetch(chunks)
+        if prefetched is None:
+            return False
+        audio_track = self._pick_audio()
+        if audio_track is None:
+            return False
         proc = subprocess.Popen(
-            ffmpeg_command(), stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0
+            ffmpeg_command(audio_track), stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            bufsize=0,
         )
         self._proc = proc
         if self._stop.is_set():
@@ -386,7 +408,8 @@ class ChannelEngine:
         stderr_tail: deque[str] = deque(maxlen=20)
         threading.Thread(target=self._drain_stderr, args=(proc, stderr_tail), daemon=True,
                          name=f"engine-{self.key[1]}-stderr").start()
-        writer = threading.Thread(target=self._feed_upstream, args=(proc, prev_max, skip_ready), daemon=True,
+        writer = threading.Thread(target=self._feed_upstream, args=(proc, prev_max, skip_ready, chunks, prefetched),
+                                  daemon=True,
                                   name=f"engine-{self.key[1]}-upstream")
         writer.start()
         self._sessions_run += 1
@@ -423,20 +446,72 @@ class ChannelEngine:
             self._end_reason = (self._end_reason or "ffmpeg exited") + f" (rc={rc}: {' | '.join(stderr_tail)[-300:]})"
         return produced
 
-    def _feed_upstream(self, proc: subprocess.Popen, prev_max: int | None, skip_ready: threading.Event) -> None:
+    def _prefetch(self, chunks) -> list[bytes] | None:
+        """Read the start of the connection until its track list (PMT) is known, so the
+        audio language can be checked before FFmpeg starts. None if the connection failed."""
+        got: list[bytes] = []
+        size = 0
+        deadline = time.monotonic() + _PREFETCH_SECS
+        try:
+            for chunk in chunks:
+                if self._stop.is_set():
+                    break
+                if not chunk:
+                    continue
+                self._monitor.feed(chunk)
+                got.append(chunk)
+                size += len(chunk)
+                cur = self._monitor.current
+                if (cur is not None and cur.pmt_seen) or size >= _PREFETCH_BYTES or time.monotonic() > deadline:
+                    break
+        except Exception as exc:
+            self._end_reason = f"upstream error: {exc.__class__.__name__}"
+        if not got:
+            self._end_reason = self._end_reason or "upstream closed"
+            self._resp.close()
+            return None
+        return got
+
+    def _pick_audio(self) -> int | None:
+        """Choose the audio track in the channel's language. None (connection dropped) when
+        this is a backup copy whose audio is only in another language."""
+        cur = self._monitor.current
+        langs = cur.audio_langs if cur is not None else []
+        known = [lang for lang in langs if lang not in _UNTAGGED]
+        if self.feed is self._primary and known and self._lang is None:
+            self._lang = "eng" if "eng" in known else known[0]
+        target = self._lang or "eng"
+        if self.feed is not self._primary and known and target not in known:
+            self._end_reason = f"wrong language ({'/'.join(known)}, want {target})"
+            self._wrong_language = True
+            logger.warning(f"Engine [{self.label}] backup '{self.feed.name}' is {'/'.join(known)}, "
+                           f"not {target}; skipping it")
+            self._resp.close()
+            return None
+        self.audio_track = langs.index(target) if target in langs else 0
+        if self.audio_track:
+            logger.info(f"Engine [{self.label}] using audio track {self.audio_track + 1} ({target}) of {langs}")
+        return self.audio_track
+
+    def _feed_upstream(self, proc: subprocess.Popen, prev_max: int | None, skip_ready: threading.Event,
+                       chunks, prefetched: list[bytes]) -> None:
         resp = self._resp
         monitor = self._monitor
         started = time.monotonic()
         grace = min(config.ENGINE_SPEED_GRACE * (2 ** self._slow_streak), 60)
         samples: deque[tuple[float, int]] = deque()
         fed = 0
+        backlog = len(prefetched)
         try:
-            for chunk in resp.iter_content(chunk_size=64 * 1024):
+            for chunk in itertools.chain(prefetched, chunks):
                 if self._stop.is_set():
                     break
                 if not chunk:
                     continue
-                monitor.feed(chunk)
+                if backlog:
+                    backlog -= 1                     # already fed to the monitor by _prefetch
+                else:
+                    monitor.feed(chunk)
                 fed += len(chunk)
                 cur = monitor.current
                 if not skip_ready.is_set():

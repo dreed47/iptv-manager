@@ -73,14 +73,15 @@ while that happens, so Plex and IPTV apps keep the stream open.
 | `ENGINE_FAILOVER_AFTER` | `1` | Failed connections (slow, rewound, stalled, refused, or dead within 60s) within the window that switch to a backup |
 | `ENGINE_FAILOVER_WINDOW` | `120` | Seconds those failures are counted over |
 | `ENGINE_FAILOVER_COOLDOWN` | `900` | A feed that was switched away from is avoided this long — re-tunes start on a working copy |
-| `ENGINE_FAILOVER_PREFIXES` | `US,TV,AT&T,PRIME` | Channel packs that count as the same channel family (all US/English). Packs like VIP (Mexico), GO (Spain), AMP (Caribbean) and GOLD (Europe) carry same-named channels in other languages, so they're left out. A channel in one of these packs can fail over to copies in any of them; a channel in any other pack only to copies in its own pack |
+| `ENGINE_FAILOVER_PREFIXES` | `US,AT&T,PRIME,TV` | Channel packs that count as the same channel family (all US/English). Packs like VIP (Mexico), GO (Spain), AMP (Caribbean) and GOLD (Europe) carry same-named channels in other languages, so they're left out. A channel in one of these packs can fail over to copies in any of them; a channel in any other pack only to copies in its own pack. Earlier packs are tried first |
+| `ENGINE_FAILOVER_EXCLUDE` | _(empty)_ | Comma-separated stream ids or exact channel names never used as backups (e.g. a copy that turned out to be in another language) |
 
 **Backup feeds.** When a channel's feed keeps failing, the engine switches to another copy
 of the same channel on the same provider account (so no extra connection is needed) —
 e.g. `US: FOX NEWS HD` → `TV: FOX NEWS CHANNEL ᴿᴬᵂ` → `AT&T: FOX NEWS ᴿᴬᵂ`. Names match regardless of spelling (`C-SPAN 1` = `CSPAN`). Copies are matched by
 name with the pack prefix and quality tags (HD, 4K, ᴿᴬᵂ, …) removed; 4K/UHD/HEVC copies are
 tried last and `24/7:` channels have no backups (another copy is a different episode). The
-switch is stitched like any reconnect, and Active Streams shows `(backup: …)` while a
+When a stream tags its audio language, the engine plays the track in the channel's language (English when the channel's own feed has it) and skips a backup whose audio is only in another language — avoided for 24h. Tags aren't always reliable, so `ENGINE_FAILOVER_EXCLUDE` lets you block a specific copy. The switch is stitched like any reconnect, and Active Streams shows `(backup: …)` while a
 channel runs on one.
 
 In engine mode a provider's **max sessions** counts open *channels*, not viewers: several
