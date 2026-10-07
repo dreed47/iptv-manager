@@ -137,6 +137,15 @@ def _retag(tmp: str, src: str, *langs: str) -> bytes:
         return f.read()
 
 
+def _audio_language(data: bytes, tmp: str) -> str:
+    path = os.path.join(tmp, "lang.ts")
+    with open(path, "wb") as f:
+        f.write(data)
+    return subprocess.run(["ffprobe", "-v", "error", "-select_streams", "a:0", "-show_entries",
+                           "stream_tags=language", "-of", "csv=p=0", path],
+                          capture_output=True, text=True).stdout.strip()
+
+
 def _decode_problems(data: bytes, tmp: str) -> list[str]:
     """Decode the stream and check every timeline: no errors, no repeats, no holes."""
     path = os.path.join(tmp, "out.ts")
@@ -376,9 +385,16 @@ class EngineTest(unittest.IsolatedAsyncioTestCase):
     async def test_audio_track_in_channel_language_is_used(self):
         self.serve(self.long_spa_eng, self.long_seconds)
         resp = await self.open(2001)
-        await _collect(resp, max_seconds=4)
+        data = await _collect(resp, max_seconds=4)
         engine = next(iter(registry._engines.values()))
         self.assertEqual(engine.audio_track, 1, "the English track (second) should be used")
+        self.assertEqual(_audio_language(data, self.tmp), "eng")
+
+    async def test_untagged_audio_is_tagged_english(self):
+        # untagged audio makes Plex treat it as foreign and switch captions on
+        resp = await self.open(1001)
+        data = await _collect(resp, max_seconds=4)
+        self.assertEqual(_audio_language(data, self.tmp), "eng")
 
     def test_backup_names_match_despite_spelling(self):
         key = lambda n: engine_mod.alternates.match_key(engine_mod.alternates.split_name(n)[1])

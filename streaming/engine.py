@@ -75,8 +75,10 @@ def _mark_feed_bad(item_id: int, url: str, secs: float | None = None) -> None:
         _feed_bad_until[stream_metrics.channel_key(item_id, url)] = now + (secs or config.ENGINE_FAILOVER_COOLDOWN)
 
 
-def ffmpeg_command(audio_track: int = 0) -> list[str]:
-    """audio_track: which of the input's audio tracks to keep (0 = first)."""
+def ffmpeg_command(audio_track: int = 0, language: str = "eng") -> list[str]:
+    """audio_track: which of the input's audio tracks to keep (0 = first). language: ISO 639
+    tag written on the output audio. Most provider feeds leave it untagged, and Plex treats
+    untagged audio as foreign, turning subtitles/closed captions on by default."""
     audio = config.ENGINE_AUDIO_CODEC
     if audio == "copy":
         audio_args = ["-c:a", "copy"]
@@ -87,7 +89,7 @@ def ffmpeg_command(audio_track: int = 0) -> list[str]:
         "-fflags", "+genpts+discardcorrupt",
         "-f", "mpegts", "-i", "pipe:0",
         "-map", "0:v:0?", "-map", f"0:a:{audio_track}?",
-        "-c:v", "copy", *audio_args,
+        "-c:v", "copy", *audio_args, "-metadata:s:a:0", f"language={language}",
         "-f", "mpegts",
         "-mpegts_service_id", "1",
         "-mpegts_pmt_start_pid", str(PMT_PID),
@@ -399,7 +401,7 @@ class ChannelEngine:
         if audio_track is None:
             return False
         proc = subprocess.Popen(
-            ffmpeg_command(audio_track), stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            ffmpeg_command(audio_track, self._lang or "eng"), stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             bufsize=0,
         )
         self._proc = proc
