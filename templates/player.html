@@ -131,7 +131,7 @@
     <div class="status" id="status">Loading stream…</div>
 
     <div class="actions">
-      <a class="btn btn-vlc" href="{{ vlc_href }}">Open in VLC</a>
+      <a class="btn btn-vlc" id="btn-vlc" href="#">Open in VLC</a>
       <a class="btn btn-iina" href="iina://open?url={{ stream_url_encoded }}"
         >Open in IINA</a
       >
@@ -150,22 +150,70 @@
         status.className = 'status' + (cls ? ' ' + cls : '');
       }
 
-      // MP4 files play natively; mpegts.js is only for MPEG-TS / live streams.
-      // Route MP4s through the local proxy so CORS / provider restrictions don't block playback.
+      // Files go through the local proxy. It fixes a .mp4 link that is really
+      // an MKV and repacks that MKV so the browser can play it.
+      // Live MPEG-TS stays on mpegts.js below.
       const urlPath = streamUrl.split('?')[0].toLowerCase();
-      const isMp4 = urlPath.endsWith('.mp4') || urlPath.endsWith('.m4v');
+      const fileExt = (urlPath.match(/\.([a-z0-9]+)$/) || [])[1] || '';
+      const isFile = fileExt === 'mp4' || fileExt === 'm4v' || fileExt === 'mkv' || fileExt === 'avi';
 
-      if (isMp4) {
+      let resolvedPromise = null;
+      function resolvedUrl() {
+        if (!resolvedPromise) {
+          resolvedPromise = fetch('/api/resolve_url?url=' + encodeURIComponent(streamUrl))
+            .then(res => res.ok ? res.json() : null)
+            .then(data => (data && data.url) ? data : { url: streamUrl, container: '' })
+            .catch(() => ({ url: streamUrl, container: '' }));
+        }
+        return resolvedPromise;
+      }
+
+      let autoTried = false;
+      async function openInVlc(evt) {
+        if (evt) evt.preventDefault();
+        else if (autoTried) return;
+        if (!evt) autoTried = true;
+        setStatus('Opening in VLC…', 'error');
+        const data = await resolvedUrl();
+        window.location.href = 'vlc://' + data.url;
+      }
+      const vlcBtn = document.getElementById('btn-vlc');
+      if (vlcBtn) vlcBtn.addEventListener('click', openInVlc);
+      const iinaBtn = document.querySelector('.btn-iina');
+      if (iinaBtn) {
+        iinaBtn.addEventListener('click', async (evt) => {
+          evt.preventDefault();
+          const data = await resolvedUrl();
+          window.location.href = 'iina://open?url=' + encodeURIComponent(data.url);
+        });
+      }
+
+      if (isFile) {
+        let preparing = false;
+        resolvedUrl().then(data => {
+          if (data.container === 'matroska') {
+            preparing = true;
+            setStatus('Preparing the video for the browser…');
+          }
+        });
         video.src = '/api/proxy_url?url=' + encodeURIComponent(streamUrl);
         video.addEventListener('canplay', () => {
+          preparing = false;
           setStatus('Stream loaded — playing', 'ok');
           video.play().catch(() => {});
         });
-        video.addEventListener('waiting', () => setStatus('Buffering…'));
-        video.addEventListener('playing', () => setStatus('Playing', 'ok'));
+        video.addEventListener('waiting', () => { if (!preparing) setStatus('Buffering…'); });
+        video.addEventListener('playing', () => { preparing = false; setStatus('Playing', 'ok'); });
         video.addEventListener('error', () => {
           const err = video.error;
-          setStatus('Stream error: ' + (err ? err.message : 'unknown') + '. Try VLC or IINA below.', 'error');
+          const code = err ? err.code : 0;
+          // 3 = decode error, 4 = format not supported. Hand the real file to VLC.
+          if (code === 3 || code === 4) {
+            setStatus('Browser cannot play this. Opening in VLC…', 'error');
+            openInVlc();
+            return;
+          }
+          setStatus('Stream error: ' + (err ? err.message : 'unknown') + '. Click Open in VLC.', 'error');
         });
       } else if (mpegts.getFeatureList().mseLivePlayback) {
         // A dropped/failed connection is often transient (brief upstream hiccup) —

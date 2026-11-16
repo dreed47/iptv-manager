@@ -503,8 +503,10 @@ async def stream_player(request: Request, url: str = "", name: str = "Stream"):
 
 
 # ---------------------------------------------------------------------------
-# Generic URL proxy — used by the player for direct MP4/VOD URLs that the
-# browser can't fetch directly due to CORS or provider restrictions.
+# Generic URL proxy — used by the player for VOD the browser fetches itself.
+# A playlist often labels an MKV as .mp4. The provider then returns 551.
+# This resolves the real file and, for Matroska, remuxes (no re-encode) to
+# fragmented MP4 so the browser can play H.264/AAC. VLC gets the direct URL.
 # ---------------------------------------------------------------------------
 
 # Shared per-host session — reused across repeated Range-seek requests to the same
@@ -512,6 +514,10 @@ async def stream_player(request: Request, url: str = "", name: str = "Stream"):
 # is keyed by hostname rather than item_id).
 _proxy_url_sessions: dict = {}
 _proxy_url_sessions_lock = threading.Lock()
+
+_VOD_EXTS = (".mkv", ".mp4", ".m4v", ".avi")
+_RETRY_STATUS = {404, 410, 415, 551}
+_FFMPEG = "/usr/bin/ffmpeg"
 
 
 def _get_proxy_url_session(url: str):
@@ -525,28 +531,200 @@ def _get_proxy_url_session(url: str):
         return session
 
 
+def _http_url(url: str) -> bool:
+    return urllib.parse.urlparse(url).scheme in ("http", "https")
+
+
+def _url_ext(url: str) -> str:
+    leaf = urllib.parse.urlsplit(url).path.rsplit("/", 1)[-1].lower()
+    if "." not in leaf:
+        return ""
+    ext = "." + leaf.rsplit(".", 1)[-1]
+    return ext if len(ext) <= 5 else ""
+
+
+def _with_ext(url: str, ext: str) -> str:
+    parts = urllib.parse.urlsplit(url)
+    path = parts.path
+    leaf = path.rsplit("/", 1)[-1]
+    if "." in leaf and len(leaf.rsplit(".", 1)[-1]) <= 4:
+        path = path.rsplit(".", 1)[0] + ext
+    else:
+        path = path + ext
+    return urllib.parse.urlunsplit((parts.scheme, parts.netloc, path, parts.query, ""))
+
+
+def _kind_from(content_type: str, magic: bytes) -> str:
+    ct = (content_type or "").split(";")[0].strip().lower()
+    if magic.startswith(b"\x1a\x45\xdf\xa3") or ct in ("video/x-matroska", "audio/x-matroska"):
+        return "matroska"
+    if b"ftyp" in magic[:16] or ct in ("video/mp4", "video/x-m4v", "audio/mp4"):
+        return "mp4"
+    return ""
+
+
+def _probe_once(session, url: str) -> dict:
+    headers = {
+        "User-Agent": config.PROXY_USER_AGENT,
+        "Accept": "*/*",
+        "Range": "bytes=0-31",
+    }
+    resp = session.get(
+        url, headers=headers, stream=True,
+        timeout=(config.STREAM_CONNECT_TIMEOUT, 20), allow_redirects=True,
+    )
+    try:
+        status = resp.status_code
+        if status >= 400:
+            return {"url": url, "status": status, "kind": ""}
+        magic = b""
+        for chunk in resp.iter_content(chunk_size=32):
+            if not chunk:
+                break
+            magic += chunk
+            if len(magic) >= 32:
+                break
+        kind = _kind_from(resp.headers.get("Content-Type", ""), magic[:32])
+        # Keep the URL we asked for. The provider redirects to a short-lived
+        # play token; VLC and ffmpeg should start from the stable link.
+        return {"url": url, "status": status, "kind": kind}
+    finally:
+        resp.close()
+
+
+def _resolve_media(url: str) -> dict:
+    """Return the URL that actually has bytes, plus container kind."""
+    if not _http_url(url):
+        return {"url": url, "status": 400, "kind": ""}
+    session = _get_proxy_url_session(url)
+    candidates = [url]
+    if _url_ext(url) in _VOD_EXTS:
+        for ext in _VOD_EXTS:
+            swapped = _with_ext(url, ext)
+            if swapped not in candidates:
+                candidates.append(swapped)
+    last_status = 502
+    for cand in candidates:
+        try:
+            probed = _probe_once(session, cand)
+        except Exception as exc:
+            logger.info("VOD probe failed (%s)", type(exc).__name__)
+            continue
+        last_status = probed["status"]
+        if probed["kind"]:
+            return probed
+        if probed["status"] not in _RETRY_STATUS:
+            break
+    return {"url": url, "status": last_status, "kind": ""}
+
+
+def _passthrough(url: str, range_header: str | None):
+    session = _get_proxy_url_session(url)
+    headers = {
+        "User-Agent": config.PROXY_USER_AGENT,
+        "Accept": "*/*",
+        "Range": range_header or "bytes=0-",
+    }
+    return session.get(
+        url, headers=headers, stream=True,
+        timeout=(config.STREAM_CONNECT_TIMEOUT, 120), allow_redirects=True,
+    )
+
+
+def _remux_mkv(url: str):
+    """Copy Matroska into a fragmented MP4. Returns (proc, first_chunk) or (None, b"")."""
+    import subprocess
+    cmd = [
+        _FFMPEG, "-nostdin", "-hide_banner", "-loglevel", "error",
+        "-user_agent", config.PROXY_USER_AGENT,
+        "-i", url,
+        "-c", "copy",
+        "-movflags", "frag_keyframe+empty_moov+default_base_moof",
+        "-f", "mp4", "pipe:1",
+    ]
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    err_box: list[bytes] = []
+
+    def _drain():
+        if proc.stderr is not None:
+            err_box.append(proc.stderr.read())
+
+    threading.Thread(target=_drain, daemon=True).start()
+    first = proc.stdout.read(65536) if proc.stdout is not None else b""
+    if not first:
+        proc.kill()
+        try:
+            proc.wait(timeout=5)
+        except Exception:
+            pass
+        msg = (err_box[0] if err_box else b"").decode("utf-8", "replace")[-300:]
+        logger.warning("MKV remux produced no output: %s", msg.strip())
+        return None, b""
+    return proc, first
+
+
+@router.get("/api/resolve_url")
+async def resolve_url(url: str = ""):
+    """Direct provider URL for VLC. MKV stays MKV. Wrong .mp4 links are corrected."""
+    if not url or not _http_url(url):
+        return JSONResponse({"error": "Only http(s) URLs"}, status_code=400)
+    found = await asyncio.to_thread(_resolve_media, url)
+    if not found.get("kind"):
+        return JSONResponse({"error": f"Upstream {found.get('status', 502)}"}, status_code=502)
+    return {"url": found["url"], "container": found["kind"]}
+
+
 @router.get("/api/proxy_url")
-async def proxy_url(request: Request, url: str):
+async def proxy_url(request: Request, url: str = ""):
     import requests as _req
     from fastapi.responses import StreamingResponse as _SR
 
-    proxy_headers = {
-        "User-Agent": config.PROXY_USER_AGENT,
-        "Accept": "*/*",
-    }
-    range_header = request.headers.get("range")
-    proxy_headers["Range"] = range_header or "bytes=0-"
-
-    session = _get_proxy_url_session(url)
-
-    def _connect():
-        resp = session.get(url, headers=proxy_headers, stream=True,
-                            timeout=(config.STREAM_CONNECT_TIMEOUT, 120), allow_redirects=True)
-        resp.raise_for_status()
-        return resp
+    if not url or not _http_url(url):
+        return JSONResponse({"error": "Only http(s) URLs"}, status_code=400)
 
     try:
-        resp = await asyncio.to_thread(_connect)
+        found = await asyncio.to_thread(_resolve_media, url)
+    except Exception as exc:
+        return JSONResponse({"error": str(exc)}, status_code=502)
+    if not found.get("kind"):
+        return JSONResponse({"error": f"Upstream {found.get('status', 502)}"}, status_code=502)
+
+    if found["kind"] == "matroska":
+        try:
+            proc, first = await asyncio.to_thread(_remux_mkv, found["url"])
+        except Exception as exc:
+            logger.warning("MKV remux failed to start: %s", exc)
+            return JSONResponse({"error": "Remux failed"}, status_code=502)
+        if proc is None:
+            return JSONResponse({"error": "Remux failed"}, status_code=502)
+
+        def _remux_stream():
+            try:
+                yield first
+                assert proc.stdout is not None
+                while True:
+                    chunk = proc.stdout.read(65536)
+                    if not chunk:
+                        break
+                    yield chunk
+            finally:
+                if proc.poll() is None:
+                    proc.kill()
+                    try:
+                        proc.wait(timeout=5)
+                    except Exception:
+                        pass
+
+        return _SR(
+            _remux_stream(),
+            media_type="video/mp4",
+            headers={"Cache-Control": "no-cache", "Content-Type": "video/mp4"},
+        )
+
+    range_header = request.headers.get("range")
+    try:
+        resp = await asyncio.to_thread(_passthrough, found["url"], range_header)
+        resp.raise_for_status()
     except _req.exceptions.HTTPError as exc:
         status = exc.response.status_code if exc.response is not None else 502
         return JSONResponse({"error": f"Upstream {status}"}, status_code=502)
@@ -558,13 +736,15 @@ async def proxy_url(request: Request, url: str):
         val = resp.headers.get(hdr)
         if val:
             forward_headers[hdr] = val
-
     client_status = 206 if resp.status_code == 206 else 200
 
     def _stream():
-        for chunk in resp.iter_content(chunk_size=65536):
-            if chunk:
-                yield chunk
+        try:
+            for chunk in resp.iter_content(chunk_size=65536):
+                if chunk:
+                    yield chunk
+        finally:
+            resp.close()
 
     return _SR(_stream(), status_code=client_status, headers=forward_headers,
                media_type=forward_headers.get("Content-Type", "video/mp4"))
